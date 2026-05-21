@@ -1,0 +1,46 @@
+# 密钥与本地环境
+.env
+.env.local
+.env.*.local
+.venv/
+
+# 成片与中间产物
+output/
+logs/
+tmp/
+.temp/
+
+# 媒体与临时音视频
+*.mp4
+*.mp3
+*.m4a
+*.aiff
+*.wav
+*.mov
+*.webm
+
+# 分镜/预览图（通常位于 output/，此处兜底）
+*.png
+*.jpg
+*.jpeg
+*.webp
+!docs/**/*.png
+!docs/**/*.jpg
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# 系统与 IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Node（若后续加 Remotion）
+node_modules/
+dist/
