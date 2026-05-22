@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# macOS：安装每天 8:00 自动跑工作流（无需人工参与）
+# macOS：每天 8:00 自动跑扣子编程已部署工作流
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PLIST="$HOME/Library/LaunchAgents/com.aivideo.coze-daily.plist"
+PLIST="$HOME/Library/LaunchAgents/com.aivideo.coze-vibe-daily.plist"
 LOG_DIR="$ROOT/logs"
 mkdir -p "$LOG_DIR" "$ROOT/output"
 
@@ -12,11 +12,11 @@ cat > "$PLIST" <<EOF
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.aivideo.coze-daily</string>
+  <string>com.aivideo.coze-vibe-daily</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>${ROOT}/scripts/run-coze-workflow.sh</string>
+    <string>${ROOT}/scripts/run-coze-vibe-workflow.sh</string>
   </array>
   <key>WorkingDirectory</key>
   <string>${ROOT}</string>
@@ -28,14 +28,14 @@ cat > "$PLIST" <<EOF
     <integer>0</integer>
   </dict>
   <key>StandardOutPath</key>
-  <string>${LOG_DIR}/coze-daily.log</string>
+  <string>${LOG_DIR}/coze-vibe-daily.log</string>
   <key>StandardErrorPath</key>
-  <string>${LOG_DIR}/coze-daily.err</string>
+  <string>${LOG_DIR}/coze-vibe-daily.err</string>
 </dict>
 </plist>
 EOF
 
 launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"
-echo "已安装定时任务: 每天 08:00 → ${ROOT}/scripts/run-coze-workflow.sh"
-echo "日志: ${LOG_DIR}/coze-daily.log"
+echo "已安装: 每天 08:00 → run-coze-vibe-workflow.sh"
+echo "日志: ${LOG_DIR}/coze-vibe-daily.log"
