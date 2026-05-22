@@ -28,6 +28,10 @@ RUN_JSON="$(curl -sS -m 900 "${COZE_VIBE_RUN_URL}" \
   -H "Content-Type: application/json" \
   -d "$BODY")"
 
+mkdir -p logs
+printf '%s' "$RUN_JSON" > logs/last_vibe_raw.json
+echo "  原始响应已写入: logs/last_vibe_raw.json"
+
 python3 - "$RUN_JSON" <<'PY'
 import json, sys, urllib.request, os
 from datetime import datetime
@@ -44,21 +48,29 @@ if not url and "data" in r:
     url = (data or {}).get("output") or ""
 
 if not url:
+    print(json.dumps(r, ensure_ascii=False, indent=2), file=sys.stderr)
     detail = r.get("detail") or {}
     if isinstance(detail, dict) and detail.get("error_message"):
-        print("工作流执行失败:", detail.get("error_message"), file=sys.stderr)
-        if "cannot open resource" in str(detail.get("stack_trace", "")):
+        trace = str(detail.get("stack_trace", ""))
+        if "Read-only file system" in trace or "bytefaas" in trace:
             print(
-                "\n原因: 云端找不到字体文件（text_overlay_node.py 的 FONT_PATH）。\n"
-                "修复: 在 code.coze.cn 打开项目，粘贴 docs/coze-vibe-fix-font.md 里的提示词，\n"
-                "      修复后重新「部署」，再执行本脚本。\n"
-                "修复后请在 code.coze.cn 重新「部署」再试。",
+                "\n原因: 部署环境只读，代码试图在 assets/ 下创建字体（font_dir.mkdir）。\n"
+                "修复: 打开 docs/coze-vibe-fix-font.md，粘贴【提示词 B】到 code.coze.cn，\n"
+                "      把 NotoSansSC-Regular.otf 放进 assets/fonts/ 后重新「部署」。",
                 file=sys.stderr,
             )
-        else:
-            print("堆栈:", "\n".join(detail.get("stack_trace") or [])[:2000], file=sys.stderr)
-    else:
-        print("未找到 output 视频 URL，完整响应:", json.dumps(r, ensure_ascii=False, indent=2), file=sys.stderr)
+        elif "ffmpeg" in trace or "FileNotFoundError" in str(detail.get("error_message", "")):
+            print(
+                "\n原因: 部署环境未安装 ffmpeg（video_clip_node 调 subprocess）。\n"
+                "修复: docs/coze-vibe-fix-ffmpeg.md 粘贴提示词到 code.coze.cn → 重新部署。",
+                file=sys.stderr,
+            )
+        elif "cannot open resource" in trace:
+            print(
+                "\n原因: 云端找不到字体文件。\n"
+                "修复: docs/coze-vibe-fix-font.md →【提示词 A 或 B】→ 重新部署。",
+                file=sys.stderr,
+            )
     sys.exit(1)
 
 os.makedirs("output", exist_ok=True)

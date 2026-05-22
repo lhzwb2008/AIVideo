@@ -1,44 +1,78 @@
-# 修复：API 运行 `cannot open resource`（字体路径）
+# 修复：部署 API 字体错误
 
-## 原因
+## 错误对照
 
-部署环境（Linux）上没有 `text_overlay_node.py` 里写的 `FONT_PATH`，Pillow 加载字体失败。  
-试运行若在本地 Mac 可能正常，**部署后 API 必现**。
+| 报错 | 原因 | 修法 |
+|------|------|------|
+| `cannot open resource` | 云端没有 Mac 字体路径 | 见下方提示词 A |
+| `Read-only file system: '/opt/bytefaas/src/assets'` | **运行时不能**在 `assets/` 建目录/下载字体 | 见下方提示词 B（你当前是这个） |
+
+部署环境（ByteFaaS）中 `/opt/bytefaas/src` **只读**，只能在 **`/tmp`** 写文件，或把字体**打进部署包**。
 
 ---
 
-## 在 code.coze.cn 粘贴此提示词（整段）
+## 【提示词 B · 必读，解决 Read-only file system】
+
+在 [code.coze.cn](https://code.coze.cn/home) 打开「AI新闻60秒」项目，**整段粘贴**：
 
 ```text
-请修复 graphs/nodes/text_overlay_node.py 的字体问题，解决部署后 API 报错：
-OSError: cannot open resource  at ImageFont.truetype(FONT_PATH, 36)
+修复 graphs/nodes/text_overlay_node.py，解决部署 API 报错：
+OSError: [Errno 30] Read-only file system: '/opt/bytefaas/src/assets'
+发生在 _ensure_font_file() 的 font_dir.mkdir(...)
 
-要求：
-1. 在项目内新增 assets/fonts/NotoSansSC-Regular.otf（或从网络下载到该路径，部署时随项目打包）。
-2. FONT_PATH 改为基于 __file__ 的绝对路径，例如：
-   Path(__file__).resolve().parents[2] / "assets" / "fonts" / "NotoSansSC-Regular.otf"
-3. 实现 _load_font(size) 函数，按顺序尝试：
-   - 项目内 assets/fonts/NotoSansSC-Regular.otf
-   - 项目内 assets/fonts/*.ttf / *.otf 任意一个
-   - Linux 常见路径：/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-   - 最后才 ImageFont.load_default()（并打日志 warning）
-4. 所有 ImageFont.truetype(FONT_PATH, ...) 改为 _load_font(size)。
-5. 若 assets 下无字体文件，在代码里用 urllib 首次运行时下载 Noto Sans SC 到 assets/fonts（仅当文件不存在时）。
-6. 修改后自动试运行 input=今日AI新闻，通过后提醒我重新点击「部署」。
+硬性要求：
+1. 禁止在运行时对 /opt/bytefaas/src/assets 或项目 assets 目录执行 mkdir、下载、写入。
+2. 字体获取策略（按顺序）：
+   a) 若部署包内已有字体：只读打开
+      Path(__file__).resolve().parents[2] / "assets" / "fonts" / "NotoSansSC-Regular.otf"
+      （你必须把该 .otf 文件真实加入项目 assets/fonts/，随部署打包，不能运行时创建）
+   b) Linux 系统字体（只读）：/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf 等
+   c) 可写目录 /tmp/coze_fonts/NotoSansSC-Regular.otf — 仅当 a、b 都不存在时，
+      用 urllib 下载到 /tmp/coze_fonts/（先 mkdir /tmp/coze_fonts，不要写 src/assets）
+   d) 最后 ImageFont.load_default() 并 logging.warning
+3. 删除或改写 _ensure_font_file()：不要对 assets 做 mkdir。
+4. _load_font(size) 封装上述逻辑，所有 truetype 调用走 _load_font。
+5. 若 assets/fonts/ 下没有字体文件，请从 Google Noto 或阿里 CDN 下载 NotoSansSC-Regular.otf
+   并提交到项目 assets/fonts/（部署前文件必须已存在）。
+6. 修改完成后自动试运行 input=今日AI新闻；通过后明确提示我点击「部署」。
 
-不要依赖 Mac 路径如 /System/Library/Fonts/...
+不要依赖 Mac 路径 /System/Library/Fonts/...
 ```
 
 ---
 
-## 修复后你必须做的
+## 【提示词 A · 仅 cannot open resource 时用】
 
-1. 试运行成功  
-2. 右上角 **重新部署**（不部署 API 仍跑旧代码）  
-3. 本地再跑：
+```text
+修复 text_overlay_node.py：部署后 ImageFont.truetype 报 cannot open resource。
+实现 _load_font(size)，尝试：打包内 assets/fonts/*.otf → Linux 系统字体 → /tmp 下载 → load_default。
+禁止运行时写入只读目录。完成后试运行并提示重新部署。
+```
+
+---
+
+## 修复后必做（两步缺一不可）
+
+1. 在扣子项目里确认 **assets/fonts/NotoSansSC-Regular.otf 文件真实存在**（文件树能看到，不是空目录）。  
+2. **试运行成功** → 右上角 **重新部署** → 本地再跑：
 
 ```bash
 ./scripts/test-coze-vibe.sh
 ./scripts/run-coze-vibe-workflow.sh "今日AI新闻"
 ```
 
+不重新部署，API 仍会跑旧代码。
+
+---
+
+## 如何确认字体已打进部署包
+
+在 code.coze.cn 左侧文件树应能看到：
+
+```text
+assets/
+  fonts/
+    NotoSansSC-Regular.otf   ← 必须有实体文件，约 8–16MB
+```
+
+若只有 `assets/fonts/` 空目录，AI 常会运行时 mkdir，部署必失败。

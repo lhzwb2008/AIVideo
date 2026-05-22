@@ -58,4 +58,9 @@ chmod +x scripts/*.sh
 
 ## 故障排查
 
-API 报错 `cannot open resource` → [docs/coze-vibe-fix-font.md](docs/coze-vibe-fix-font.md)，修复后**重新部署**。
+| 报错 | 文档 |
+|------|------|
+| 字体 / Read-only assets | [coze-vibe-fix-font.md](docs/coze-vibe-fix-font.md) |
+| `ffmpeg` 未找到 | [coze-vibe-fix-ffmpeg.md](docs/coze-vibe-fix-ffmpeg.md) |
+
+修复后均需 **重新部署** 再跑脚本。
