@@ -134,6 +134,27 @@ def process_one(
     script = retry("调研", do_research, max_attempts=max_retries, pause=retry_pause)
     log(f"  ✓ 脚本: {script.get('title')} (keyword={script.get('keyword')})")
 
+    if os.environ.get("AIHUBMIX_API_KEY", "").strip():
+        log(f"━━━ [{index}/{batch_total}] API 生图 ━━━")
+
+        def do_enrich() -> None:
+            proc = subprocess.run(
+                [str(ROOT / "run-enrich-images.sh"), str(script_path)],
+                cwd=ROOT,
+                env=os.environ.copy(),
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "API 生图失败")
+            for line in (proc.stderr or "").splitlines():
+                if line.strip():
+                    log(f"  {line}")
+
+        retry("API 生图", do_enrich, max_attempts=max_retries, pause=retry_pause)
+    else:
+        log("  跳过 API 生图（未设置 AIHUBMIX_API_KEY）")
+
     log(f"━━━ [{index}/{batch_total}] Coze 合成 ━━━")
     video = retry(
         "Coze 合成",
