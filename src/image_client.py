@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -43,6 +44,9 @@ def image_timeout() -> float:
     return float(_env("AIHUBMIX_IMAGE_TIMEOUT", "300"))
 
 
+_RETRY_HTTP_CODES = {408, 412, 425, 429, 500, 502, 503, 504}
+
+
 def _http_post(url: str, body: dict[str, Any], *, timeout: float, headers: dict[str, str] | None = None) -> dict[str, Any]:
     req_headers = {
         "Authorization": f"Bearer {api_key()}",
@@ -50,34 +54,88 @@ def _http_post(url: str, body: dict[str, Any], *, timeout: float, headers: dict[
     }
     if headers:
         req_headers.update(headers)
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        headers=req_headers,
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+    last_err: Exception | None = None
+    max_attempts = int(os.environ.get("AIHUBMIX_MAX_RETRIES", "4"))
+    for attempt in range(1, max_attempts + 1):
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers=req_headers,
+            method="POST",
+        )
+        try:
+            resp = urllib.request.urlopen(req, timeout=timeout)
             raw = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {raw[:500]}") from exc
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"非 JSON 响应: {raw[:300]}") from exc
+            resp.close()
+            return json.loads(raw)
+        except BaseException as exc:
+            etype = type(exc).__name__
+            code = getattr(exc, "code", None)
+            try:
+                body_txt = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
+            except Exception:
+                body_txt = ""
+            print(
+                f"  ⚠️  生图失败（第 {attempt}/{max_attempts}） {etype} code={code}: {(str(exc) or body_txt)[:300]}",
+                file=sys.stderr,
+                flush=True,
+            )
+            transient = (
+                isinstance(exc, (TimeoutError, urllib.error.URLError, ConnectionError))
+                or (code is not None and code in _RETRY_HTTP_CODES)
+            )
+            if transient and attempt < max_attempts:
+                wait = min(20.0, 3.0 * attempt)
+                print(f"  → {wait:.1f}s 后重试 …", file=sys.stderr, flush=True)
+                time.sleep(wait)
+                last_err = exc
+                continue
+            raise RuntimeError(f"{etype}({code}): {str(exc) or body_txt[:500]}") from exc
+    raise RuntimeError(f"重试用尽: {last_err}")
 
 
-def build_prompt(image_prompt: str, *, headline: str = "") -> str:
-    """增强 slide 的 image_prompt，便于高质量竖屏封面。"""
-    parts = [
-        image_prompt.strip(),
-        "Vertical portrait 9:16 aspect ratio for mobile short video.",
-        "Cinematic lighting, high detail, editorial news illustration style.",
-        "No text, no watermark, no logo, no letters on image.",
+def build_prompt(
+    image_prompt: str,
+    *,
+    headline: str = "",
+    chapter_title: str = "",
+    on_image_text: list[str] | None = None,
+    page_index: int = 0,
+    total_pages: int = 5,
+) -> str:
+    """白板手绘科普风：方格纸 + 黑色钢笔线 + 中文手写注释。"""
+    parts: list[str] = [
+        "Hand-drawn whiteboard sketch on light beige graph paper, vertical portrait 9:16 aspect ratio.",
+        "Black ballpoint pen line drawing, casual notebook illustration style, with subtle yellow and light purple highlighter accents.",
+        "Crisp clean lines, comfortable amount of empty white space, friendly and educational mood.",
+        f"Page layout: {image_prompt.strip()}" if image_prompt.strip() else "",
     ]
+    if chapter_title:
+        parts.append(
+            f"Top-left small handwritten chapter tag in Chinese: \"{chapter_title.strip()}\"."
+        )
+    if page_index and total_pages:
+        parts.append(
+            f"Top-right small page number handwritten as \"{page_index:02d}/{total_pages:02d}\"."
+        )
+    labels = [str(t).strip() for t in (on_image_text or []) if str(t).strip()]
+    if labels:
+        joined = ", ".join(f"\"{t}\"" for t in labels)
+        parts.append(
+            "Render these EXACT Chinese handwritten labels naturally placed on the drawing as part of the diagram "
+            f"(annotations, callouts, comparison labels): {joined}."
+        )
+        parts.append(
+            "Use ONLY the listed Chinese labels above. Do not invent additional Chinese, English, or numeric text. "
+            "Spelling must match exactly. Place labels with arrows / curly braces / underlines like a real notebook."
+        )
+    parts.append(
+        "Bottom 22% of the canvas must be left as clean empty graph paper background (no drawing, no text), "
+        "to leave room for subtitle and progress bar to be added later."
+    )
+    parts.append("No frames, no borders, no watermarks, no signatures, no logos.")
     if headline:
-        parts.append(f"Theme context (do not render as text): {headline.strip()}")
+        parts.append(f"(Conceptual theme, do not render as text: {headline.strip()})")
     return " ".join(p for p in parts if p)
 
 
@@ -130,38 +188,3 @@ def save_b64_image(b64_data: str, path: Path) -> Path:
     return path
 
 
-def upload_public(path: Path) -> str:
-    """上传本地图片，返回公网 URL（供 Coze 云端下载）。"""
-    backend = _env("AIVIDEO_IMAGE_UPLOAD", "catbox").lower()
-    if backend in ("0", "none", "off", "skip"):
-        raise RuntimeError("未启用公网上传（AIVIDEO_IMAGE_UPLOAD=catbox）")
-
-    if backend == "catbox":
-        return _upload_catbox(path)
-    raise RuntimeError(f"未知 AIVIDEO_IMAGE_UPLOAD={backend!r}，支持: catbox")
-
-
-def _upload_catbox(path: Path) -> str:
-    boundary = f"----AIVideo{int(time.time() * 1000)}"
-    filename = path.name
-    content = path.read_bytes()
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="reqtype"\r\n\r\n'
-        f"fileupload\r\n"
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="fileToUpload"; filename="{filename}"\r\n'
-        f"Content-Type: application/octet-stream\r\n\r\n"
-    ).encode("utf-8") + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
-
-    req = urllib.request.Request(
-        "https://catbox.moe/user/api.php",
-        data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        url = resp.read().decode("utf-8", errors="replace").strip()
-    if not url.startswith("http"):
-        raise RuntimeError(f"catbox 上传失败: {url[:200]}")
-    return url

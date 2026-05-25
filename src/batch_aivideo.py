@@ -75,17 +75,17 @@ def rel_path(path: Path) -> str:
     return str(resolved.relative_to(ROOT.resolve()))
 
 
-def run_coze(script_path: Path) -> Path:
+def run_compose(script_path: Path) -> Path:
     env = os.environ.copy()
     proc = subprocess.run(
-        [str(ROOT / "run-coze.sh"), str(script_path)],
+        [str(ROOT / "run-compose.sh"), str(script_path)],
         cwd=ROOT,
         env=env,
         capture_output=True,
         text=True,
     )
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "Coze 合成失败")
+        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "本地合成失败")
 
     last_video = ROOT / "logs" / "last_video.txt"
     if not last_video.is_file():
@@ -155,10 +155,10 @@ def process_one(
     else:
         log("  跳过 API 生图（未设置 AIHUBMIX_API_KEY）")
 
-    log(f"━━━ [{index}/{batch_total}] Coze 合成 ━━━")
+    log(f"━━━ [{index}/{batch_total}] 本地合成 ━━━")
     video = retry(
-        "Coze 合成",
-        lambda: run_coze(script_path),
+        "本地合成",
+        lambda: run_compose(script_path),
         max_attempts=max_retries,
         pause=retry_pause,
     )

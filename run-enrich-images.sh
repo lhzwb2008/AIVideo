@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 为脚本 JSON 逐页调用 AiHubMix 生图，写入 image_url 供 Coze 直接使用
+# 为脚本 JSON 逐页调用 AiHubMix 生图，写入 image_path
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"

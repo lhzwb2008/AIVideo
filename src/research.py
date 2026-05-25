@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""本地 Cursor Agent 调研：每日锁定一个大众向 AI 热点，口语化口播脚本，输出 Coze 合成 JSON。"""
+"""本地 Cursor Agent 调研：每日锁定一个大众向 AI 热点，输出口语化口播脚本 JSON。"""
 
 from __future__ import annotations
 
@@ -14,110 +14,92 @@ from pathlib import Path
 from cursor_client import create_agent, create_run, run_with_stream
 from paths import ROOT
 
-RESEARCH_PROMPT = """你是「抖音 AI 资讯」口播编剧。请联网完成以下任务，输出 60 秒竖屏短视频脚本。
-目标观众是刷短视频的普通用户（非投资人、非研究员），风格像科技区 UP 主给朋友讲新闻。
+RESEARCH_PROMPT = """你是「概念科普 + AI 资讯」抖音竖屏视频编剧。请联网完成以下任务，输出 60–80 秒视频脚本。
+目标观众是刷短视频的普通用户。视频画面是**笔记本方格纸 + 黑色手绘示意图 + 中文手写注释**的科普风（类似「李永乐老师」「3Blue1Brown」中文版的白板讲解），所以你写的每一段，**画面都要能用一张概念图解释清楚**。
 
 【选题 · 必须遵守】
-1. 先搜索全网（{days} 天内），列出 2–3 个 AI 热点候选，**只选 1 个**最终话题。
-2. 对每个候选自评三项（各 0–3 分，满分 9）：大众认知度、情绪钩子（震惊/利好/翻车/免费/涨价）、一句话讲清。
-3. **总分 ≥ 7 才选**；若最热话题太专业（IPO 交表细节、论文术语、监管黑话、纯融资八卦），改选「次热但更大众」的。
-4. 优先：产品发布、功能更新、免费/涨价、名人冲突、明显翻车、能 3 秒讲清的大新闻。
-5. 围绕选定话题找 **1 篇** 权威报道/官方博客，**数字、日期、公司动作必须来自该文**，禁止编造。
+1. 先联网搜索（{days} 天内 AI 资讯热点），结合常青概念，**只选 1 个**话题。
+2. 候选两类：
+   A. **AI 热点资讯**（产品发布、翻车、涨价、能力突破等）——必须能拆出「为什么/怎么做到/有啥影响」三段可视化解释，不只是新闻陈述
+   B. **AI/科技概念科普**（transformer 是什么、为什么模型会幻觉、RLHF 怎么训练、context window 是啥等）——更适合白板风
+3. 自评：是否能用 5 张手绘示意图讲清？是否一句话就能让普通人记住？过不了关就换话题。
+4. 若选 A 类资讯，需找 **1 篇** 权威报道；事实/数字/日期/公司动作必须来自该文。若选 B 类概念，可参考 1 篇权威解释（OpenAI 博客、Anthropic、维基等）。
 {exclude_section}{batch_section}
 
+【画面思维 · 极重要】
+你不是在写口播稿，你是在**导演一系列白板手绘图**。每一段 narration 都要对应一张可画出来的图：
+- 对比图：A vs B（左右分栏，箭头互指）
+- 流程图：步骤 1 → 2 → 3（带箭头）
+- 类比图：把抽象概念画成具体物（神经网络画成水管/路由器）
+- 数据图：柱状/曲线/百分比+卡通小人
+- 时间轴：横向箭头+节点
+
+每段必须输出 `on_image_text`：5–10 条**要画在图上的中文短语**（每条 ≤ 10 字），用于让生图模型把它们当作手写注释画进图里。
+
 【事实与文风】
-- 可口语转述、比喻、轻微调侃；事实不能改、不能编。
-- 全片「文章认为/报道指/文章称/消息人士」合计 **最多 1 次**，且 **不能出现在 cover 页**。
-- 禁止通稿腔词汇：拟、交表、口径、交叉验证、被写作、隐含地、措辞、援引、信源。
+- 口语化，类比为主，不堆术语；术语出现时下一句必须翻译。
+- 资讯类：事实不能改、不能编；全片「文章认为/报道指/消息人士」最多 1 次，cover 不能有。
+- 禁用词：拟、交表、口径、交叉验证、被写作、隐含地、措辞、援引、信源。
 
-【标题 · SEO + 口语】
-- `keyword`：可搜索热点词（OpenAI、Gemini、Sora 等）。
-- `title` 与 cover 的 `headline` 相同或极接近，**8–14 字**，含 keyword，**大声读一遍不卡壳**。
-- cover 的 `subtitle`：**10–16 字**，写悬念或利益点；**禁止**堆媒体名（如「华尔街日报首发·CNBC交叉验证」）。
+【标题（硬约束，不满足直接判错）】
+- `keyword`：可搜索的热点词或核心概念，**必须是 2–6 个汉字**（例：「幻觉」「Sora」「智能体」），**不允许英文短语**
+- `title`：**6–14 字**，**字面必须包含 keyword 这几个字**（例 keyword=「幻觉」→ title 里必须出现"幻觉"两个字），口语化、读起来不拗口
+- cover 的 `headline` = `title`（一字不差）
+- cover 的 `subtitle`：**8–18 字** 悬念/利益点；禁堆媒体名
 
-【分工】你写全部文案；Coze 原样上屏/配音。PPT = narration 的可视化概要，禁止两套说法。
+【5 页结构 · 每页 layout 固定】
 
-【写作顺序 · 每页】
-1. 先写 narration（cover 40–50 字，先钩子后事实；第 2–4 页 55–75 字；outro 45–55 字）
-2. 每页 narration 至少 1 句口语（「说白了」「换句话说」「这就尴尬了」等）
-3. 全片 1–2 处可轻微调侃或比喻，不人身攻击
-4. 再写 headline（口语短标题，不是通讯社标题）
-5. 再写 bullets（拆分 narration 已有信息，bullet 标题也要口语）
-
-【5 页结构 · 每页 layout 不同】
-
-| 页 | layout | 画面形态 | bullets |
+| 页 | layout | 内容定位 | bullets |
 |----|--------|----------|---------|
-| 1 | cover | **封面超大标题** headline + subtitle，像短视频封面 | 0 条 |
-| 2 | insight | 中等标题 + 2 条要点 | 2 条 |
-| 3 | data | 中央超大 stat + 短说明 | 1–2 条 |
-| 4 | story | 2–3 条时间线要点 | 2–3 条 |
-| 5 | outro | 一句 takeaway + 关键词标签 | 0–2 条 |
+| 1 | cover    | 抛出问题/钩子；headline=核心问题，subtitle=悬念 | 0 条 |
+| 2 | insight  | 给出第一个解释维度 | 2–3 条 |
+| 3 | data     | 一个关键数字或对比 stat | 1–2 条 |
+| 4 | story    | 推演/案例/时间轴 | 2–3 条 |
+| 5 | outro    | 一句 takeaway + 标签 | 0–2 条 |
 
-【封面 cover · 最重要】
-- headline = 根节点 title（口语大标题，不是完整新闻标题）
-- subtitle = 悬念/利益点，不是出处说明
-- bullets = []
-- 禁止 bullet、禁止「头条」小标签、禁止模板字样
+【每页必填字段】
+- `chapter_title`：**3–6 字**章节短名（进度条用，例：「问题」「原理」「数字」「案例」「结论」或更具体的「死亡」「跨学科」「为啥幻觉」）
+- `concept`：这一段要让观众**记住的一句话**（≤ 25 字）
+- `narration`：口播原文（cover 35–55 字；2–4 页 60–90 字；outro 35–55 字）
+- `image_prompt`：**英文**，描述这一页要画的手绘示意图布局（"sketch a left-right comparison of X vs Y, with arrow pointing from A to B"），**不用描述风格**（风格由生图模板统一加）
+- `on_image_text`：**中文**短语数组，5–10 条，**这些字会被画在图上**作为手写注释。例：["相对论","觉悟","可验证的客观知识","声称超越所有概念的概念","用概念指向超越概念?"]
+- `headline`：上屏中文标题（不是字幕，字幕走 narration 自动生成）
+- 其他按 layout：cover 加 subtitle；data 加 stat；insight/data/story 加 bullets
 
-【好坏对照 · 封面必须接近「好例」】
-坏例 headline: "OpenAI拟机密IPO交表：消息称最快周五"
-坏例 subtitle: "华尔街日报首发·CNBC交叉验证信源口径"
-坏例 narration: "文章援引消息人士称：OpenAI正筹备向美国监管方机密递交IPO招股书草案…"
+【输出】只输出一个 JSON，不要 markdown，不要解释。
 
-好例 headline: "OpenAI要上市了"
-好例 subtitle: "8500亿估值，比苹果还猛？"
-好例 narration: "重磅：OpenAI 可能要 IPO 了。私募给的价码已经飙到 8500 亿美元——啥概念？ChatGPT 这家公司要是真敲钟，科技圈都得抖三抖。"
-
-【输出】只输出一个 JSON，不要 markdown，不要解释，不要重复两份 JSON。
-
-JSON 结构：
+示例（话题：「AI 为什么会一本正经胡说八道」）：
 {{
-  "title": "OpenAI要上市了",
-  "keyword": "OpenAI",
-  "source": {{ "title": "...", "url": "https://...", "site": "CNBC" }},
+  "title": "AI为啥爱瞎编",
+  "keyword": "幻觉",
+  "source": {{ "title": "Why language models hallucinate", "url": "https://...", "site": "OpenAI" }},
   "slides": [
     {{
       "layout": "cover",
-      "headline": "OpenAI要上市了",
-      "subtitle": "8500亿估值，比苹果还猛？",
+      "chapter_title": "钩子",
+      "concept": "AI胡说八道不是bug，是它学的方式",
+      "headline": "AI为啥爱瞎编",
+      "subtitle": "明明不知道，却答得理直气壮",
       "bullets": [],
-      "narration": "重磅：OpenAI 可能要 IPO 了。私募估值飙到 8500 亿美元，ChatGPT 要是真敲钟，科技圈都得抖三抖。",
-      "image_prompt": "English, vertical 9:16 cinematic cover, no text"
+      "narration": "你问 ChatGPT 一个它没见过的问题，它居然能编得有鼻子有眼。这不是 bug，是设计。今天 5 张图讲清楚。",
+      "image_prompt": "Sketch a chat bubble with a confused human asking a question, and a robot replying with a long fancy answer. Add a small thought-bubble above the robot showing question marks.",
+      "on_image_text": ["AI为啥爱瞎编", "用户：拿破仑的火星基地?", "AI：1809年建于...", "事实：根本不存在", "?"]
     }},
     {{
       "layout": "insight",
-      "headline": "华尔街两大投行操刀",
-      "bullets": [{{"title":"高盛+小摩","desc":"报道说两家投行在帮它准备上市材料"}}, {{"title":"公司还在装淡定","desc":"官方只说在评估各种选项，没给时间表"}}],
-      "narration": "…",
-      "image_prompt": "…"
+      "chapter_title": "目标错位",
+      "concept": "训练目标是「像人」而不是「正确」",
+      "headline": "它学的不是真假",
+      "bullets": [{{"title":"训练目标","desc":"预测下一个词，不是判断真假"}}, {{"title":"奖励机制","desc":"答得流畅就给奖励"}}],
+      "narration": "...",
+      "image_prompt": "Sketch a comparison: left side a human teacher writing 'TRUE / FALSE' on board; right side a robot reading text and predicting next word with arrows.",
+      "on_image_text": ["人类老师", "判断真假", "AI模型", "预测下一个词", "≠真假", "→流畅就行"]
     }},
-    {{
-      "layout": "data",
-      "headline": "这公司有多贵？",
-      "stat": "8500亿美元",
-      "bullets": [{{"title":"钱烧得飞快","desc":"报道提到它融了超多钱，花钱速度也创纪录"}}],
-      "narration": "…",
-      "image_prompt": "…"
-    }},
-    {{
-      "layout": "story",
-      "headline": "上市前还有戏看",
-      "bullets": […],
-      "narration": "…",
-      "image_prompt": "…"
-    }},
-    {{
-      "layout": "outro",
-      "headline": "真能上市吗？",
-      "bullets": [{{"title":"#OpenAI","desc":""}}],
-      "narration": "…",
-      "image_prompt": "…"
-    }}
+    ...
   ]
 }}
 
-用户输入的检索方向：{topic}（可忽略字面，以检索时间窗内最符合「大众向 AI 资讯」的单话题为准）
+用户输入的检索方向：{topic}（可忽略字面，按时间窗内最适合白板讲解的话题为准）
 """
 
 
@@ -183,8 +165,10 @@ _SLIDE_LAYOUTS = ("cover", "insight", "data", "story", "outro")
 # 口语标题长度（中文按字符计）
 _TITLE_MIN_LEN = 6
 _TITLE_MAX_LEN = 16
-_SUBTITLE_MIN_LEN = 8
-_SUBTITLE_MAX_LEN = 20
+_SUBTITLE_MIN_LEN = 6
+_SUBTITLE_MAX_LEN = 22
+_CHAPTER_TITLE_MIN = 2
+_CHAPTER_TITLE_MAX = 8
 _MAX_FORMAL_ATTRIBUTIONS = 1
 
 
@@ -344,6 +328,21 @@ def validate_script(data: dict, *, exclude_keywords: list[str] | None = None) ->
         slide["layout"] = layout
         if not slide.get("headline") or not slide.get("narration") or not slide.get("image_prompt"):
             raise ValueError(f"第 {i + 1} 页缺少 headline/narration/image_prompt")
+        chapter = str(slide.get("chapter_title") or "").strip()
+        if not (_CHAPTER_TITLE_MIN <= len(chapter) <= _CHAPTER_TITLE_MAX):
+            raise ValueError(
+                f"第 {i + 1} 页 chapter_title 须 {_CHAPTER_TITLE_MIN}–{_CHAPTER_TITLE_MAX} 字，当前 {len(chapter)} 字: {chapter!r}"
+            )
+        if not str(slide.get("concept") or "").strip():
+            raise ValueError(f"第 {i + 1} 页缺少 concept（核心一句话）")
+        on_image_text = slide.get("on_image_text") or []
+        if not isinstance(on_image_text, list) or not (3 <= len(on_image_text) <= 12):
+            raise ValueError(
+                f"第 {i + 1} 页 on_image_text 须为 3–12 条字符串数组，当前 {len(on_image_text) if isinstance(on_image_text, list) else '非数组'}"
+            )
+        for j, item in enumerate(on_image_text):
+            if not isinstance(item, str) or len(item) > 16 or not item.strip():
+                raise ValueError(f"第 {i + 1} 页 on_image_text[{j}] 应为 1–16 字非空字符串：{item!r}")
         bullets = slide.get("bullets") or []
         _validate_layout_fields(i, layout, slide, bullets)
     validate_style(data)
@@ -454,7 +453,7 @@ def run_research(
 def main() -> int:
     load_env()
     parser = argparse.ArgumentParser(description="Cursor Agent 本地调研 → JSON 脚本")
-    parser.add_argument("topic", nargs="?", default=os.environ.get("COZE_WORKFLOW_TOPIC", "今日AI新闻"))
+    parser.add_argument("topic", nargs="?", default=os.environ.get("AIVIDEO_TOPIC", "今日AI新闻"))
     parser.add_argument("-o", "--output", default=str(ROOT / "logs" / "last_script.json"))
     parser.add_argument("--agent-id", help="复用已有 agent 追问")
     parser.add_argument("--days", type=int, default=2, help="搜索时间窗（天），默认 2（约 48 小时）")

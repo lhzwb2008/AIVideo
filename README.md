@@ -1,6 +1,6 @@
 # AIVideo
 
-**每日一个 AI 热点** → Cursor 调研 → Coze 合成竖屏视频 →（手动）发布抖音。
+**每日一个 AI 热点** → Cursor 调研 → AiHubMix 生图 → 本地 TTS+ffmpeg 合成竖屏视频 →（手动）发布抖音。
 
 ```bash
 ./run-aivideo.sh
@@ -9,75 +9,66 @@
 
 ## 内容策略
 
-1. Cursor 联网搜索，**锁定当天 1 个大众向 AI 热点**（产品发布、翻车、涨价等，避开 IPO 交表等专业题）
+1. Cursor 联网搜索，**锁定当天 1 个大众向 AI 热点**
 2. 基于 1 篇权威报道提取事实，**口语化口播**（比喻、调侃 OK，不编造数字）
-3. 封面 **8–14 字大标题** + 悬念副标题；5 页：抛题 → 三节论点 → 收束
-4. `title` / `keyword` 突出搜索词；脚本过 **风格校验**（禁通稿腔，失败自动让 Agent 修正一轮）
+3. 5 页结构：cover → insight → data → story → outro
+4. 每页输出 `chapter_title` / `concept` / `narration` / `image_prompt` / `on_image_text`
+5. `title` 字面必须含 `keyword`；脚本过结构 + 风格校验，失败自动让 Agent 修正一轮
+
+## 视觉风格
+
+- **白板手绘** 方格纸底，黑色钢笔线 + 黄/紫荧光笔点缀
+- **9:16 竖版**：图片占顶部 78%，底部 22% 留给字幕 + 进度条
+- 中文短语（`on_image_text`）作为手写注释直接画进图里
+- 章节角标 + `01/05` 页码 + 分段进度点
 
 ## 流程
 
 | 步骤 | 命令 | 产出 |
 |------|------|------|
-| 一键制作 | `./run-aivideo.sh` | 调研 + **API 生图** + Coze 合成 → `output/*.mp4` |
-| 批量制作 | `./run-batch-aivideo.sh` | 多条视频（默认 10 条 / 近 30 天） |
-| 生图 | `./run-enrich-images.sh` | 为脚本 slides 写入 `image_url` |
-| 合成 | `./run-coze.sh` | `output/*.mp4`（TTS + 视频，不再内部生图） |
+| 一键制作 | `./run-aivideo.sh "话题"` | 调研 + 生图 + 合成 → `output/*.mp4` |
+| 批量制作 | `./run-batch-aivideo.sh` | 多条视频 |
+| 仅生图 | `./run-enrich-images.sh logs/last_script.json` | 写入 `slide.image_path` |
+| 仅合成 | `./run-compose.sh logs/last_script.json` | TTS + ffmpeg → `output/*.mp4` |
 | **发布** | `./publish-all-douyin.sh` | 发布 `output/` 下未发布的 MP4 |
 
-JSON 含 `title`、`keyword`、`source`（参考文章链接）、5 页 `slides`。
+## 关键模块
+
+```
+src/
+  research.py        # Cursor Agent 调研 + 风格校验
+  image_client.py    # AiHubMix gpt-image-2 生图（含重试）
+  enrich_images.py   # 逐页生图，断点续跑
+  tts_client.py      # 百炼 CosyVoice TTS
+  voice_clone.py     # 百炼音色克隆（一次性）
+  video_compose.py   # PIL 渲染进度条/章节，ffmpeg 合成 + 字幕
+  batch_aivideo.py   # 批量编排
+```
 
 ## 抖音发布（与制作分离）
 
-制作流程**不包含**发布。抖音无开放 API，需 Playwright + 扫码 cookie，适合**制作完后手动发布**。
-
-### 一次性安装
+抖音无开放 API，需 Playwright + 扫码 cookie。
 
 ```bash
-./setup-sau.sh
-./douyin-login.sh   # 扫码登录（发布前执行）
-```
-
-### 批量发布 output/
-
-```bash
+./setup-sau.sh                       # 一次性
+./douyin-login.sh                    # 扫码登录
 ./publish-all-douyin.sh              # 发布全部未发布的 mp4
-./publish-all-douyin.sh --dry-run    # 预览待发布列表
-./publish-all-douyin.sh --assist     # 半自动：脚本填表，你点「发布」
+./publish-all-douyin.sh --dry-run    # 预览
+./publish-all-douyin.sh --assist     # 半自动
+./publish-douyin.sh output/xxx.mp4   # 单条
 ```
 
-已发布记录：`logs/published_videos.json`；视频↔脚本映射：`logs/video_manifest.jsonl`。
-
-### 单条发布
-
-```bash
-./publish-douyin.sh output/xxx.mp4
-./publish-douyin.sh --assist
-```
-
-## 项目结构
-
-```
-run-aivideo.sh          # 制作：调研 + API 生图 + Coze 合成
-run-batch-aivideo.sh    # 批量制作
-run-enrich-images.sh    # 仅 AiHubMix 生图（gpt-image-2）
-run-coze.sh             # 仅 Coze 合成
-publish-all-douyin.sh   # 批量发布 output/
-publish-douyin.sh       # 单条发布
-douyin-login.sh         # 抖音扫码登录
-setup-sau.sh            # 安装 sau（一次性）
-clean-logs.sh           # 清理调试日志
-src/                    # 全部 Python 代码
-logs/ output/           # 运行产物
-vendor/                 # social-auto-upload
-```
+记录：`logs/published_videos.json`、`logs/video_manifest.jsonl`。
 
 ## 环境变量
 
-见 `.env.example`（`CURSOR_*`、`AIHUBMIX_*`、`COZE_VIBE_*`、`SAU_*`、`DOUYIN_*`）
+见 `.env.example`：`CURSOR_*`、`AIHUBMIX_*`、`DASHSCOPE_*`、`AIVIDEO_*`、`SAU_*`、`DOUYIN_*`。
 
-### 生图拆分（AiHubMix → Coze）
+## 克隆个人音色（一次性）
 
-1. 本地 `./run-enrich-images.sh` 用 **gpt-image-2** 按每页 `image_prompt` 生图，上传到 catbox，写入 `slide.image_url`
-2. Coze 工作流需整体重构：**只负责 TTS + 视频合成**，不再内部生图
+把一段你自己的音频/视频（≥15s 清晰人声）放到项目根，然后：
 
-完整 Coze 改造 Prompt（复制到 code.coze.cn 项目 AI）：**[`coze-workflow-prompt.txt`](coze-workflow-prompt.txt)**
+```bash
+python3 src/voice_clone.py test.mp4
+# 输出 voice_id，复制到 .env 的 DASHSCOPE_TTS_VOICE
+```
