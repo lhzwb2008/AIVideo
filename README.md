@@ -1,65 +1,72 @@
 # AIVideo
 
-**每日一个 AI 热点** → Cursor 调研 → Coze 合成竖屏视频 →（可选）Playwright 发布抖音。
+**每日一个 AI 热点** → Cursor 调研 → Coze 合成竖屏视频 →（手动）发布抖音。
 
 ```bash
 ./run-aivideo.sh
+./publish-all-douyin.sh    # 制作完成后单独执行
 ```
 
 ## 内容策略
 
-1. Cursor 联网搜索，**锁定当天 1 个 AI 热点关键词**
-2. 找到 1 篇精华文章，**复述文章观点**（不加自编观点）
-3. 5 页 PPT 深度展开：抛题 → 三节论点 → 收束
-4. `title` / `keyword` 突出搜索词，便于抖音被关键词搜到
+1. Cursor 联网搜索，**锁定当天 1 个大众向 AI 热点**（产品发布、翻车、涨价等，避开 IPO 交表等专业题）
+2. 基于 1 篇权威报道提取事实，**口语化口播**（比喻、调侃 OK，不编造数字）
+3. 封面 **8–14 字大标题** + 悬念副标题；5 页：抛题 → 三节论点 → 收束
+4. `title` / `keyword` 突出搜索词；脚本过 **风格校验**（禁通稿腔，失败自动让 Agent 修正一轮）
 
 ## 流程
 
 | 步骤 | 命令 | 产出 |
 |------|------|------|
-| 一键全流程 | `./run-aivideo.sh` | 调研 + 合成 +（可选）发布 |
-| 调研 | `python3 lib/research.py "今日AI新闻"` | `logs/last_script.json` |
+| 一键制作 | `./run-aivideo.sh` | 调研 + 合成 → `output/*.mp4` |
+| 批量制作 | `./run-batch-aivideo.sh` | 多条视频（默认 10 条 / 近 30 天） |
 | 合成 | `./run-coze.sh` | `output/*.mp4` |
-| 发布 | `python3 publish-douyin.py` | 抖音创作者平台 |
+| **发布** | `./publish-all-douyin.sh` | 发布 `output/` 下未发布的 MP4 |
 
 JSON 含 `title`、`keyword`、`source`（参考文章链接）、5 页 `slides`。
 
-## 抖音发布
+## 抖音发布（与制作分离）
 
-不依赖抖音开放平台 API。发布用 **Playwright** 自动化；登录仍通过 **social-auto-upload（sau）** 扫码保存 cookie。
+制作流程**不包含**发布。抖音无开放 API，需 Playwright + 扫码 cookie，适合**制作完后手动发布**。
 
 ### 一次性安装
 
 ```bash
 ./setup-sau.sh
-./douyin-login.sh   # 扫码登录
+./douyin-login.sh   # 扫码登录（发布前执行）
 ```
 
-### 手动发布
+### 批量发布 output/
 
 ```bash
-python3 publish-douyin.py
-python3 publish-douyin.py --dry-run
-python3 publish-douyin.py output/xxx.mp4
-python3 publish-douyin.py --assist   # 半自动：脚本填表，手动点发布
+./publish-all-douyin.sh              # 发布全部未发布的 mp4
+./publish-all-douyin.sh --dry-run    # 预览待发布列表
+./publish-all-douyin.sh --assist     # 半自动：脚本填表，你点「发布」
 ```
 
-### 全自动流水线
+已发布记录：`logs/published_videos.json`；视频↔脚本映射：`logs/video_manifest.jsonl`。
 
-`.env` 中设置 `DOUYIN_AUTO_PUBLISH=1`，`run-aivideo.sh` 合成完成后自动发布。
+### 单条发布
+
+```bash
+./publish-douyin.sh output/xxx.mp4
+./publish-douyin.sh --assist
+```
 
 ## 项目结构
 
 ```
-run-aivideo.sh      # 主入口
-run-coze.sh         # 仅 Coze 合成
-publish-douyin.py   # 发布抖音
-douyin-login.sh     # 抖音扫码登录（sau）
-setup-sau.sh        # 安装 sau + patchright（一次性）
-clean-logs.sh       # 清理调试日志
-lib/                # Python 模块
-logs/ output/       # 运行产物
-vendor/             # social-auto-upload（setup-sau 后生成）
+run-aivideo.sh          # 制作：调研 + 合成
+run-batch-aivideo.sh    # 批量制作
+run-coze.sh             # 仅 Coze 合成
+publish-all-douyin.sh   # 批量发布 output/
+publish-douyin.sh       # 单条发布
+douyin-login.sh         # 抖音扫码登录
+setup-sau.sh            # 安装 sau（一次性）
+clean-logs.sh           # 清理调试日志
+src/                    # 全部 Python 代码
+logs/ output/           # 运行产物
+vendor/                 # social-auto-upload
 ```
 
 ## 环境变量

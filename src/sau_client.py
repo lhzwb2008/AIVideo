@@ -17,7 +17,9 @@ def _env(name: str, default: str = "") -> str:
 
 
 def sau_home(root: Path | None = None) -> Path:
-    root = root or Path(__file__).resolve().parents[1]
+    from paths import ROOT
+
+    root = root or ROOT
     custom = _env("SAU_HOME")
     if custom:
         return Path(custom).expanduser()

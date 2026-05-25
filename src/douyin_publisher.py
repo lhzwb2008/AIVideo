@@ -7,6 +7,8 @@ import os
 import sys
 from pathlib import Path
 
+from paths import ROOT
+
 
 class DouyinPublishError(RuntimeError):
     pass
@@ -17,7 +19,9 @@ def _env(name: str, default: str = "") -> str:
 
 
 def sau_home(root: Path | None = None) -> Path:
-    root = root or Path(__file__).resolve().parents[1]
+    from paths import ROOT
+
+    root = root or ROOT
     custom = _env("SAU_HOME")
     if custom:
         return Path(custom).expanduser()
@@ -36,7 +40,7 @@ def cookie_path(root: Path | None = None, account: str | None = None) -> Path:
     path = sau_home(root) / "cookies" / f"douyin_{account}.json"
     if not path.is_file():
         raise DouyinPublishError(
-            f"未找到 cookie: {path}\n请先运行: ./scripts/douyin-login.sh"
+            f"未找到 cookie: {path}\n请先运行: ./douyin-login.sh"
         )
     return path
 
@@ -102,34 +106,81 @@ async def _goto(page, url: str) -> None:
         raise last_exc
 
 
-async def _wait_file_input(page, timeout_s: int = 120):
+async def _try_click_upload_entry(page) -> None:
+    """新版上传页有时需先点入口才渲染 file input。"""
+    for text in ("上传视频", "发布视频", "点击上传", "上传"):
+        loc = page.get_by_text(text, exact=False).first
+        if not await loc.count():
+            continue
+        try:
+            if await loc.is_visible():
+                await loc.click(timeout=3000)
+                await asyncio.sleep(1)
+                return
+        except Exception:
+            continue
+
+
+async def _require_logged_in(page) -> None:
+    url = page.url.lower()
+    if "passport" in url or "/login" in url:
+        raise DouyinPublishError("未登录或 cookie 已失效，请先运行: ./douyin-login.sh")
+    for text in ("扫码登录", "手机号登录", "登录后即可"):
+        loc = page.get_by_text(text, exact=False).first
+        if await loc.count():
+            try:
+                if await loc.is_visible():
+                    raise DouyinPublishError("未登录或 cookie 已失效，请先运行: ./douyin-login.sh")
+            except DouyinPublishError:
+                raise
+            except Exception:
+                pass
+
+
+async def _wait_file_input(page, timeout_s: int = 120, root: Path | None = None):
+    selectors = (
+        "input.semi-upload-hidden-input",
+        "input[type='file'][accept*='video']",
+        "input[type='file']",
+    )
     for i in range(timeout_s // 2):
+        await _require_logged_in(page)
         await _dismiss_overlays(page)
-        for sel in (
-            "div[class^='container'] input[type='file']",
-            "input[type='file']",
-        ):
+        if i in (0, 5, 15, 30):
+            await _try_click_upload_entry(page)
+        for sel in selectors:
             loc = page.locator(sel).first
-            if await loc.count():
-                try:
-                    await loc.wait_for(state="attached", timeout=2000)
-                    return loc
-                except Exception:
-                    continue
+            if not await loc.count():
+                continue
+            try:
+                await loc.wait_for(state="attached", timeout=2000)
+                return loc
+            except Exception:
+                continue
+        if i and i % 15 == 0:
+            print(f"  等待上传控件… ({i * 2}s) url={page.url}", flush=True)
         await asyncio.sleep(2)
-    raise DouyinPublishError(f"上传页未就绪（{page.url}）")
+
+    shot = (root or ROOT) / "logs" / "douyin_upload_page_fail.png"
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        await page.screenshot(path=str(shot), full_page=True, timeout=60_000)
+        print(f"  截图: {shot}", flush=True)
+    except Exception:
+        pass
+    raise DouyinPublishError(
+        f"上传页未就绪（{page.url}）。若页面是登录页，请先运行: ./douyin-login.sh"
+    )
 
 
 async def _wait_publish_form(page, timeout_s: int = 180) -> None:
     for i in range(timeout_s):
-        url = page.url
-        if "post/video" in url or "content/publish" in url:
-            return
         markers = (
             page.get_by_text("作品描述", exact=True),
             page.get_by_text("重新上传", exact=False),
             page.get_by_text("填写作品标题", exact=False),
             page.locator(".zone-container[contenteditable='true']").first,
+            page.locator("div[class*='editor-comp-publish'][contenteditable='true']").first,
         )
         for marker in markers:
             if not await marker.count():
@@ -156,7 +207,7 @@ async def _fill_form(page, title: str, desc: str, tags: list[str]) -> None:
     ).first
     if not await editor.count():
         editor = page.locator("[contenteditable='true']").first
-    await editor.wait_for(state="visible", timeout=30_000)
+    await editor.wait_for(state="visible", timeout=120_000)
     await editor.click()
     await page.keyboard.press("Meta+A")
     await page.keyboard.press("Backspace")
@@ -373,7 +424,8 @@ async def publish_video(
         try:
             print("  打开上传页…", flush=True)
             await _goto(page, "https://creator.douyin.com/creator-micro/content/upload")
-            upload_input = await _wait_file_input(page)
+            await _require_logged_in(page)
+            upload_input = await _wait_file_input(page, root=root)
             await upload_input.set_input_files(str(video_path))
             print("  已选择视频文件", flush=True)
 
@@ -388,7 +440,7 @@ async def publish_video(
 
             ok = await _click_publish(page, assist=assist)
             if not ok:
-                shot = (root or Path(__file__).resolve().parents[1]) / "logs" / "douyin_publish_fail.png"
+                shot = (root or ROOT) / "logs" / "douyin_publish_fail.png"
                 shot.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     await page.screenshot(path=str(shot), full_page=True, timeout=60_000)
@@ -397,7 +449,7 @@ async def publish_video(
                     pass
                 raise DouyinPublishError(
                     "发布未完成。"
-                    + ("请查看浏览器手动点击发布。" if assist else "可试: python3 publish-douyin.py --assist")
+                    + ("请查看浏览器手动点击发布。" if assist else "可试: ./publish-douyin.sh --assist")
                 )
 
             await context.storage_state(path=str(cookie))

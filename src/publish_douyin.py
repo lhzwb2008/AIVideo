@@ -11,12 +11,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT))
-
-from lib.douyin_caption import build_sau_fields  # noqa: E402
-from lib.douyin_publisher import DouyinPublishError, publish_video, resolve_playwright_python  # noqa: E402
-from lib.sau_client import SauError, check_douyin_session, douyin_account  # noqa: E402
+from douyin_caption import build_sau_fields
+from douyin_publisher import DouyinPublishError, publish_video, resolve_playwright_python
+from paths import ROOT
+from sau_client import SauError, check_douyin_session, douyin_account
 
 
 def load_env() -> None:
@@ -52,6 +50,25 @@ def resolve_video(path: str | None) -> Path:
     return candidates[0]
 
 
+def resolve_script(video_path: Path, script_arg: str | None) -> Path | None:
+    if script_arg:
+        path = Path(script_arg)
+        if not path.is_absolute():
+            path = ROOT / path
+        return path if path.is_file() else None
+
+    last_video = ROOT / "logs" / "last_video.txt"
+    last_script = ROOT / "logs" / "last_script.json"
+    if last_video.is_file() and last_script.is_file():
+        raw = last_video.read_text(encoding="utf-8").strip()
+        last = Path(raw)
+        if not last.is_absolute():
+            last = ROOT / last
+        if last.resolve() == video_path.resolve():
+            return last_script
+    return None
+
+
 def main() -> int:
     load_env()
 
@@ -62,7 +79,7 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="发布视频到抖音创作者平台")
     parser.add_argument("video", nargs="?", help="MP4 路径，默认 output 下最新文件")
-    parser.add_argument("--script", default=str(ROOT / "logs" / "last_script.json"))
+    parser.add_argument("--script", help="脚本 JSON，默认仅对 logs/last_video.txt 对应视频使用 last_script.json")
     parser.add_argument("--title", help="覆盖标题")
     parser.add_argument("--desc", help="覆盖简介")
     parser.add_argument("--tags", help="覆盖标签（逗号分隔）")
@@ -79,12 +96,22 @@ def main() -> int:
 
     try:
         video_path = resolve_video(args.video)
-        script = load_script(Path(args.script))
+        script_path = resolve_script(video_path, args.script)
+        script = load_script(script_path)
         fields = build_sau_fields(script)
 
         title = args.title or fields["title"]
         desc = args.desc or fields["desc"]
         tags = args.tags if args.tags is not None else fields["tags"]
+
+        if script is None and not args.title:
+            print(
+                f"警告: 未找到 {video_path.name} 的脚本映射，标题暂用文件名。"
+                " 可用 --script 或 --title 指定。",
+                file=sys.stderr,
+            )
+            if title in ("AI热点", video_path.stem):
+                title = video_path.stem
 
         print(f"账号: {douyin_account()}")
         print(f"视频: {video_path}")

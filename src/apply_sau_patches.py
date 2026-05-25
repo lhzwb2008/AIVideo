@@ -7,7 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from paths import ROOT
 TARGET = ROOT / "vendor" / "social-auto-upload" / "uploader" / "douyin_uploader" / "main.py"
 
 HELPER = '''
@@ -112,7 +112,10 @@ async def _cookie_auth_once(account_file):
             context = await browser.new_context(storage_state=account_file, **_build_context_kwargs())
             context = await set_init_script(context)
             page = await context.new_page()
-            await _douyin_goto(page, "https://creator.douyin.com/creator-micro/home")
+            await _douyin_goto(page, "https://creator.douyin.com/creator-micro/content/upload")
+            url = page.url.lower()
+            if "passport" in url or "/login" in url:
+                return False
             if not page.url.startswith("https://creator.douyin.com/creator-micro/"):
                 return False
             for text in ("扫码登录", "手机号登录"):
@@ -124,7 +127,17 @@ async def _cookie_auth_once(account_file):
                         return False
                 except Exception:
                     continue
-            return True
+            selectors = (
+                "input.semi-upload-hidden-input",
+                "input[type='file'][accept*='video']",
+                "input[type='file']",
+            )
+            for _ in range(20):
+                for sel in selectors:
+                    if await page.locator(sel).first.count():
+                        return True
+                await asyncio.sleep(1)
+            return False
         except Exception:
             return False
         finally:

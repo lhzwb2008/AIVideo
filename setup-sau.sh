@@ -68,7 +68,7 @@ if [[ ! -f conf.py ]]; then
   cp conf.example.py conf.py
 fi
 
-python3 "$ROOT/lib/apply_sau_patches.py"
+python3 "$ROOT/src/apply_sau_patches.py"
 
 echo "=== 安装 Chromium（patchright）==="
 if [[ "$(uname -s)" == "Linux" || "$(uname -s)" == "Darwin" ]]; then
@@ -85,4 +85,4 @@ echo "  sau=$SAU_HOME/.venv/bin/sau"
 echo ""
 echo "下一步（首次需扫码登录抖音创作者平台）："
 echo "  ./douyin-login.sh"
-echo "  python3 publish-douyin.py --dry-run"
+echo "  ./publish-douyin.sh --dry-run"
