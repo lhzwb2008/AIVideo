@@ -26,15 +26,13 @@ from tts_client import synthesize as tts_synthesize
 
 CANVAS_W = 1080
 CANVAS_H = 1920
-IMAGE_AREA_H = 1500          # top 78%
-BOTTOM_AREA_H = CANVAS_H - IMAGE_AREA_H  # 420
-BG_COLOR = (251, 246, 228)   # 暖米色，匹配方格纸
+IMAGE_AREA_H = 1500            # 图片占满顶部 78%
+BG_COLOR = (251, 246, 228)     # 暖米色，匹配方格纸
 TEXT_COLOR = (40, 40, 40)
-DOT_FILL = (34, 34, 34)
-DOT_STROKE = (160, 160, 160)
-LINE_COLOR = (210, 210, 210)
-SUBTITLE_BG = (0, 0, 0, 140)
-SUBTITLE_FG = (255, 255, 255)
+SUBTITLE_Y = 1640              # 字幕在图片下方留白区
+
+COVER_DURATION_S = 2.6
+TTS_SAMPLE_RATE = 24000        # 与 DASHSCOPE_TTS_SAMPLE_RATE 保持一致
 
 
 def font_path() -> str:
@@ -49,17 +47,25 @@ def load_font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(font_path(), size=size)
 
 
+def _fit_font_size(text: str, max_width: int, base_size: int, min_size: int = 18) -> int:
+    """二分缩字体让文本宽度不超过 max_width。"""
+    size = base_size
+    while size > min_size:
+        font = load_font(size)
+        if font.getbbox(text)[2] <= max_width:
+            return size
+        size -= 2
+    return min_size
+
+
 def render_base_canvas(
     image_path: Path,
     *,
-    chapter_title: str,
-    page_index: int,
-    total_pages: int,
     out_path: Path,
+    **_unused,
 ) -> Path:
-    """渲染单页静态底图 (1080x1920)：图 + 进度条（不含字幕）。"""
+    """单页静态底图 (1080x1920)：纯图 + 米色留白（字幕由 ffmpeg 叠加）。"""
     canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), BG_COLOR)
-
     if image_path.is_file():
         img = Image.open(image_path).convert("RGB")
         ratio = min(CANVAS_W / img.width, IMAGE_AREA_H / img.height)
@@ -69,38 +75,190 @@ def render_base_canvas(
         x = (CANVAS_W - new_w) // 2
         y = (IMAGE_AREA_H - new_h) // 2
         canvas.paste(img, (x, y))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path, "PNG")
+    return out_path
 
-    draw = ImageDraw.Draw(canvas)
 
-    dot_r = 14
-    spacing = 80
-    total = max(1, total_pages)
-    cy = IMAGE_AREA_H + 320  # y=1820
-    total_w = (total - 1) * spacing
-    cx0 = (CANVAS_W - total_w) // 2
-
-    for i in range(total - 1):
-        x1 = cx0 + i * spacing + dot_r + 2
-        x2 = cx0 + (i + 1) * spacing - dot_r - 2
-        draw.line([(x1, cy), (x2, cy)], fill=LINE_COLOR, width=2)
-
-    for i in range(total):
-        cx = cx0 + i * spacing
-        bbox = (cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r)
-        if i + 1 <= page_index:
-            draw.ellipse(bbox, fill=DOT_FILL)
+def _wrap_chinese(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
+    """按字符宽度逐字换行，避免溢出。"""
+    lines: list[str] = []
+    cur = ""
+    for ch in text:
+        candidate = cur + ch
+        if font.getbbox(candidate)[2] <= max_w:
+            cur = candidate
         else:
-            draw.ellipse(bbox, outline=DOT_STROKE, width=2)
+            if cur:
+                lines.append(cur)
+            cur = ch
+    if cur:
+        lines.append(cur)
+    return lines
 
-    if chapter_title:
-        font = load_font(28)
-        bbox = font.getbbox(chapter_title)
-        tw = bbox[2] - bbox[0]
-        cx = cx0 + (page_index - 1) * spacing
-        draw.text((cx - tw // 2, cy + 24), chapter_title, font=font, fill=TEXT_COLOR)
+
+def render_full_cover(image_path: Path, *, out_path: Path) -> Path:
+    """AI 生成的封面图直接铺满 1080x1920，按比例缩放居中。"""
+    canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), BG_COLOR)
+    img = Image.open(image_path).convert("RGB")
+    ratio = min(CANVAS_W / img.width, CANVAS_H / img.height)
+    new_w = int(img.width * ratio)
+    new_h = int(img.height * ratio)
+    img = img.resize((new_w, new_h), Image.LANCZOS)
+    x = (CANVAS_W - new_w) // 2
+    y = (CANVAS_H - new_h) // 2
+    canvas.paste(img, (x, y))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path, "PNG")
+    return out_path
+
+
+def _draw_grid(draw: ImageDraw.ImageDraw) -> None:
+    grid = (232, 220, 188)
+    for x in range(0, CANVAS_W, 60):
+        draw.line([(x, 0), (x, CANVAS_H)], fill=grid, width=1)
+    for y in range(0, CANVAS_H, 60):
+        draw.line([(0, y), (CANVAS_W, y)], fill=grid, width=1)
+
+
+def _draw_corner_doodles(draw: ImageDraw.ImageDraw) -> None:
+    """四角随手画几笔，避免空白；纯黑钢笔线条。"""
+    ink = (40, 40, 40)
+    draw.line([(70, 110), (160, 110)], fill=ink, width=6)
+    draw.line([(70, 110), (70, 200)], fill=ink, width=6)
+    draw.line([(CANVAS_W - 160, 110), (CANVAS_W - 70, 110)], fill=ink, width=6)
+    draw.line([(CANVAS_W - 70, 110), (CANVAS_W - 70, 200)], fill=ink, width=6)
+    draw.line([(70, CANVAS_H - 200), (70, CANVAS_H - 110)], fill=ink, width=6)
+    draw.line([(70, CANVAS_H - 110), (160, CANVAS_H - 110)], fill=ink, width=6)
+    draw.line([(CANVAS_W - 70, CANVAS_H - 200), (CANVAS_W - 70, CANVAS_H - 110)], fill=ink, width=6)
+    draw.line([(CANVAS_W - 160, CANVAS_H - 110), (CANVAS_W - 70, CANVAS_H - 110)], fill=ink, width=6)
+    draw.ellipse([(CANVAS_W - 220, 60), (CANVAS_W - 170, 110)], outline=ink, width=5)
+    draw.line([(CANVAS_W - 195, 110), (CANVAS_W - 195, 150)], fill=ink, width=5)
+    draw.polygon(
+        [(CANVAS_W - 215, 145), (CANVAS_W - 175, 145), (CANVAS_W - 195, 175)],
+        fill=ink,
+    )
+
+
+def render_title_cover(
+    *,
+    title: str,
+    subtitle: str,
+    out_path: Path,
+    hero_image: Path | None = None,
+    **_unused,
+) -> Path:
+    """开场封面 (1080x1920)：上方手绘示意图 + 下方黄色标题块 + 副标，避免大片空白。"""
+    canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), BG_COLOR)
+    draw = ImageDraw.Draw(canvas)
+    _draw_grid(draw)
+
+    hero_area_h = 1180
+    hero_top = 120
+    if hero_image and hero_image.is_file():
+        img = Image.open(hero_image).convert("RGB")
+        max_w = CANVAS_W - 160
+        ratio = min(max_w / img.width, hero_area_h / img.height)
+        new_w = int(img.width * ratio)
+        new_h = int(img.height * ratio)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        x = (CANVAS_W - new_w) // 2
+        y = hero_top + (hero_area_h - new_h) // 2
+        canvas.paste(img, (x, y))
+        draw.rectangle(
+            [(x - 6, y - 6), (x + new_w + 6, y + new_h + 6)],
+            outline=(40, 40, 40),
+            width=4,
+        )
+    else:
+        _draw_corner_doodles(draw)
+
+    text_max_w = CANVAS_W - 220
+    title_size = _fit_font_size(title, text_max_w, base_size=140, min_size=72)
+    title_font = load_font(title_size)
+    title_lines = _wrap_chinese(title, title_font, text_max_w)
+    line_h = int(title_size * 1.18)
+    total_title_h = line_h * len(title_lines)
+
+    sub_lines: list[str] = []
+    sub_font = None
+    sub_line_h = 0
+    if subtitle:
+        sub_size = _fit_font_size(subtitle, text_max_w, base_size=56, min_size=36)
+        sub_font = load_font(sub_size)
+        sub_lines = _wrap_chinese(subtitle, sub_font, text_max_w)
+        sub_line_h = int(sub_size * 1.3)
+
+    pad_top = 56
+    pad_bottom = 56
+    gap_between = 36
+    block_h = total_title_h + (gap_between + sub_line_h * len(sub_lines) if sub_lines else 0)
+    box_h = block_h + pad_top + pad_bottom
+    box_y2 = CANVAS_H - 110
+    box_y1 = box_y2 - box_h
+    box_x1, box_x2 = 60, CANVAS_W - 60
+
+    shadow_off = 14
+    draw.rounded_rectangle(
+        [(box_x1 + shadow_off, box_y1 + shadow_off), (box_x2 + shadow_off, box_y2 + shadow_off)],
+        radius=44,
+        fill=(40, 40, 40),
+    )
+    draw.rounded_rectangle(
+        [(box_x1, box_y1), (box_x2, box_y2)],
+        radius=44,
+        fill=(254, 224, 71),
+        outline=(40, 40, 40),
+        width=6,
+    )
+
+    cur_y = box_y1 + pad_top
+    for line in title_lines:
+        tw = title_font.getbbox(line)[2] - title_font.getbbox(line)[0]
+        draw.text(((CANVAS_W - tw) / 2, cur_y), line, font=title_font, fill=(40, 40, 40))
+        cur_y += line_h
+
+    if sub_lines and sub_font:
+        cur_y += gap_between - line_h + int(line_h * 0.3)
+        underline_y = cur_y - 14
+        draw.line(
+            [(box_x1 + 70, underline_y), (box_x2 - 70, underline_y)],
+            fill=(196, 80, 40),
+            width=5,
+        )
+        for line in sub_lines:
+            sw = sub_font.getbbox(line)[2] - sub_font.getbbox(line)[0]
+            draw.text(((CANVAS_W - sw) / 2, cur_y), line, font=sub_font, fill=(70, 50, 30))
+            cur_y += sub_line_h
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_path, "PNG")
+    return out_path
+
+
+def compose_cover_clip(
+    *,
+    cover_image: Path,
+    duration: float,
+    out_path: Path,
+) -> Path:
+    """把封面图变成 N 秒静音视频；采样率与 TTS 段一致，concat 不掉链子。"""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", str(cover_image),
+        "-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate={TTS_SAMPLE_RATE}",
+        "-t", f"{duration:.3f}",
+        "-r", "30",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
+        "-shortest",
+        str(out_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"封面 clip 合成失败:\n{proc.stderr[-1500:]}")
     return out_path
 
 
@@ -216,7 +374,7 @@ def compose_clip(
                 textfile=tf,
                 font=font,
                 fontsize=54,
-                y=1620,
+                y=SUBTITLE_Y,
                 start=start,
                 end=end,
             )
@@ -229,10 +387,11 @@ def compose_clip(
         "-loop", "1", "-i", str(base_image),
         "-i", str(audio_path),
         "-vf", filter_chain,
+        "-af", "pan=stereo|c0=c0|c1=c0",
         "-r", "30",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20",
         "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k",
+        "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
         "-shortest",
         "-t", f"{duration:.3f}",
         str(out_path),
@@ -250,25 +409,19 @@ def concat_clips(clips: list[Path], out_path: Path, work_dir: Path) -> Path:
         "\n".join(f"file '{c.resolve()}'" for c in clips) + "\n",
         encoding="utf-8",
     )
+    # 直接 reencode，避免不同片段编码参数差异导致的播放卡顿/音频乱码
     cmd = [
         "ffmpeg", "-y", "-f", "concat", "-safe", "0",
         "-i", str(list_file),
-        "-c", "copy",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
+        "-movflags", "+faststart",
         str(out_path),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        # 拷贝流可能失败（不同时长基准），回退重新编码
-        cmd = [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-            "-i", str(list_file),
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-            "-c:a", "aac", "-b:a", "128k",
-            str(out_path),
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg concat 失败:\n{proc.stderr[-1500:]}")
+        raise RuntimeError(f"ffmpeg concat 失败:\n{proc.stderr[-1500:]}")
     return out_path
 
 
@@ -290,6 +443,40 @@ def compose_video(
 
     total = len(slides)
     clips: list[Path] = []
+
+    title_text = str(script.get("title") or "").strip()
+    cover_slide = slides[0] if slides else {}
+    subtitle_text = str(cover_slide.get("subtitle") or "").strip()
+    if title_text:
+        print(f"[cover] 准备封面：{title_text}", file=sys.stderr)
+        ai_cover_rel = script.get("cover_image")
+        if ai_cover_rel:
+            ai_cover_path = Path(ai_cover_rel) if Path(ai_cover_rel).is_absolute() else ROOT / ai_cover_rel
+        else:
+            ai_cover_path = ROOT / "logs" / "images" / script_file.stem / "cover.png"
+
+        cover_png = work_dir / "cover.png"
+        if ai_cover_path.is_file():
+            # AI 生成的封面：铺满 1080x1920 画布
+            render_full_cover(ai_cover_path, out_path=cover_png)
+        else:
+            # 兜底：用 slide_01 + PIL 叠色块
+            print("  ⚠️  cover.png 缺失，回退到 PIL 拼接封面", file=sys.stderr)
+            hero_rel = cover_slide.get("image_path")
+            if hero_rel:
+                hero_path = Path(hero_rel) if Path(hero_rel).is_absolute() else ROOT / hero_rel
+            else:
+                hero_path = ROOT / "logs" / "images" / script_file.stem / "slide_01.png"
+            render_title_cover(
+                title=title_text,
+                subtitle=subtitle_text,
+                out_path=cover_png,
+                hero_image=hero_path if hero_path.is_file() else None,
+            )
+        cover_mp4 = work_dir / "clip_00_cover.mp4"
+        compose_cover_clip(cover_image=cover_png, duration=COVER_DURATION_S, out_path=cover_mp4)
+        clips.append(cover_mp4)
+
     for i, slide in enumerate(slides, start=1):
         print(f"[{i}/{total}] 合成单段：{slide.get('chapter_title') or slide.get('headline') or ''}", file=sys.stderr)
 
@@ -304,13 +491,7 @@ def compose_video(
             Image.new("RGB", (CANVAS_W, IMAGE_AREA_H), BG_COLOR).save(image_path)
 
         base_png = work_dir / f"base_{i:02d}.png"
-        render_base_canvas(
-            image_path,
-            chapter_title=str(slide.get("chapter_title") or ""),
-            page_index=i,
-            total_pages=total,
-            out_path=base_png,
-        )
+        render_base_canvas(image_path, out_path=base_png)
 
         narration = str(slide.get("narration") or "")
         audio_path = work_dir / f"audio_{i:02d}.mp3"

@@ -139,6 +139,42 @@ def build_prompt(
     return " ".join(p for p in parts if p)
 
 
+def build_cover_prompt(
+    *,
+    title: str,
+    subtitle: str = "",
+    keyword: str = "",
+    doodle_hint: str = "",
+) -> str:
+    """开场封面海报：方格纸 + 手写大标题 + 简单装饰；标题字必须照搬。"""
+    parts: list[str] = [
+        "Hand-drawn whiteboard sketch on light beige graph paper, vertical portrait 9:16 aspect ratio.",
+        "Black ballpoint pen line drawing, casual notebook illustration style, with subtle yellow and light purple highlighter accents.",
+        "Composition: a bold handwritten CHINESE title fills the middle-upper portion of the page as the visual focal point.",
+        f'The big handwritten Chinese title text must read EXACTLY: "{title.strip()}". '
+        "Write it large in two lines if needed, with a hand-drawn yellow highlighter swipe underneath the most important keyword.",
+    ]
+    if subtitle.strip():
+        parts.append(
+            f'Below the title, a smaller handwritten Chinese subtitle reads EXACTLY: "{subtitle.strip()}". '
+            "Subtitle is roughly 40% the size of the title, in plain pen, no highlight."
+        )
+    parts.append(
+        "Around the title, sparse minimal hand-drawn doodles that hint at the topic — small icons, arrows, "
+        "question marks, simple sketches. Plenty of empty graph paper space to breathe."
+    )
+    if doodle_hint.strip():
+        parts.append(f"Doodle hint: {doodle_hint.strip()}.")
+    elif keyword.strip():
+        parts.append(f"Doodles should loosely reference the topic keyword: {keyword.strip()}.")
+    parts.append(
+        "Do NOT add any other Chinese, English, numbers, or random text besides the exact title and subtitle above. "
+        "Spelling must match exactly character by character."
+    )
+    parts.append("No frames, no borders, no watermarks, no signatures, no logos, no photographic elements.")
+    return " ".join(p for p in parts if p)
+
+
 def generate_image(
     prompt: str,
     *,

@@ -42,6 +42,13 @@ def sample_rate() -> int:
     return int(_env("DASHSCOPE_TTS_SAMPLE_RATE", "24000"))
 
 
+def default_rate() -> float:
+    try:
+        return float(_env("DASHSCOPE_TTS_RATE", "1.2"))
+    except ValueError:
+        return 1.2
+
+
 def synth_endpoint() -> str:
     return f"{base_url()}/api/v1/services/audio/tts/SpeechSynthesizer"
 
@@ -76,6 +83,7 @@ def synthesize(
     timeout: float = 120,
 ) -> Path:
     """合成一段音频并下载到 out_path。返回 out_path。"""
+    effective_rate = rate if rate is not None else default_rate()
     body: dict[str, Any] = {
         "model": model_id or model(),
         "input": {
@@ -83,10 +91,9 @@ def synthesize(
             "voice": voice_id or voice(),
             "format": audio_format or fmt(),
             "sample_rate": sr or sample_rate(),
+            "rate": float(effective_rate),
         },
     }
-    if rate is not None:
-        body["input"]["rate"] = float(rate)
 
     data = _http_post(synth_endpoint(), body, timeout=timeout)
     audio = ((data.get("output") or {}).get("audio") or {})
