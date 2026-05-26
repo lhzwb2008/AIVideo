@@ -89,15 +89,25 @@ src/
 
 ## 每日定时（macOS launchd）
 
-每天早 10:00 自动跑一遍「搜近 24h 中英文热点 → 制作 2 条 → 发布 → 归档」：
+每天定时跑一遍「搜近 24h 中英文热点 → 制作 2 条 → 发布 → 归档」：
 
 ```bash
-cp launchd/com.aivideo.daily.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.aivideo.daily.plist
+./restart.sh            # 安装/重启守护（改完代码也是这条）
+./restart.sh --now      # 重启并立刻试跑一次
+./restart.sh --status   # 看当前调度
+./restart.sh --stop     # 卸载守护
 
-launchctl start com.aivideo.daily    # 立刻试跑一次
-tail -f logs/daily_run.log           # 看进度
+tail -f logs/daily_run.log
 ```
+
+`.env` 配置（缺省即取默认值）：
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `DAILY_RUN_HOUR` | `10` | 每天几点跑（0-23） |
+| `DAILY_RUN_MINUTE` | `0` | 几分 |
+| `DAILY_RUN_COUNT` | `2` | 每天生成几条视频 |
+| `DAILY_RUN_DAYS` | `1` | 搜索时间窗（天） |
 
 发布成功的视频会被移到 `output/published/YYYYMMDD/`，第二天 `output/` 又是干净的等待新一批。
 
