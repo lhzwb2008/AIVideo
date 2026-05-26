@@ -167,7 +167,7 @@ def run_with_stream(
     agent_id: str,
     run_id: str,
     *,
-    timeout_ms: int = 600_000,
+    timeout_ms: int = int(os.environ.get("CURSOR_AGENT_TIMEOUT_MS", "1500000")),
     poll_interval_ms: int = 4000,
     on_assistant: Callable[[str], None] | None = None,
     on_tool_call: Callable[[dict], None] | None = None,

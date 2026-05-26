@@ -13,9 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from paths import ROOT
-from research import load_env, run_research
+from research import load_env, run_article_research
 
-DEFAULT_TOPIC = "近1个月AI新闻"
 PROGRESS_FILE = ROOT / "logs" / "batch_progress.json"
 BATCH_LOG = ROOT / "logs" / "batch_run.log"
 
@@ -33,8 +32,7 @@ def load_progress() -> dict:
         return json.loads(PROGRESS_FILE.read_text(encoding="utf-8"))
     return {
         "target": 10,
-        "days": 30,
-        "topic": DEFAULT_TOPIC,
+        "days": 7,
         "completed": [],
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -46,13 +44,13 @@ def save_progress(data: dict) -> None:
     PROGRESS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def exclude_keywords(progress: dict) -> list[str]:
-    keys: list[str] = []
+def exclude_urls(progress: dict) -> list[str]:
+    urls: list[str] = []
     for item in progress.get("completed") or []:
-        kw = str(item.get("keyword") or "").strip()
-        if kw:
-            keys.append(kw)
-    return keys
+        u = str(item.get("url") or "").strip()
+        if u:
+            urls.append(u)
+    return urls
 
 
 def retry(step: str, fn, *, max_attempts: int, pause: int):
@@ -99,7 +97,6 @@ def run_compose(script_path: Path) -> Path:
 def process_one(
     index: int,
     *,
-    topic: str,
     days: int,
     batch_total: int,
     exclude: list[str],
@@ -110,7 +107,7 @@ def process_one(
     batch_dir.mkdir(parents=True, exist_ok=True)
     script_path = batch_dir / f"{index:02d}_script.json"
 
-    log(f"━━━ [{index}/{batch_total}] 调研 ━━━")
+    log(f"━━━ [{index}/{batch_total}] 调研（找文章+深读+改编）━━━")
     agent_id: str | None = None
     if (ROOT / "logs" / "cursor_agent.json").is_file():
         try:
@@ -120,19 +117,17 @@ def process_one(
 
     def do_research() -> dict:
         nonlocal agent_id
-        script, agent_id = run_research(
-            topic,
+        script, agent_id = run_article_research(
             output=script_path,
-            agent_id=agent_id,
             days=days,
-            exclude_keywords=exclude or None,
-            batch_index=index,
-            batch_total=batch_total,
+            exclude_urls=exclude or None,
+            agent_id=agent_id,
+            auto_pick=True,
         )
         return script
 
     script = retry("调研", do_research, max_attempts=max_retries, pause=retry_pause)
-    log(f"  ✓ 脚本: {script.get('title')} (keyword={script.get('keyword')})")
+    log(f"  ✓ 脚本: {script.get('title')}")
 
     if os.environ.get("AIHUBMIX_API_KEY", "").strip():
         log(f"━━━ [{index}/{batch_total}] API 生图 ━━━")
@@ -164,9 +159,16 @@ def process_one(
     )
     log(f"  ✓ 视频: {rel_path(video)}")
 
+    article_path = ROOT / "logs" / "last_article.json"
+    article_url = ""
+    if article_path.is_file():
+        try:
+            article_url = json.loads(article_path.read_text(encoding="utf-8")).get("url") or ""
+        except json.JSONDecodeError:
+            pass
     return {
         "index": index,
-        "keyword": script.get("keyword"),
+        "url": article_url,
         "title": script.get("title"),
         "script": rel_path(script_path),
         "video": rel_path(video),
@@ -178,8 +180,7 @@ def main() -> int:
     load_env()
     parser = argparse.ArgumentParser(description="批量制作并发布 AI 资讯短视频")
     parser.add_argument("--count", type=int, default=int(os.environ.get("BATCH_VIDEO_COUNT", "10")))
-    parser.add_argument("--days", type=int, default=int(os.environ.get("BATCH_SEARCH_DAYS", "30")))
-    parser.add_argument("--topic", default=os.environ.get("BATCH_TOPIC", DEFAULT_TOPIC))
+    parser.add_argument("--days", type=int, default=int(os.environ.get("BATCH_SEARCH_DAYS", "7")))
     parser.add_argument("--max-retries", type=int, default=int(os.environ.get("BATCH_MAX_RETRIES", "5")))
     parser.add_argument("--retry-pause", type=int, default=int(os.environ.get("BATCH_RETRY_PAUSE", "30")))
     parser.add_argument(
@@ -198,13 +199,12 @@ def main() -> int:
     progress = load_progress()
     progress["target"] = args.count
     progress["days"] = args.days
-    progress["topic"] = args.topic
     save_progress(progress)
 
     completed_indices = {int(x["index"]) for x in progress.get("completed") or [] if x.get("index")}
 
     log("=== AIVideo 批量任务 ===")
-    log(f"目标: {args.count} 条 | 时间窗: 近 {args.days} 天 | 话题: {args.topic}")
+    log(f"目标: {args.count} 条 | 时间窗: 近 {args.days} 天")
     log(f"已完成: {len(completed_indices)}/{args.count}")
     log(f"进度文件: {PROGRESS_FILE}")
     log("发布: 制作完成后运行 ./publish-all-douyin.sh")
@@ -215,11 +215,10 @@ def main() -> int:
             if index in completed_indices:
                 continue
 
-            exclude = exclude_keywords(progress)
+            exclude = exclude_urls(progress)
             try:
                 item = process_one(
                     index,
-                    topic=args.topic,
                     days=args.days,
                     batch_total=args.count,
                     exclude=exclude,

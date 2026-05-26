@@ -1,6 +1,6 @@
 # AIVideo
 
-**每日一个 AI 热点** → Cursor 调研 → AiHubMix 生图 → 本地 TTS+ffmpeg 合成竖屏视频 →（手动）发布抖音。
+**每日一篇 AI 圈热门英文长文 → 改编为中文短视频**。Cursor Cloud Agent 联网搜索 + 深读，Claude Opus 4.7 评审与改编，AiHubMix 生图，本地 TTS + ffmpeg 合成竖屏视频，（手动）发布抖音。
 
 ```bash
 ./run-aivideo.sh
@@ -9,40 +9,67 @@
 
 ## 内容策略
 
-1. Cursor 联网搜索，**锁定当天 1 个大众向 AI 热点**
-2. 基于 1 篇权威报道提取事实，**口语化口播**（比喻、调侃 OK，不编造数字）
-3. 5 页结构：cover → insight → data → story → outro
-4. 每页输出 `chapter_title` / `concept` / `narration` / `image_prompt` / `on_image_text`
-5. `title` 字面必须含 `keyword`；脚本过结构 + 风格校验，失败自动让 Agent 修正一轮
+1. **找文章**（Exa）：按 AI 圈真实热度（HN/X/媒体/Reddit/newsletter/知乎/微博/即刻/公众号 10w+）拉**中英文各 3 篇**热点长文
+2. **挑最佳**（Claude Opus 4.7 / low thinking）：自动评审 6 篇候选，输出选中理由 + 候选排名（批量模式下逐次挑 1 篇并 exclude 已选）
+3. **深读原文**（Cursor Cloud Agent）：再次打开文章，抽出段落 outline / 所有数字 / 所有引语 / 人物 / 场景 / 真实开头结尾 / 作者立场
+4. **改编脚本**（Claude Opus 4.7 / low thinking）：基于深读细节按文章自身节奏拆 3-10 页中文短视频脚本，**不套模板，不强加 5 页**，末页顺着原文真实结尾
+5. 风格校验：禁用词、客观引述次数、cover 钩子、narration 字数等；失败自动让 Opus 修正
 
 ## 视觉风格
 
 - **白板手绘** 方格纸底，黑色钢笔线 + 黄/紫荧光笔点缀
-- **9:16 竖版**：图片占顶部 78%，底部 22% 留给字幕 + 进度条
-- 中文短语（`on_image_text`）作为手写注释直接画进图里
-- 章节角标 + `01/05` 页码 + 分段进度点
+- **9:16 竖版**：图片占顶部 78%，底部 22% 留给字幕
+- 中文短语（`on_image_text`）作为手写注释画进图里
+- 章节角标 + 页码
 
 ## 流程
 
 | 步骤 | 命令 | 产出 |
 |------|------|------|
-| 一键制作 | `./run-aivideo.sh "话题"` | 调研 + 生图 + 合成 → `output/*.mp4` |
-| 批量制作 | `./run-batch-aivideo.sh` | 多条视频 |
+| 一键制作 | `./run-aivideo.sh` | 找文章 + 深读 + 改编 + 生图 + 合成 → `output/*.mp4` |
+| 批量制作 | `./run-batch-aivideo.sh` | 多条视频，自动排除已用过的 URL |
+| **每日定时** | `./run-daily.sh` | 近 24h 中英文热点 → 制作 2 条 → 发布抖音 → 归档到 `output/published/<日期>/` |
 | 仅生图 | `./run-enrich-images.sh logs/last_script.json` | 写入 `slide.image_path` |
 | 仅合成 | `./run-compose.sh logs/last_script.json` | TTS + ffmpeg → `output/*.mp4` |
 | **发布** | `./publish-all-douyin.sh` | 发布 `output/` 下未发布的 MP4 |
+
+调研中间产物（都在 `logs/`）：
+
+| 文件 | 内容 |
+|------|------|
+| `last_article_candidates.json` | 3 篇候选文章 |
+| `last_article_decision.json` | Opus 选 1 篇的理由与排名 |
+| `last_article.json` | 选定的那篇 metadata |
+| `last_article_details.json` | Cursor 深读出来的段落/数字/引语/场景 |
+| `last_script.json` | 最终脚本（被生图与合成消费） |
+
+跳过重复步骤（调试用）：
+- `AIVIDEO_USE_SELECTION=1` — 跳过找文章 + 深读，复用 `last_article.json` / `last_article_details.json`，只重跑改编与下游
+- `AIVIDEO_MANUAL_PICK=1` — 关掉 Opus 自动选，让你手动挑
+
+## 模型分工
+
+| 步骤 | 服务 | 模型 |
+|------|------|------|
+| 找文章 / 深读 | Cursor Cloud Agent | `CURSOR_MODEL_ID`（默认 `composer-2.5`） |
+| 评审 / 改编 | AiHubMix Chat | `AIHUBMIX_TEXT_MODEL`（默认 `claude-opus-4-7`，`reasoning_effort=low`） |
+| 生图 | AiHubMix Images | `AIHUBMIX_IMAGE_MODEL`（默认 `gpt-image-2`） |
+| TTS | DashScope CosyVoice | `DASHSCOPE_TTS_VOICE` |
 
 ## 关键模块
 
 ```
 src/
-  research.py        # Cursor Agent 调研 + 风格校验
+  research.py        # 唯一管线：找文章 → 评审 → 深读 → 改编（含校验+修正轮）
+  text_client.py     # AiHubMix chat（thinking 预算最低）
   image_client.py    # AiHubMix gpt-image-2 生图（含重试）
   enrich_images.py   # 逐页生图，断点续跑
   tts_client.py      # 百炼 CosyVoice TTS
   voice_clone.py     # 百炼音色克隆（一次性）
-  video_compose.py   # PIL 渲染进度条/章节，ffmpeg 合成 + 字幕
-  batch_aivideo.py   # 批量编排
+  video_compose.py   # PIL 底图 + ffmpeg 合成 + 字幕
+  cursor_client.py   # Cursor Cloud Agents REST + SSE
+  batch_aivideo.py   # 批量编排（按 URL 去重）
+  douyin_*.py / sau_client.py / publish_*.py  # 抖音发布（vendor/social-auto-upload）
 ```
 
 ## 抖音发布（与制作分离）
@@ -60,15 +87,29 @@ src/
 
 记录：`logs/published_videos.json`、`logs/video_manifest.jsonl`。
 
+## 每日定时（macOS launchd）
+
+每天早 10:00 自动跑一遍「搜近 24h 中英文热点 → 制作 2 条 → 发布 → 归档」：
+
+```bash
+cp launchd/com.aivideo.daily.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.aivideo.daily.plist
+
+launchctl start com.aivideo.daily    # 立刻试跑一次
+tail -f logs/daily_run.log           # 看进度
+```
+
+发布成功的视频会被移到 `output/published/YYYYMMDD/`，第二天 `output/` 又是干净的等待新一批。
+
 ## 环境变量
 
-见 `.env.example`：`CURSOR_*`、`AIHUBMIX_*`、`DASHSCOPE_*`、`AIVIDEO_*`、`SAU_*`、`DOUYIN_*`。
+见 `.env.example`：`CURSOR_*`、`AIHUBMIX_*`（含 `AIHUBMIX_TEXT_MODEL`、`AIHUBMIX_REASONING_EFFORT`、`AIHUBMIX_THINKING_BUDGET`）、`DASHSCOPE_*`、`AIVIDEO_*`、`SAU_*`、`DOUYIN_*`。
 
 ## 克隆个人音色（一次性）
 
 把一段你自己的音频/视频（≥15s 清晰人声）放到项目根，然后：
 
 ```bash
-python3 src/voice_clone.py test.mp4
+python3 src/voice_clone.py your-clip.mp4
 # 输出 voice_id，复制到 .env 的 DASHSCOPE_TTS_VOICE
 ```

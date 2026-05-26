@@ -1,48 +1,31 @@
 #!/usr/bin/env bash
-# 完整流程：Cursor 调研 → AiHubMix 生图 → 本地 TTS+ffmpeg 合成 →（手动）抖音发布
+# 完整流程：Cursor Cloud 找文章+深读 → Opus 4.7 评审+改编 → AiHubMix 生图 → 本地 TTS+ffmpeg 合成
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 [[ -f .env ]] && source .env
 
-TOPIC="${1:-${AIVIDEO_TOPIC:-AI热点深度}}"
 SCRIPT="${AIVIDEO_SCRIPT:-$ROOT/logs/last_script.json}"
-MODE="${AIVIDEO_MODE:-topic}"   # topic = 旧的关键词模板派；article = 新的英文长文改编派
+DAYS="${AIVIDEO_DAYS:-7}"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
-echo "=== AIVideo：单话题深度 + 本地合成 ==="
-echo "模式:    ${MODE}"
-echo "频道:    ${AIVIDEO_CHANNEL:-AI 热点解读}"
-if [[ "$MODE" == "article" ]]; then
-  echo "策略:    搜索 AI 圈热点英文长文，按原文叙事改编 3-10 页（无固定模板）"
-else
-  echo "检索方向: ${TOPIC}（Agent 先出 5 候选，你来选 1 条）"
-fi
+echo "=== AIVideo：英文长文改编 → 中文短视频 ==="
+echo "策略:  搜索过去 ${DAYS} 天 AI 圈热度最高 3 篇英文长文 → AI 自动选 → 深读改编 3-10 页"
 echo ""
 
 RESEARCH_EXTRA=()
-if [[ "${AIVIDEO_AUTO_PICK:-}" == "1" ]]; then
+if [[ "${AIVIDEO_USE_SELECTION:-}" == "1" && -f "$ROOT/logs/last_article.json" ]]; then
+  RESEARCH_EXTRA+=(--use-selection)
+  echo "（复用 logs/last_article.json，跳过重新找文章）"
+fi
+# 默认 AI 自动评审挑文章；设 AIVIDEO_MANUAL_PICK=1 切回人工选
+if [[ "${AIVIDEO_MANUAL_PICK:-}" != "1" ]]; then
   RESEARCH_EXTRA+=(--auto-pick)
-  echo "（AIVIDEO_AUTO_PICK=1：候选自动选第 1 条）"
 fi
 
-if [[ "$MODE" == "article" ]]; then
-  if [[ "${AIVIDEO_USE_SELECTION:-}" == "1" && -f "$ROOT/logs/last_article.json" ]]; then
-    RESEARCH_EXTRA+=(--use-selection)
-    echo "（复用 logs/last_article.json，跳过重新找文章）"
-  fi
-  DAYS="${AIVIDEO_DAYS:-7}"
-  python3 "$ROOT/src/research_article.py" -o "$SCRIPT" --days "$DAYS" \
-    --channel "${AIVIDEO_CHANNEL:-AI 深度}" \
-    ${RESEARCH_EXTRA[@]+"${RESEARCH_EXTRA[@]}"}
-else
-  if [[ "${AIVIDEO_USE_SELECTION:-}" == "1" && -f "$ROOT/logs/last_selection.json" ]]; then
-    RESEARCH_EXTRA+=(--use-selection)
-    echo "（使用已保存选题 logs/last_selection.json，跳过重新选题）"
-  fi
-  python3 "$ROOT/src/research.py" "$TOPIC" -o "$SCRIPT" ${RESEARCH_EXTRA[@]+"${RESEARCH_EXTRA[@]}"}
-fi
+python3 "$ROOT/src/research.py" -o "$SCRIPT" --days "$DAYS" \
+  ${RESEARCH_EXTRA[@]+"${RESEARCH_EXTRA[@]}"}
 echo ""
 
 : "${AIHUBMIX_API_KEY:?请在 .env 设置 AIHUBMIX_API_KEY}"

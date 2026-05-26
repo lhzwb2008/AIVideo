@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""本地 Cursor Agent 调研：两阶段（选题 + 内容制作），输出口语化口播脚本 JSON。"""
+"""文章驱动的调研流水线（项目唯一管线）：
+
+1. Exa AI 搜索过去 N 天 AI 圈热门英文长文 → Claude Opus 4.7 (low) 筛 3 篇候选
+2. Claude Opus 4.7 评审挑 1 篇
+3. Exa /contents 取该文全文 → Claude Opus 4.7 抽出段落 outline / 数字 / 引语 / 场景 / 真实结尾
+4. Claude Opus 4.7 基于深读细节改编为 3-10 页中文短视频脚本
+
+输出 schema 与 enrich_images.py / video_compose.py 兼容。
+"""
 
 from __future__ import annotations
 
@@ -8,369 +16,17 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from cursor_client import create_agent, create_run, run_with_stream
+import exa_client
 from paths import ROOT
+from text_client import chat_complete, text_model
 
 
-SELECT_TOPIC_PROMPT = """你是抖音「{channel}」频道的资深选题编辑。请联网搜索最近 **{days} 天内（必须 48 小时内有真实信息源）** 的 AI 圈热点，**一次性给出 5 个候选话题**，由人类编辑挑选最终拍哪一条。
-
-【频道定位（硬约束）】
-- 频道名：{channel}
-- 5 条候选必须全部属于这个垂直，不要今天 AI 资讯明天 AI 做饭。即便用户输入跑题，也要把它拉回这个垂直。
-- 受众：刷短视频的普通用户（不是从业者）。
-
-【选题质量标准（按重要性）】
-1. **快但不瞎蹭**：48 小时内的真实事件，必须能给出 1 篇权威报道 URL（官方博客、Reuters/TheVerge/Bloomberg/Anthropic/OpenAI 官网、知名媒体）；自媒体推文不算。
-2. **强钩子潜力**：能用「冲突 / 悬念 / 利益」三选一在前 3 秒抓住人；纯产品发布、纯参数升级直接 pass。
-3. **5 张图能讲透**：能拆成 5 个具体画面（手绘示意图）。
-4. **共鸣面广**：涉及钱包 / 工作 / 隐私 / 安全 / 学习 / 创作的优先；纯学术/纯企业财报型话题 pass。
-5. **5 条之间必须有差异**：不要 5 条都是「OpenAI 又出了什么」；要在主题/角度/情绪上拉开（资讯爆点 + 概念科普 + 工具避坑 + 行业八卦 + 趋势观察混搭）。
-
-【输出（只输出 JSON 数组，长度恰好 5，不要 markdown，不要解释）】
-[
-  {{
-    "topic": "一句话话题描述（10-25 字，普通人秒懂）",
-    "keyword": "核心搜索词（2-6 个汉字，后面 title 必须含这几个字）",
-    "angle": "钩子角度（一句话，反差/槽点/利益点，写给后面编剧看）",
-    "hook_line": "前 3 秒口播钩子（≤30 字，必须能让人停下手指）",
-    "source": {{ "title": "权威报道标题", "url": "https://...", "site": "媒体或机构名" }},
-    "audience_pain": "谁最想看？戳的是哪个具体痛点？（15-25 字）",
-    "visual_outline": "5 张图大致：画面1→画面2→画面3→画面4→画面5",
-    "why_it_works": "为啥这条能爆？预估完播/转发哪一项更强（20-40 字）"
-  }},
-  ... 4 more
-]
-{exclude_section}{batch_section}
-
-用户输入的检索方向：{topic}（可忽略字面；按时间窗内最适合本垂直的 5 个话题）
-"""
-
-
-CONTENT_PROMPT = """你是「白板手绘 + 段子手」抖音科普编剧。基于下面已选定的话题，输出一个 60-80 秒视频脚本 JSON。
-画面风格固定：**笔记本方格纸 + 黑色钢笔手绘示意图 + 中文手写注释**（类似李永乐老师 / 3Blue1Brown 中文版）。
-每一段你都要在脑子里**先画出图**，画不出来这段就不能写。
-
-【已选定话题】
-- topic: {topic}
-- keyword: {keyword}
-- angle: {angle}
-- hook_line: {hook_line}
-- 参考报道: {source_title} ({source_site}) {source_url}
-
-==================================================
-【第一原则 · 故事必须连贯（最重要，违反直接判错）】
-==================================================
-观众是边刷边听的普通人，**听完整段视频脑子里应该能串成一个完整故事**，而不是 5 个零散段子。所以：
-
-★ **抖音 4 指标目标**（写每页时脑子里要带着这 4 个问题）：
-   - **完播率**（前 3 秒决定生死）：cover 第一句必须是冲突/悬念/利益三选一，禁止铺垫
-   - **收藏**：中间至少 1 页给出"能保存下来用得上"的硬货（清单、对比、量级、可记的金句）
-   - **转发**：至少 1 页给出"想转给朋友"的洞察（可共鸣、可吐槽、有立场）
-   - **评论**：outro 末尾必须留 1 个**具体可讨论**的问题（不是「点赞关注」「你怎么看」这种空话），观众能直接答出来
-
-A. **Cover 必须给出完整事件骨架**（55-90 字 narration 内必须包含 4 要素）：
-   1. 主角是谁（哪家公司/哪个 AI）
-   2. 干了一件啥事（用大白话，一句话讲清楚）
-   3. 反差/后果是什么（钩子）
-   4. 跟观众有啥关系（暗示）
-   ❌ 反例：「你以为在摸鱼，其实在教 AI 顶你的岗。Meta 真就离谱——你每敲一下键，都在交学费。」（除了 Meta 一个词，没说发生了什么具体事件）
-   ✅ 正例：「Meta 让员工装监控软件录电脑操作教 AI 干活，5 天后就裁了 8000 人。你亲手教的 AI，正排队接你的工位——这事可能也轮到你。」
-
-B. **每页 narration 第一句必须承接上一页**。要么续上一页结尾的悬念，要么用「先说...」「然后呢」「问题来了」「最离谱的是」「最后一个问题」这类衔接句开头。**禁止每页都另起炉灶讲一个孤立的点。**
-
-C. **5 页 = 一条故事线**，对应抖音 60-80 秒黄金结构（不是 5 个独立 layout 拼盘）：
-   | 页 | layout  | 时段 | 任务 | bullets 条数 |
-   |----|---------|------|------|--------------|
-   | 1 | cover    | 前 3 秒 + 立论 | 强钩子 + 抛出完整事件 | 0（必须为空） |
-   | 2 | insight  | 转折 1 | 起因：怎么开始的（1 个最反直觉的点） | **2 或 3 条**（硬约束） |
-   | 3 | data     | 转折 2 | 高潮：关键数字/量级反差 | **1 或 2 条**（硬约束） |
-   | 4 | story    | 转折 3 | 反应：时间线/案例/场景 | **2 或 3 条**（硬约束） |
-   | 5 | outro    | 收尾互动 | 落到观众身上 + 具体问题 | 0、1 或 2 条 |
-
-   bullets 是「视频里上屏的要点条」，每条 ≤14 字短句，**数量必须严格遵守上表**，否则判错。
-
-D. **信息密度限制**：每页只允许引入 **1 个新名词** 或 **1 组新数字**。多了就拆，宁可少讲也别堆。
-   - 例：第 3 页讲了 8000 人裁员，就不要在同一页再扔出"7000 人转岗""6000 岗冻结"——后者放第 4 页或砍掉。
-
-E. **段子和吐槽不能悬空**：网感词（「真就离谱」「人麻了」「也是醉了」）必须紧跟在它**解释的那句具体事实**后面，不能单独成段。**全片网感词最多 2 处。**
-
-==================================================
-【文风 · 要有"知识获得感"，不是新闻流水账】
-==================================================
-
-★ **通顺、好懂、像说话** > 一切金句技巧。读出来要顺，不要让观众听完一句还得停下来想 2 秒。
-   - 用人话讲事实，用人话讲清楚就够了；**金句、比喻、对比是调味，不是主菜**
-   - 全片**只需要 1-2 句"能记住的金句"**集中在最关键的地方（通常 cover 或 outro），其他页**老老实实把事讲清楚就好**，不要每段都硬塞比喻、不要每句都想反差
-   - ❌ 反例：「找数学题，从天才手工活，变成了花钱买运气的工业流水线」——这种句子整篇出现 3 次以上，观众会累
-   - ✅ 正例：「就是说，这 353 道题里，AI 只解出 9 道，其他全挂了」——朴素、立刻能懂
-
-★ 每页 narration 必须**揉碎讲透**，让普通人也能听懂：
-   - 给出一个新事实/新名词后，**下一句必须用最朴素的话解释它**（一句白话即可，不需要文学化）
-   - 宁可一页只讲 1 件事但讲深，不要一页堆 3 件事都浮在表面
-
-★ **句子长度**：单句尽量不超过 25 字，能拆就拆成两个短句。长句、套句、定语堆砌一律砍。
-
-★ **主语别省**：观众是耳朵听的，不是眼睛看的，省主语容易听糊。
-   - ❌「答错了编译器立刻报错」（谁答错？编译器谁的？）
-   - ✅「AI 写错了，编译器立刻报错」
-
-★ **Cover 必须用「旧锚点 + 新事实 + 量级反差」三段式开场**，让观众瞬间 get 这事跨过了某个临界点：
-   句式模板（任选其一改写）：
-   ① 「你还记得 X 吗？以前 Y，现在 Z」
-   ② 「以前 X 是 Y 级别的事，现在 AI 让它变成了 Z」
-   ③ 「过去 N 年人类做 X 只能做到 Y，AI 一个 Z 就 W」
-   ✅ 标杆例：「你知道软件漏洞吧？就千禧年那种让全世界连夜打补丁的玩意儿——以前找一个能登头条，现在 AI 一个月挖出一万个。」
-   ✅ 标杆例：「你被 AI 翻译过英文邮件吧？以前同声传译是金领工种，现在 AI 一个 token 0.0001 美分。翻译这行的天花板，被 AI 拆了。」
-   ❌ 反例（流水账）：「Anthropic 拿 AI 扫关键软件，一个月挖出上万个漏洞。」（没有锚点、没有反差、没有时代感）
-
-★ **像跟朋友讲，不是念稿**：
-   - 砍掉无信息形容词：「雪片般飞来」「一口气挖出」「悄悄启动」「联手扫描」——这些都是新闻腔，全部删
-   - 用动词不用名词化：「找洞」不写成「漏洞发现工作」
-   - 一句话不超过 25 字，长了就拆
-
-★ 数字、日期、公司动作必须来自参考报道；从事实里抽出的洞察、对比、比喻可以随便发挥（但不能编造新事实）。
-
-★ 资讯类：全片最多 1 次「据 XX」类客观引述，且不能出现在 cover。
-
-★ 禁用词（出现即判错）：
-   - 新闻腔：拟、交表、口径、交叉验证、被写作、隐含地、措辞、援引、信源、文章认为、报道指、联手、揪出、悄悄启动、雪片般、一口气
-   - 空话：值得关注、引发热议、再次刷新、令人瞩目
-   - 烂大街网感词全片最多 1 处：「人麻了」「也是醉了」「真就」「这就离谱」
-
-==================================================
-【画面思维 · 五种构图选一】
-==================================================
-- 对比图：A vs B（左右分栏，箭头互指）
-- 流程图：步骤 1 → 2 → 3
-- 类比图：抽象概念画成具体物（神经网络 = 水管/餐厅传菜/快递分拣）
-- 数据图：柱状/曲线/百分比 + 卡通小人/箭头标注
-- 时间轴：横向箭头 + 节点
-
-`on_image_text` = 这张图上要写的中文短语数组（5-10 条，每条 ≤ 10 字）。生图模型会**把这些字真的画到图里**作为手写注释：
-- 必须是图上能"看到"的标签，不要复述 narration
-- 至少 1-2 条带吐槽/反差感（如「翻车现场」「人麻了」「AI:???」「事实:并没有」）
-- 中文为主，可少量数字 / 「？」「→」「≠」
-
-==================================================
-【硬约束】
-==================================================
-- `keyword`：与已选定的 keyword 一字不差
-- `title`：**永远选最简单口语的那版**——能 6-8 字别 12 字，能口语别书面，能动词别名词化。
-  - ❌ 反例：「AI解题353题只对9题」（数字堆叠 + 「题」字出现两次）
-  - ✅ 正例：「AI解56年数学难题」（简单、有戏剧感、一眼读懂）
-  - 字数 6-14；字面必须包含 keyword
-- cover 的 `headline` = `title`（一字不差）
-- cover 的 `subtitle`：8-18 字悬念或利益点；禁堆媒体名
-- `chapter_title`：3-5 字章节短名，让用户一眼知道这段讲啥（例：「事件」「起因」「炸了」「反抗」「关你啥事」「打工人」「翻车」）
-
-==================================================
-【Outro（第 5 页）专属规则 · 这页定转发评论数据】
-==================================================
-Outro **不是总结**，是把 Cover 抛出的事**落到观众自己的日常上**，制造戏剧反差。结构固定：
-
-A. **第一句**：用「同一个 X / 同一套 X」把"事件主角"和"观众日常"放一起对比
-   - 例：「数学家用 AI 能啃 56 年的硬骨头……你刷 AI 写作业呢？」
-   - 例：「研究员让 AI 一个月挖 1 万个洞……你手机里的 App 呢？」
-   - 例：「Anthropic 把 AI 锁进保险柜……你电脑上的 ChatGPT 呢？」
-
-B. **中间一句**：揭示这个反差对观众**意味着什么具体后果**，必须用观众**日常熟悉的场景**（写作业/淘宝/打游戏/刷短视频/手机银行/外卖……），不要抽象名词。
-
-C. **末尾问题**：必须是**二选一立即能答**的具体问题（「你敢 X 吗？」「你信哪个？」「你选 A 还是 B？」「你会拒绝吗？」），观众脑子里 1 秒能蹦答案。
-   - ❌ 反例：「你怎么用 AI？」「评论区聊聊」「你怎么看」
-   - ❌ 反例：「只给答案不给证明，你抄答案还是等对步骤？」（句子绕，"等对步骤"不知道啥意思）
-   - ✅ 正例：「你敢直接抄它的答案吗？」「你的 Updates 还在拖吗？」「下次让你装监控软件，你会拒吗？」
-
-D. **不要重复 Cover 已经说过的事实**，重点在落点和共鸣。
-
-==================================================
-【每页字段】
-==================================================
-- `chapter_title`（3-5 字）
-- `concept`（≤ 25 字，本页记得住的一句话）
-- `lead_in`（≤ 14 字，本页 narration 第一句的衔接锚点。**cover 可省略；其余 4 页必填**。例：「先说怎么开始的」「然后炸了」「员工没认怂」「最后想想自己」）
-- `headline`（上屏中文标题）
-- `narration`（口播原文：**cover 55-80 字；2-4 页 100-150 字；outro 55-80 字**。**2-5 页 narration 必须以 lead_in 或其同义改写开头**。字数下限是硬约束：少于下限的内容不够厚，必须再揉一层细节进去）
-- `image_prompt`：**英文**，描述这页的手绘构图（"sketch a left-right comparison of X vs Y with arrow ..."），**不用写风格词**（白板/sketch/handwritten 不写，模板会统一加）
-- `on_image_text`：**中文**短语数组，5-10 条
-- 其他按 layout：cover→subtitle；data→stat；insight/data/story→bullets
-
-==================================================
-【输出】
-==================================================
-只输出一个 JSON 对象，不要 markdown，不要解释。
-顶层必须包含：title, keyword, source（与选题相同的 url/title/site）, slides（数组长度恰好 5）。
-
-写完后**自查 6 项**（不通过就重写，不要输出半成品）：
-① **把 5 页 narration 大声读一遍**：有没有任何一句读起来拗口、得停下来想？有就改成大白话。
-② Cover 第一句是不是钩子（冲突/悬念/利益）？
-③ 全片"能记住的金句"总数是不是 **1-2 句**？多于 2 句要砍——每段都金句观众会累。
-④ 5 页 narration 是不是一个连贯故事？衔接突兀就重写。
-⑤ 是否有任何一页堆了 2 个以上新名词/新数字？有就拆。
-⑥ Outro 末尾是不是留了 1 个**具体可答**的问题？
-"""
-
-
-STYLE_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重新输出**完整视频脚本 JSON**（不要 markdown，不要解释）。
-
-校验错误：
-{errors}
-
-【必须包含的顶层字段】title, keyword, source, slides（恰好 5 页）
-【source 必须使用选题阶段已确定的报道，不要改 url】
-{source_hint}
-
-【slides 每页 layout 顺序固定】cover → insight → data → story → outro
-每页须有：layout, chapter_title, concept, headline, narration, image_prompt, on_image_text
-cover 另有 subtitle；data 另有 stat；insight/data/story 有 bullets。
-**第 2-5 页必须有 lead_in（≤14 字衔接锚点），且 narration 第一句要承接 lead_in。**
-Cover 的 narration（35-55 字）必须在内部就讲清「主角 + 干了啥 + 后果 + 跟你的关系」四要素。
-
-只输出一个 JSON 对象。
-"""
-
-
-# === 校验配置 ===
-_BANNED_PHRASES = (
-    "口径", "交叉验证", "被写作", "隐含地", "交表", "措辞", "援引", "信源",
-    "联手", "揪出", "悄悄启动", "雪片般", "一口气挖", "引发热议", "再次刷新",
-    "令人瞩目", "值得关注",
-)
-_FORMAL_ATTRIBUTION = re.compile(r"文章认为|报道指|文章称|文章援引|消息人士")
-_COVER_BAD_START = re.compile(r"^(文章|报道|消息|援引|据.{1,6}报道)")
-_SLIDE_LAYOUTS = ("cover", "insight", "data", "story", "outro")
-_TITLE_MIN_LEN = 6
-_TITLE_MAX_LEN = 16
-_SUBTITLE_MIN_LEN = 6
-_SUBTITLE_MAX_LEN = 22
-_CHAPTER_TITLE_MIN = 2
-_CHAPTER_TITLE_MAX = 6
-_MAX_FORMAL_ATTRIBUTIONS = 1
-
-_NARRATION_LIMITS = {
-    "cover": (55, 90),
-    "insight": (100, 160),
-    "data": (100, 160),
-    "story": (100, 160),
-    "outro": (55, 90),
-}
-
-
-# === Prompt 构建 ===
-def build_select_prompt(
-    topic: str,
-    *,
-    days: int = 2,
-    exclude_keywords: list[str] | None = None,
-    batch_index: int | None = None,
-    batch_total: int | None = None,
-    channel: str = "AI 热点解读",
-) -> str:
-    exclude_section = ""
-    if exclude_keywords:
-        joined = "、".join(exclude_keywords)
-        exclude_section = f"\n【硬性排除】不要选与下面 keyword/事件重复的话题：{joined}"
-    batch_section = ""
-    if batch_index is not None and batch_total is not None:
-        batch_section = f"\n【批次】第 {batch_index}/{batch_total} 条，与已选过的话题完全不同。"
-    return SELECT_TOPIC_PROMPT.format(
-        days=days,
-        topic=topic,
-        exclude_section=exclude_section,
-        batch_section=batch_section,
-        channel=channel,
-    )
-
-
-def build_content_prompt(selected: dict) -> str:
-    src = selected.get("source") or {}
-    return CONTENT_PROMPT.format(
-        topic=selected.get("topic", ""),
-        keyword=selected.get("keyword", ""),
-        angle=selected.get("angle", ""),
-        hook_line=selected.get("hook_line", ""),
-        source_title=src.get("title", ""),
-        source_site=src.get("site", ""),
-        source_url=src.get("url", ""),
-    )
-
-
-# === 校验 ===
-def _slide_text_fields(slide: dict) -> list[str]:
-    parts = [slide.get("headline") or "", slide.get("subtitle") or "", slide.get("narration") or ""]
-    for bullet in slide.get("bullets") or []:
-        if isinstance(bullet, dict):
-            parts.append(bullet.get("title") or "")
-            parts.append(bullet.get("desc") or "")
-    return [str(p) for p in parts if p]
-
-
-def _find_banned_phrases(text: str) -> list[str]:
-    return [p for p in _BANNED_PHRASES if p in text]
-
-
-def _keyword_in_text(keyword: str, text: str) -> bool:
-    kw = keyword.replace(" ", "").lower()
-    normalized = text.replace(" ", "").lower()
-    return kw in normalized
-
-
-def validate_style(data: dict) -> None:
-    errors: list[str] = []
-    keyword = str(data["keyword"]).strip()
-    title = str(data["title"]).strip()
-
-    if not (_TITLE_MIN_LEN <= len(title) <= _TITLE_MAX_LEN):
-        errors.append(f"title 须 {_TITLE_MIN_LEN}-{_TITLE_MAX_LEN} 字，当前 {len(title)}: {title!r}")
-    if keyword and not _keyword_in_text(keyword, title):
-        errors.append(f"title 须含 keyword「{keyword}」")
-    for phrase in _find_banned_phrases(title):
-        errors.append(f"title 含禁用词「{phrase}」")
-
-    formal_count = 0
-    slides = data["slides"]
-    for i, slide in enumerate(slides):
-        page = i + 1
-        for text in _slide_text_fields(slide):
-            for phrase in _find_banned_phrases(text):
-                errors.append(f"第 {page} 页含禁用词「{phrase}」")
-            formal_count += len(_FORMAL_ATTRIBUTION.findall(text))
-        narration = str(slide.get("narration") or "")
-        layout = slide.get("layout") or ""
-        limit = _NARRATION_LIMITS.get(layout)
-        if limit:
-            n_len = len(narration.strip())
-            lo, hi = limit
-            if n_len < lo:
-                errors.append(
-                    f"第 {page} 页({layout}) narration 太短：{n_len} 字 < {lo}，请揉碎补内容"
-                )
-            elif n_len > hi:
-                errors.append(
-                    f"第 {page} 页({layout}) narration 太长：{n_len} 字 > {hi}"
-                )
-        if slide.get("layout") == "cover":
-            headline = str(slide.get("headline") or "").strip()
-            subtitle = str(slide.get("subtitle") or "").strip()
-            if headline != title and headline not in title and title not in headline:
-                errors.append(f"cover headline 应与 title 一致：title={title!r} headline={headline!r}")
-            if not (_TITLE_MIN_LEN <= len(headline) <= _TITLE_MAX_LEN):
-                errors.append(f"cover headline 须 {_TITLE_MIN_LEN}-{_TITLE_MAX_LEN} 字，当前 {len(headline)}")
-            if not (_SUBTITLE_MIN_LEN <= len(subtitle) <= _SUBTITLE_MAX_LEN):
-                errors.append(f"cover subtitle 须 {_SUBTITLE_MIN_LEN}-{_SUBTITLE_MAX_LEN} 字，当前 {len(subtitle)}")
-            if _COVER_BAD_START.match(narration.strip()):
-                errors.append("cover 页 narration 禁止以「文章/报道/消息」开头")
-
-    if formal_count > _MAX_FORMAL_ATTRIBUTIONS:
-        errors.append(f"全片客观引述最多 {_MAX_FORMAL_ATTRIBUTIONS} 次，当前 {formal_count} 次")
-
-    if errors:
-        raise ValueError("风格校验未通过：\n- " + "\n- ".join(errors))
-
-
-# === 工具 ===
+# ============================================================
+# 通用工具
+# ============================================================
 def load_env() -> None:
     env_path = ROOT / ".env"
     if not env_path.exists():
@@ -402,12 +58,10 @@ def extract_json(text: str, *, require_slides: bool = False) -> dict:
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if fence:
         text = fence.group(1).strip()
-
     decoder = json.JSONDecoder()
     candidates: list[dict] = []
     idx = 0
     while idx < len(text):
-        # 找下一个 { 或 [
         next_brace = text.find("{", idx)
         next_bracket = text.find("[", idx)
         if next_brace < 0 and next_bracket < 0:
@@ -429,24 +83,19 @@ def extract_json(text: str, *, require_slides: bool = False) -> dict:
             idx = start + 1
     if not candidates:
         raise ValueError("无法从 Agent 回复中解析 JSON")
-
     if require_slides:
         for obj in candidates:
             if isinstance(obj.get("slides"), list) and len(obj["slides"]) >= 1:
                 return obj
         raise ValueError("回复中未找到含 slides 的完整脚本 JSON")
-
     for obj in candidates:
         if "slides" in obj:
             return obj
-    for obj in candidates:
-        if "topic" in obj and "keyword" in obj and "hook_line" in obj:
-            return obj  # 选题 JSON
     return candidates[0]
 
 
 def extract_topic_candidates(text: str) -> list[dict]:
-    """从 Agent 回复中找 5 个选题候选（顶层数组，或包了一层的对象）。"""
+    """从 Agent 回复中找候选数组（顶层数组，或包了一层的对象）。"""
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if fence:
@@ -473,354 +122,780 @@ def extract_topic_candidates(text: str) -> list[dict]:
         if isinstance(obj, list) and obj and all(isinstance(x, dict) for x in obj):
             return obj
         if isinstance(obj, dict):
-            for key in ("candidates", "topics", "options", "list"):
+            for key in ("candidates", "articles", "list"):
                 v = obj.get(key)
                 if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
                     return v
     raise ValueError("Agent 未返回候选数组")
 
 
-def merge_selection_into_script(data: dict, selection: dict) -> dict:
-    """校验前合并选题信息，避免 Agent 漏写 source/keyword。"""
-    sel_src = selection.get("source") or {}
-    src = data.get("source")
-    if not isinstance(src, dict):
-        src = {}
-    merged_src = {
-        "title": src.get("title") or sel_src.get("title") or "",
-        "url": src.get("url") or sel_src.get("url") or "",
-        "site": src.get("site") or sel_src.get("site") or "",
-    }
-    data["source"] = merged_src
-    if not str(data.get("keyword") or "").strip():
-        data["keyword"] = str(selection.get("keyword") or "").strip()
-    data["selection"] = selection
-    return data
+# ============================================================
+# 阶段一：Exa 搜 + Opus 4.7 筛 3 篇候选
+# ============================================================
+EXA_QUERIES_EN = [
+    "most discussed AI article this week long-form analysis",
+    "Hacker News top AI story past week",
+    "viral AI essay or report this week",
+    "AI industry hot take or deep dive recent",
+]
+
+EXA_QUERIES_ZH = [
+    "本周 AI 最热门 深度文章 长文",
+    "AI 行业 头条 深度报道 一周",
+    "大模型 最新进展 解读 深度",
+    "人工智能 行业观察 评论长文",
+    "AGI OR 大模型 OR 智能体 中文 深度",
+]
+
+# 兼容旧名字（外部不再使用）
+EXA_QUERIES = EXA_QUERIES_EN
 
 
-def validate_selection(sel: dict) -> dict:
-    if not isinstance(sel, dict):
-        raise ValueError("选题结果必须是 object")
-    for key in ("topic", "keyword", "angle", "hook_line", "source"):
-        if not sel.get(key):
-            raise ValueError(f"选题缺少字段: {key}")
-    keyword = str(sel["keyword"]).strip()
-    if not (2 <= len(keyword) <= 8):
-        raise ValueError(f"keyword 须 2-8 字: {keyword!r}")
-    src = sel.get("source") or {}
-    if not src.get("url", "").startswith("http"):
-        raise ValueError("source.url 必须是有效链接")
-    return sel
+def _site_from_url(url: str) -> str:
+    m = re.match(r"https?://([^/]+)/?", url or "")
+    host = m.group(1) if m else ""
+    return host.replace("www.", "")
 
 
-def validate_script(data: dict, *, exclude_keywords: list[str] | None = None) -> dict:
+def _dedup_results(results: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    out: list[dict] = []
+    for r in results:
+        url = (r.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append(r)
+    return out
+
+
+def _exa_search_pool(
+    *, days: int, exclude_urls: list[str] | None,
+    queries: list[str] | None = None,
+) -> list[dict]:
+    """跑多条 query 拉一大批 Exa 结果，去重 + 去 exclude，返回供 Opus 评审用的精简视图。"""
+    start = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00.000Z")
+    excl = {u.strip() for u in (exclude_urls or []) if u.strip()}
+    pool: list[dict] = []
+    for q in (queries or EXA_QUERIES_EN):
+        try:
+            res = exa_client.search(
+                q,
+                num_results=10,
+                start_published_date=start,
+                summary_query="What is the article's main thesis, who wrote it, and why is it getting attention?",
+                highlights_sentences=3,
+            )
+        except RuntimeError as e:
+            print(f"  ⚠️  Exa 搜索失败「{q}」: {e}", file=sys.stderr)
+            continue
+        print(f"  🔍 Exa「{q}」→ {len(res)} 条")
+        pool.extend(res)
+    pool = _dedup_results(pool)
+    pool = [r for r in pool if (r.get("url") or "").strip() not in excl]
+    return pool
+
+
+def _format_pool_for_opus(pool: list[dict]) -> str:
+    view = []
+    for r in pool[:40]:
+        view.append({
+            "title": r.get("title") or "",
+            "url": r.get("url") or "",
+            "site": _site_from_url(r.get("url") or ""),
+            "author": r.get("author") or "",
+            "published_at": (r.get("publishedDate") or "")[:10],
+            "summary": r.get("summary") or "",
+            "highlights": r.get("highlights") or [],
+        })
+    return json.dumps(view, ensure_ascii=False, indent=2)
+
+
+PICK_CANDIDATES_SYSTEM = """你是 AI 频道总编。给你一批 Exa 搜回来的候选文章（含标题/URL/站点/日期/摘要/亮点片段），请按 AI 圈真实热度挑出 **{n} 篇** 适合改编为短视频的{lang_label}长文/深度报道。
+
+挑选标准（按重要性）：
+1) AI 全网真实热度（HN 高分、X 多人转、多家媒体同步报道、Reddit/Newsletter 头条、知乎/微博/即刻热门、公众号 10w+ 等）。题材小众/偏学术也 OK，只看热不热。
+2) 自带完整叙事或核心观点（纯产品发布稿、纯参数更新、纯公关博客 pass）。
+3) 必须是 N 件不同的事；同一事件的多家报道只留最权威/最热那一版。
+4) 必须是真实可访问的{lang_label}文章 URL，不是推文/视频。
+
+只输出严格 JSON 数组，长度恰好 {n}。"""
+
+PICK_CANDIDATES_USER = """以下是 Exa {lang_label}候选池（JSON 数组）：
+
+{pool_json}
+
+请挑 {n} 篇，按下面 schema 输出（**只输出 JSON 数组，不要 markdown，不要解释**）。所有字段都基于上面池子里那条记录的 summary/highlights/标题归纳，**不要编造**池里没有的数字或人名。
+
+[
+  {{
+    "title": "原文标题（保留原文语言，不要翻译）",
+    "url": "https://...",
+    "site": "站点/作者",
+    "author": "作者（若有，无则空串）",
+    "published_at": "YYYY-MM-DD",
+    "language": "{lang_code}",
+    "summary_en": "2-3 句英文摘要（≤80 词，原文中文也用英文写）",
+    "summary_zh": "中文一句话概括（25-50 字）",
+    "thesis": "文章在讲一件什么事 / 核心观点（一句话）",
+    "key_facts": ["从 summary/highlights 抽 3-6 个最硬的事实/数字/场景，每条 ≤25 字"],
+    "narrative_arc": "文章自身的叙事节奏（一句话）",
+    "heat_score": 1-10,
+    "heat_evidence": "为什么热（站点权重 + 时间 + summary 暗示，≤30 字）",
+    "estimated_pages": 5
+  }},
+  ... 共 {n} 条
+]
+{exclude_section}"""
+
+
+def _article_looks_ok(c: dict) -> bool:
+    if not isinstance(c, dict):
+        return False
+    if not str(c.get("url") or "").startswith("http"):
+        return False
+    for key in ("title", "site", "summary_zh", "thesis", "key_facts"):
+        if not c.get(key):
+            return False
+    facts = c.get("key_facts") or []
+    return isinstance(facts, list) and len(facts) >= 2
+
+
+def _pick_from_pool(
+    pool: list[dict],
+    *,
+    n: int,
+    lang_code: str,
+    lang_label: str,
+    exclude_urls: list[str] | None,
+) -> list[dict]:
+    """让 Opus 在给定（中文或英文）池里挑 n 篇候选。"""
+    if not pool:
+        return []
+    print(f"  📥 Exa {lang_label}池共 {len(pool)} 条（去重去 exclude 后），让 {text_model()} 筛 {n} 篇…")
+    exclude_section = ""
+    if exclude_urls:
+        joined = "\n  - ".join(exclude_urls)
+        exclude_section = f"\n【硬性排除】不要再选这些 URL：\n  - {joined}"
+    user_msg = PICK_CANDIDATES_USER.format(
+        pool_json=_format_pool_for_opus(pool),
+        exclude_section=exclude_section,
+        n=n,
+        lang_label=lang_label,
+        lang_code=lang_code,
+    )
+    raw = chat_complete(
+        system=PICK_CANDIDATES_SYSTEM.format(n=n, lang_label=lang_label),
+        user=user_msg,
+        max_tokens=4000,
+    )
+    try:
+        candidates = extract_topic_candidates(raw)
+    except ValueError as e:
+        print(f"  ⚠️  {lang_label}候选解析失败: {e}", file=sys.stderr)
+        return []
+    for c in candidates:
+        if isinstance(c, dict) and not c.get("language"):
+            c["language"] = lang_code
+    return [c for c in candidates if _article_looks_ok(c)][:n]
+
+
+def find_articles(
+    *,
+    days: int = 7,
+    exclude_urls: list[str] | None = None,
+    agent_id: str | None = None,
+    per_lang: int = 3,
+) -> tuple[list[dict], str | None]:
+    """中英文各搜一池，分别挑 per_lang 篇，合并返回。"""
+    pool_en = _exa_search_pool(
+        days=days, exclude_urls=exclude_urls, queries=EXA_QUERIES_EN,
+    )
+    pool_zh = _exa_search_pool(
+        days=days, exclude_urls=exclude_urls, queries=EXA_QUERIES_ZH,
+    )
+    if not pool_en and not pool_zh:
+        raise RuntimeError("Exa 中英文池都没搜到任何候选")
+
+    cands_en = _pick_from_pool(
+        pool_en, n=per_lang, lang_code="en", lang_label="英文",
+        exclude_urls=exclude_urls,
+    )
+    cands_zh = _pick_from_pool(
+        pool_zh, n=per_lang, lang_code="zh", lang_label="中文",
+        exclude_urls=exclude_urls,
+    )
+    valid = cands_en + cands_zh
+    if not valid:
+        raise RuntimeError("Opus 返回的候选文章均不合规")
+    print(f"  ✓ 候选合并：英文 {len(cands_en)} 篇 + 中文 {len(cands_zh)} 篇 = {len(valid)} 篇")
+    return valid, agent_id
+
+
+def _print_candidates(candidates: list[dict]) -> None:
+    print()
+    print("=" * 72)
+    print(f"  候选长文（{len(candidates)} 篇，中英混合）")
+    print("=" * 72)
+    for i, c in enumerate(candidates, 1):
+        lang = (c.get('language') or '?').upper()
+        print(f"\n[{i}][{lang}] {c.get('title')}")
+        print(f"    站点    : {c.get('site')}  作者: {c.get('author') or '-'}  日期: {c.get('published_at') or '-'}")
+        print(f"    一句话  : {c.get('summary_zh')}")
+        print(f"    论点    : {c.get('thesis')}")
+        print(f"    叙事    : {c.get('narrative_arc')}")
+        print(f"    建议页数: {c.get('estimated_pages')}")
+        if c.get("heat_score") is not None:
+            print(f"    热度分  : {c.get('heat_score')}/10  — {c.get('heat_evidence') or ''}")
+        facts = c.get("key_facts") or []
+        if facts:
+            print(f"    硬事实  :")
+            for f in facts[:6]:
+                print(f"        · {f}")
+        print(f"    URL     : {c.get('url')}")
+    print()
+
+
+PICK_BEST_SYSTEM = """你是 AI 频道的总编。从 3 篇候选英文长文里挑 1 篇做短视频。
+
+**唯一挑选标准：AI 圈真实热度**。
+- 主看：HN 分数、X/Twitter 转发量、主流媒体同步报道、Reddit 顶帖、newsletter 头条收录数。
+- 同等热度时再看：自带叙事是否完整、有没有具体数字/事件锚点。
+- **不要**因为题材偏学术/偏哲学/偏小众就降权——真正热的就是好的。
+
+输出严格 JSON。"""
+
+PICK_BEST_USER = """以下是 3 篇候选（JSON）。请按上述标准挑出**当周 AI 圈热度最高**的 1 篇。
+
+{candidates_json}
+
+只输出一个 JSON 对象（不要 markdown，不要解释）：
+{{
+  "pick_index": 1-based 整数,
+  "reason": "选它的核心理由（25-50 字，必须提到具体热度证据）",
+  "ranking": [候选序号按从热到冷排列],
+  "rejected_reasons": {{ "2": "为何不选 25 字内", "3": "..." }}
+}}"""
+
+
+def auto_pick_best_article(candidates: list[dict]) -> tuple[dict, dict]:
+    """用 Opus 4.7 从候选里挑最佳。返回 (selected_article, decision_meta)。"""
+    cand_view = []
+    for i, c in enumerate(candidates, 1):
+        cand_view.append({
+            "index": i,
+            "title": c.get("title"),
+            "site": c.get("site"),
+            "summary_zh": c.get("summary_zh"),
+            "thesis": c.get("thesis"),
+            "key_facts": c.get("key_facts"),
+            "narrative_arc": c.get("narrative_arc"),
+            "heat_score": c.get("heat_score"),
+            "heat_evidence": c.get("heat_evidence"),
+        })
+    user_msg = PICK_BEST_USER.format(
+        candidates_json=json.dumps(cand_view, ensure_ascii=False, indent=2)
+    )
+    print(f"  🤖 让 {text_model()} 评审 {len(candidates)} 篇候选…")
+    raw = chat_complete(
+        system=PICK_BEST_SYSTEM,
+        user=user_msg,
+        max_tokens=800,
+    )
+    decision = extract_json(raw)
+    idx = int(decision.get("pick_index") or 1)
+    if not (1 <= idx <= len(candidates)):
+        idx = 1
+    print(f"  ✓ 评审结果：选 [{idx}] — {decision.get('reason', '')}")
+    if decision.get("ranking"):
+        print(f"    排名: {decision['ranking']}")
+    rej = decision.get("rejected_reasons") or {}
+    for k, v in rej.items():
+        print(f"    舍弃 [{k}]: {v}")
+    return candidates[idx - 1], decision
+
+
+def pick_article(candidates: list[dict], *, auto: bool = False) -> tuple[dict, dict | None]:
+    _print_candidates(candidates)
+    if auto:
+        article, decision = auto_pick_best_article(candidates)
+        return article, decision
+    while True:
+        raw = input(f"请输入 1-{len(candidates)}（回车=1）: ").strip() or "1"
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(candidates):
+                return candidates[idx - 1], None
+        print(f"  ✗ 无效，请输入 1-{len(candidates)}")
+
+
+# ============================================================
+# 阶段 1.5：Cursor 深度读文章，把所有细节捞回来给 Opus
+# ============================================================
+DEEP_READ_SYSTEM = """你是 AI 内容研究员。用户消息会给你一篇文章的全文（中文或英文，由 Exa 抓取）。请把它完整读一遍，再把所有可能用于短视频改编的素材**穷尽式**地抽取出来。最终所有字段都用**中文**输出（如果原文是英文，translate；如果原文是中文，直接转写）。
+
+所有字段**必须基于用户消息里给出的原文**，不准虚构、不准联想、不准引入外部知识。只输出严格 JSON。"""
+
+
+DEEP_READ_USER_TEMPLATE = """【目标文章】
+- 标题: {title}
+- 站点: {site}  作者: {author}  日期: {published_at}
+- URL: {url}
+- 已知一句话: {summary_zh}
+
+【原文全文（Exa 抓取，可能含少量噪声字符，请按内容理解）】
+<<<ARTICLE_BEGIN
+{full_text}
+ARTICLE_END>>>
+
+【任务】
+基于上面的原文全文输出一个 JSON 对象（不要 markdown，不要解释）。
+
+【硬性要求】
+- `outline`：原文段落级 outline，**每段一行中文概括**（≤30 字），按原文出现顺序排列；至少 8 行（如果原文很短且自然分段少于 8 段，给原文真实段数）。
+- `all_numbers`：原文里出现的**每一个**具体数字 / 金额 / 比例 / 时间，附上下文。哪怕看起来没用也写下来。
+- `all_quotes`：原文里**值得被引用的句子或人名引语**（5-15 条），每条带说话人/作者；翻成中文，但保留关键英文词。
+- `people`：文中出现的所有具体人名，附身份/职位。
+- `companies_or_institutions`：所有公司、实验室、机构。
+- `key_terms`：原文出现的术语，每个用一句中文白话解释（≤25 字），适合给小白听。
+- `concrete_scenes`：原文里**具体的场景/事件画面**（"X 在 Y 时做了 Z"格式），3-8 条，越具体越好。
+- `actual_opening`：原文真实的开头第一段中文转写（≤80 字，原汁原味，不要总结）。
+- `actual_ending`：原文真实的最后一段或结论句中文转写（≤120 字）。
+- `narrative_beats`：作者真实的叙事节奏（5-10 拍：「先...，然后...，转折是...，最后...」），每拍一句。
+- `author_stance`：作者**自己的态度/立场**一句话（不是他描述别人的观点，是他自己怎么想）。
+- `omit_in_video`：你建议改编短视频时**砍掉不讲**的内容（哪些段落对普通观众没意义），3-5 条。
+
+【输出】
+只输出一个 JSON 对象，键名严格按上面列。不要 markdown，不要解释。
+"""
+
+
+_DEEP_READ_MAX_CHARS = int(os.environ.get("EXA_DEEP_READ_MAX_CHARS", "60000"))
+
+
+def _fetch_article_text(url: str) -> str:
+    print(f"  📥 Exa 抓全文 {url}")
+    results = exa_client.get_contents([url], max_characters=_DEEP_READ_MAX_CHARS)
+    if not results:
+        raise RuntimeError(f"Exa /contents 没返回任何结果: {url}")
+    text = (results[0].get("text") or "").strip()
+    if len(text) < 500:
+        raise RuntimeError(f"Exa 抓回的正文过短 ({len(text)} 字): {url}")
+    print(f"  ✓ 全文 {len(text)} 字符")
+    return text
+
+
+def deep_read_article(article: dict, *, agent_id: str | None) -> tuple[dict, str | None]:
+    """Exa 抓全文 → Opus 4.7 抽细节，返回细节字典。"""
+    full_text = _fetch_article_text(article.get("url", ""))
+    user_msg = DEEP_READ_USER_TEMPLATE.format(
+        title=article.get("title", ""),
+        site=article.get("site", ""),
+        author=article.get("author") or "-",
+        published_at=article.get("published_at") or "-",
+        url=article.get("url", ""),
+        summary_zh=article.get("summary_zh", ""),
+        full_text=full_text,
+    ) + """
+
+【硬性字段要求】
+- `outline`：原文段落级 outline，**每段一行中文概括**（≤30 字），按原文出现顺序排列；至少 8 行（如果原文很短且自然分段少于 8 段，给原文真实段数）。
+- `all_numbers`：原文里出现的**每一个**具体数字 / 金额 / 比例 / 时间，附上下文。哪怕看起来没用也写下来。
+- `all_quotes`：原文里**值得被引用的句子或人名引语**（5-15 条），每条带说话人/作者；翻成中文，但保留关键英文词。
+- `people`：文中出现的所有具体人名，附身份/职位。
+- `companies_or_institutions`：所有公司、实验室、机构。
+- `key_terms`：原文出现的术语，每个用一句中文白话解释（≤25 字），适合给小白听。
+- `concrete_scenes`：原文里**具体的场景/事件画面**（"X 在 Y 时做了 Z"格式），3-8 条，越具体越好。
+- `actual_opening`：原文真实的开头第一段中文转写（≤80 字，原汁原味，不要总结）。
+- `actual_ending`：原文真实的最后一段或结论句中文转写（≤120 字）。
+- `narrative_beats`：作者真实的叙事节奏（5-10 拍：「先...，然后...，转折是...，最后...」），每拍一句。
+- `author_stance`：作者**自己的态度/立场**一句话（不是他描述别人的观点，是他自己怎么想）。
+- `omit_in_video`：你建议改编短视频时**砍掉不讲**的内容（哪些段落对普通观众没意义），3-5 条。
+
+只输出一个 JSON 对象，键名严格按上面列。"""
+    print(f"  🤖 {text_model()} 抽取深读细节…")
+    raw = chat_complete(
+        system=DEEP_READ_SYSTEM,
+        user=user_msg,
+        max_tokens=8000,
+    )
+    details = extract_json(raw)
+    required = (
+        "outline", "all_numbers", "all_quotes", "people",
+        "key_terms", "concrete_scenes", "actual_opening",
+        "actual_ending", "narrative_beats", "author_stance",
+    )
+    missing = [k for k in required if not details.get(k)]
+    if missing:
+        raise RuntimeError(f"深读结果缺字段: {missing}")
+    return details, agent_id
+
+
+# ============================================================
+# 阶段二：基于文章改编脚本
+# ============================================================
+ADAPT_SCRIPT_PROMPT = """你是抖音「白板手绘 + 段子手」科普编剧。用户消息会给你一篇长文的 metadata（原文可能是中文或英文）+ 由研究员深度读完原文后整理的「原文深读细节」（含段落 outline、所有数字、所有引语、人物、场景、原文真实开头/结尾、作者立场等）。请把它**忠实地改编**成一个中文短视频脚本（3-10 页可变）。
+
+【素材使用原则】
+★ 你的所有内容**必须**能在用户消息的「原文深读细节」里找到出处（outline / all_quotes / all_numbers / concrete_scenes / people / actual_opening / actual_ending）。
+★ 优先使用 `concrete_scenes` 和 `all_quotes` 做钩子；优先使用 `all_numbers` 做硬数据页；末页顺着 `actual_ending` / `author_stance` 的原意写。
+★ 如果某页找不到对应素材，**砍掉那页**而不是兜话。
+
+==================================================
+【第一原则 · 忠于原文，不要硬塞模板】
+==================================================
+★ **以文章自身的逻辑结构来拆页**，不是硬套 cover/insight/data/story/outro 五段式。
+   - 如果原文是「事件 → 解读 → 数据 → 反思」就拆 4 页。
+   - 如果原文是「钩子 → 三个论据 → 反例 → 结论 → 余波」就拆 6 页。
+   - 如果原文足够丰富信息密度高，可以拆到 8-10 页。**最少 3 页，最多 10 页。**
+   - 每一页都必须对应原文里**真实存在的一段内容**（一个段落、一个论点、一个数据、一个场景）。**不要凭空补段，不要为了凑页数兑水。**
+
+★ **观点 / 事实 / 数字必须来自原文**：你的工作是翻译 + 转写为口语 + 选画面，不是另写一篇。
+   - 允许你在解释术语时打小比方（一句话以内）。
+   - 允许你重组顺序、合并重复段落、砍掉不重要的内容。
+   - **不允许**虚构原文里没有的事实、数字、引语；**不允许**硬塞作者没说过的观点。
+
+★ **不要套"关你啥事"模板**。结尾听文章自己的——
+   - 如果原文以反问 / 警示 / 留白结尾，你也照做。
+   - 如果原文以一句金句结尾，把那句翻成中文上屏。
+   - 如果原文有明确建议，老老实实给建议，不要强行扯到「打工人」。
+   - 末尾**可以**有评论引子，但**只有在自然的时候**才加；不要刻意。
+
+==================================================
+【页数与节奏】
+==================================================
+- **第 1 页（cover）**：钩子 + 用大白话讲清这篇文章在讲什么事 / 什么观点。必须让没读过原文的人 3 秒内 get 到主题。
+- **中间页（body）**：每页只讲一个论点 / 一个数字组 / 一个场景。**信息密度限制：每页只允许 1 个新名词或 1 组新数字。**
+- **最后一页**：跟着原文走，不强行套模板。可以是结论、可以是反问、可以是悬念。
+
+【每页 narration 字数】
+- cover：50-90 字
+- 中间页：80-150 字（信息密度高的可以到 180 字）
+- 末页：50-100 字
+- 单句 ≤ 25 字，能拆就拆。主语别省。
+
+【文风】
+- 像跟朋友讲，不是念新闻稿。砍掉新闻腔（"援引""信源""文章认为""据 XX 报道"等）。
+- 全片最多 1 处「据原文」类客观引述，且不在 cover。
+- 每页第一句承接上一页（除 cover 外，必须有 lead_in 衔接锚点）。
+- 网感词全片最多 2 处。能不用就不用。
+- 每个新名词出现后，**下一句必须用一句白话解释**。
+
+==================================================
+【画面】
+==================================================
+风格固定：**笔记本方格纸 + 黑色钢笔手绘示意图 + 中文手写注释**（类似李永乐 / 3Blue1Brown 中文版）。
+五种构图任选：对比图 / 流程图 / 类比图 / 数据图 / 时间轴。
+
+`image_prompt`：**英文**，描述这页的手绘构图（不写风格词，模板会统一加）。
+`on_image_text`：**中文**短语数组，3-10 条，每条 ≤ 12 字。是图上能看到的标签，不是复述 narration。
+
+==================================================
+【每页字段】
+==================================================
+- `layout`：第 1 页填 "cover"，其余全部填 "body"
+- `chapter_title`：3-5 字章节短名
+- `concept`：≤25 字，本页一句话
+- `lead_in`：≤14 字衔接锚点（cover 可省，其余必填）
+- `headline`：上屏中文标题（6-14 字）
+- `narration`：口播原文（按上面字数要求）
+- `image_prompt`：英文画面描述
+- `on_image_text`：3-10 条中文标签数组
+- 仅 cover 额外有 `subtitle`（8-22 字，悬念或核心观点）
+
+==================================================
+【顶层字段】
+==================================================
+- `title`：6-14 字中文标题（视频标题，不必跟原文标题一字不差，但必须传达原文核心）
+- `keyword`：2-8 字中文关键词（从原文里抽一个最贴切的）
+- `source`：{ "title": 原文标题（保留原文语言）, "url": 原文 URL, "site": 站点 }
+- `slides`：数组，**长度 3-10**
+
+==================================================
+【输出】
+==================================================
+只输出一个 JSON 对象，不要 markdown，不要解释。
+
+写完后**自查**：
+① 每一页是否都对应原文里真实存在的内容？
+② 有没有为了凑页数兑水的段落？有就删。
+③ 有没有虚构原文里没有的数字 / 引语 / 观点？有就改。
+④ Cover 第一句是不是钩子？
+⑤ 末页是不是顺着原文自己的结尾，而不是硬套"关你啥事"？
+"""
+
+
+# ============================================================
+# 校验：宽松版（页数 3-10、layout 只分 cover/body）
+# ============================================================
+_BANNED_PHRASES = (
+    "口径", "交叉验证", "被写作", "隐含地", "交表", "措辞", "援引", "信源",
+    "联手", "揪出", "悄悄启动", "雪片般", "一口气挖", "引发热议", "再次刷新",
+    "令人瞩目", "值得关注",
+)
+_FORMAL_ATTRIBUTION = re.compile(r"文章认为|报道指|文章称|文章援引|消息人士")
+_COVER_BAD_START = re.compile(r"^(文章|报道|消息|援引|据.{1,6}报道)")
+
+
+def _slide_texts(slide: dict) -> list[str]:
+    return [
+        str(slide.get("headline") or ""),
+        str(slide.get("subtitle") or ""),
+        str(slide.get("narration") or ""),
+    ]
+
+
+def validate_article_script(data: dict, article: dict) -> dict:
     if not isinstance(data, dict):
         raise ValueError("根节点必须是 object")
     for key in ("title", "keyword", "slides", "source"):
         if key not in data:
             raise ValueError(f"缺少 {key}")
-    keyword = str(data["keyword"]).strip()
-    if len(keyword) < 2:
-        raise ValueError("keyword 太短")
-    if exclude_keywords:
-        kw_norm = keyword.replace(" ", "").lower()
-        for ex in exclude_keywords:
-            ex_norm = str(ex).replace(" ", "").lower()
-            if ex_norm and (kw_norm == ex_norm or kw_norm in ex_norm or ex_norm in kw_norm):
-                raise ValueError(f"keyword「{keyword}」与已制作话题「{ex}」重复")
+
+    title = str(data["title"]).strip()
+    if not (4 <= len(title) <= 18):
+        raise ValueError(f"title 须 4-18 字，当前 {len(title)}: {title!r}")
 
     src = data.get("source") or {}
     if not src.get("url", "").startswith("http"):
         raise ValueError("source.url 必须是有效链接")
-    if not src.get("title"):
-        raise ValueError("缺少 source.title")
 
     slides = data["slides"]
-    if not isinstance(slides, list) or len(slides) != 5:
-        raise ValueError(f"slides 须恰好 5 页，当前 {len(slides) if isinstance(slides, list) else '非数组'}")
+    if not isinstance(slides, list) or not (3 <= len(slides) <= 10):
+        raise ValueError(f"slides 数量须 3-10，当前 {len(slides) if isinstance(slides, list) else '非数组'}")
+
+    formal_count = 0
     for i, slide in enumerate(slides):
-        expected = _SLIDE_LAYOUTS[i]
-        layout = slide.get("layout") or expected
-        if layout != expected:
-            raise ValueError(f"第 {i+1} 页 layout 应为 {expected}，当前 {layout}")
+        page = i + 1
+        layout = slide.get("layout") or ("cover" if i == 0 else "body")
         slide["layout"] = layout
-        if not slide.get("headline") or not slide.get("narration") or not slide.get("image_prompt"):
-            raise ValueError(f"第 {i+1} 页缺少 headline/narration/image_prompt")
-        chapter = str(slide.get("chapter_title") or "").strip()
-        if not (_CHAPTER_TITLE_MIN <= len(chapter) <= _CHAPTER_TITLE_MAX):
-            raise ValueError(f"第 {i+1} 页 chapter_title 须 {_CHAPTER_TITLE_MIN}-{_CHAPTER_TITLE_MAX} 字: {chapter!r}")
-        if not str(slide.get("concept") or "").strip():
-            raise ValueError(f"第 {i+1} 页缺少 concept")
-        if layout != "cover":
+        if i == 0 and layout != "cover":
+            raise ValueError("第 1 页 layout 必须为 cover")
+        if i > 0 and layout == "cover":
+            raise ValueError(f"第 {page} 页不应为 cover")
+
+        for key in ("headline", "narration", "image_prompt", "chapter_title", "concept"):
+            if not str(slide.get(key) or "").strip():
+                raise ValueError(f"第 {page} 页缺少 {key}")
+
+        ch = str(slide["chapter_title"]).strip()
+        if not (2 <= len(ch) <= 6):
+            raise ValueError(f"第 {page} 页 chapter_title 须 2-6 字: {ch!r}")
+
+        if layout == "cover":
+            if not str(slide.get("subtitle") or "").strip():
+                raise ValueError("cover 页缺少 subtitle")
+            sub = str(slide["subtitle"]).strip()
+            if not (6 <= len(sub) <= 24):
+                raise ValueError(f"cover subtitle 须 6-24 字，当前 {len(sub)}")
+            if _COVER_BAD_START.match(str(slide["narration"]).strip()):
+                raise ValueError("cover narration 禁止以「文章/报道/消息/据...」开头")
+        else:
             lead_in = str(slide.get("lead_in") or "").strip()
             if not lead_in:
-                raise ValueError(f"第 {i+1} 页缺少 lead_in（衔接首句，≤14 字）")
+                raise ValueError(f"第 {page} 页缺少 lead_in（≤14 字衔接锚点）")
             if len(lead_in) > 14:
-                raise ValueError(f"第 {i+1} 页 lead_in 须 ≤14 字，当前 {len(lead_in)}: {lead_in!r}")
-        on_image_text = slide.get("on_image_text") or []
-        if not isinstance(on_image_text, list) or not (3 <= len(on_image_text) <= 12):
-            raise ValueError(f"第 {i+1} 页 on_image_text 须 3-12 条")
-        for j, item in enumerate(on_image_text):
-            if not isinstance(item, str) or len(item) > 16 or not item.strip():
-                raise ValueError(f"第 {i+1} 页 on_image_text[{j}] 须 1-16 字非空: {item!r}")
-        bullets = slide.get("bullets") or []
-        _validate_layout_fields(i, layout, slide, bullets)
-    validate_style(data)
+                raise ValueError(f"第 {page} 页 lead_in ≤14 字，当前 {len(lead_in)}")
+
+        n = str(slide["narration"]).strip()
+        nlen = len(n)
+        if layout == "cover":
+            if not (40 <= nlen <= 120):
+                raise ValueError(f"cover narration 须 40-120 字，当前 {nlen}")
+        else:
+            if not (50 <= nlen <= 220):
+                raise ValueError(f"第 {page} 页 narration 须 50-220 字，当前 {nlen}")
+
+        oit = slide.get("on_image_text") or []
+        if not isinstance(oit, list) or not (3 <= len(oit) <= 12):
+            raise ValueError(f"第 {page} 页 on_image_text 须 3-12 条")
+        for j, item in enumerate(oit):
+            if not isinstance(item, str) or not item.strip() or len(item) > 16:
+                raise ValueError(f"第 {page} 页 on_image_text[{j}] 须 1-16 字非空: {item!r}")
+
+        for txt in _slide_texts(slide):
+            for p in _BANNED_PHRASES:
+                if p in txt:
+                    raise ValueError(f"第 {page} 页含禁用词「{p}」")
+            formal_count += len(_FORMAL_ATTRIBUTION.findall(txt))
+
+    if formal_count > 1:
+        raise ValueError(f"全片客观引述最多 1 次，当前 {formal_count} 次")
+
     return data
 
 
-def _validate_layout_fields(index: int, layout: str, slide: dict, bullets: list) -> None:
-    if layout == "cover":
-        if bullets:
-            raise ValueError("cover 页 bullets 必须为空")
-        if not slide.get("subtitle"):
-            raise ValueError("cover 页须含 subtitle")
-    elif layout == "insight":
-        if not (2 <= len(bullets) <= 3):
-            raise ValueError("insight 页 bullets 须 2-3 条")
-    elif layout == "data":
-        if not slide.get("stat"):
-            raise ValueError("data 页须含 stat")
-        if not (1 <= len(bullets) <= 2):
-            raise ValueError("data 页 bullets 须 1-2 条")
-    elif layout == "story":
-        if not (2 <= len(bullets) <= 3):
-            raise ValueError("story 页 bullets 须 2-3 条")
-    elif layout == "outro":
-        if len(bullets) > 2:
-            raise ValueError("outro 页 bullets 最多 2 条")
+def merge_article_into_script(data: dict, article: dict) -> dict:
+    src = data.get("source")
+    if not isinstance(src, dict):
+        src = {}
+    data["source"] = {
+        "title": src.get("title") or article.get("title") or "",
+        "url": src.get("url") or article.get("url") or "",
+        "site": src.get("site") or article.get("site") or "",
+    }
+    if not str(data.get("keyword") or "").strip():
+        data["keyword"] = (article.get("summary_zh") or "")[:6] or "AI"
+    data["article"] = article
+    return data
 
 
-# === Agent 调用 ===
-def _on_search(payload: dict) -> None:
-    name = str(payload.get("name") or payload.get("tool") or "")
-    if re.search(r"search|web", name, re.I):
-        print("  🔍 联网搜索中…")
+ADAPT_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重新输出**完整脚本 JSON**（不要 markdown，不要解释）。
+
+校验错误：
+{errors}
+
+仍按之前要求：
+- slides 长度 3-10；第 1 页 layout=cover（含 subtitle），其余 layout=body（含 lead_in）
+- 每页有 chapter_title / concept / headline / narration / image_prompt / on_image_text
+- 必须忠实于已选定文章原文（URL: {url}），不虚构事实
+"""
 
 
-def _run_agent(prompt: str, agent_id: str | None) -> tuple[str, str, str, str]:
-    if agent_id:
-        run_id = create_run(agent_id, prompt)
-    else:
-        agent_id, run_id = create_agent(prompt)
-    text, status = run_with_stream(agent_id, run_id, on_tool_call=_on_search)
-    return text, status, agent_id, run_id
+def _build_adapt_user_message(article: dict, details: dict) -> str:
+    meta_block = (
+        f"【已选定文章 metadata】\n"
+        f"- 标题: {article.get('title', '')}\n"
+        f"- 站点: {article.get('site', '')}  作者: {article.get('author') or '-'}  日期: {article.get('published_at') or '-'}\n"
+        f"- URL: {article.get('url', '')}\n"
+        f"- 中文一句话: {article.get('summary_zh', '')}\n"
+        f"- 核心论点: {article.get('thesis', '')}"
+    )
+    details_block = (
+        "【原文深读细节（由 Cursor 联网读完原文后整理，全部基于原文，不准再编）】\n"
+        + json.dumps(details, ensure_ascii=False, indent=2)
+    )
+    return (
+        f"{meta_block}\n\n{details_block}\n\n"
+        "请严格根据上面的「原文深读细节」改编：每页内容必须能在 outline / all_quotes / "
+        "all_numbers / concrete_scenes 里找到出处；末页要顺着 actual_ending / author_stance 的"
+        "原意，不要硬套模板。\n\n请输出 **严格 JSON 对象**（不要 markdown，不要解释）。"
+    )
 
 
-def select_topic_candidates(
-    topic: str,
+def adapt_article_to_script(
+    article: dict,
     *,
-    days: int = 2,
+    details: dict,
     agent_id: str | None = None,
-    exclude_keywords: list[str] | None = None,
-    batch_index: int | None = None,
-    batch_total: int | None = None,
-    channel: str = "AI 热点解读",
-) -> tuple[list[dict], str]:
-    """阶段一：拿 5 个选题候选。"""
-    prompt = build_select_prompt(
-        topic, days=days, exclude_keywords=exclude_keywords,
-        batch_index=batch_index, batch_total=batch_total,
-        channel=channel,
-    )
-    text, status, agent_id, run_id = _run_agent(prompt, agent_id)
-    print(f"  agent={agent_id} run={run_id} status={status}")
-    if status != "FINISHED":
-        raise RuntimeError(text or "选题 Agent 未正常结束")
-    candidates = extract_topic_candidates(text)
-    valid = [c for c in candidates if _candidate_looks_ok(c)]
-    if not valid:
-        raise RuntimeError("Agent 返回的候选均不合规")
-    return valid[:5], agent_id
+) -> tuple[dict, str | None]:
+    """用 Claude Opus 4.7（via AiHubMix）基于 details 把文章改编成脚本 JSON。
 
+    agent_id 仅用于占位/兼容旧调用，本步骤不再使用 Cursor Cloud。
+    """
+    system_prompt = ADAPT_SCRIPT_PROMPT
+    print(f"  📄 喂给 {text_model()} 改编（含 {len(details.get('outline') or [])} 段 outline / "
+          f"{len(details.get('all_quotes') or [])} 条引语 / "
+          f"{len(details.get('all_numbers') or [])} 个数字）…")
 
-def _candidate_looks_ok(c: dict) -> bool:
-    if not isinstance(c, dict):
-        return False
-    for key in ("topic", "keyword", "angle", "hook_line", "source"):
-        if not c.get(key):
-            return False
-    src = c.get("source") or {}
-    return bool(str(src.get("url") or "").startswith("http"))
-
-
-def pick_candidate(candidates: list[dict], *, auto: bool = False) -> dict:
-    """交互式让用户从候选里选一个；auto=True 时直接选第 1 个。"""
-    print()
-    print("=" * 64)
-    print(f"  候选选题（{len(candidates)} 条）— 请挑一条")
-    print("=" * 64)
-    for i, c in enumerate(candidates, 1):
-        src = c.get("source") or {}
-        print(f"\n[{i}] {c.get('topic')}")
-        print(f"    keyword : {c.get('keyword')}")
-        print(f"    钩子    : {c.get('hook_line')}")
-        print(f"    角度    : {c.get('angle')}")
-        if c.get("audience_pain"):
-            print(f"    痛点    : {c.get('audience_pain')}")
-        if c.get("visual_outline"):
-            print(f"    画面线  : {c.get('visual_outline')}")
-        if c.get("why_it_works"):
-            print(f"    为啥爆  : {c.get('why_it_works')}")
-        print(f"    来源    : {src.get('site', '')} — {src.get('title', '')[:60]}")
-        print(f"    URL     : {src.get('url', '')}")
-    print()
-    if auto:
-        print("[auto] 自动选 [1]")
-        return validate_selection(candidates[0])
-    while True:
-        raw = input(f"请输入 1-{len(candidates)}（回车=1）: ").strip()
-        if not raw:
-            raw = "1"
-        if raw.isdigit():
-            idx = int(raw)
-            if 1 <= idx <= len(candidates):
-                try:
-                    return validate_selection(candidates[idx - 1])
-                except ValueError as e:
-                    print(f"  ✗ 该选项不合规: {e}，请换一个")
-                    continue
-        print(f"  ✗ 输入无效，请输入 1-{len(candidates)} 之间的数字")
-
-
-def _parse_script_response(
-    text: str,
-    selection: dict,
-    *,
-    exclude_keywords: list[str] | None = None,
-) -> dict:
-    raw = extract_json(text, require_slides=True)
-    data = merge_selection_into_script(raw, selection)
-    return validate_script(data, exclude_keywords=exclude_keywords)
-
-
-def _source_hint(selection: dict) -> str:
-    src = selection.get("source") or {}
-    return json.dumps(
-        {"source": src, "keyword": selection.get("keyword", "")},
-        ensure_ascii=False,
-    )
-
-
-def write_content(
-    selection: dict,
-    *,
-    agent_id: str,
-    exclude_keywords: list[str] | None = None,
-) -> tuple[dict, str]:
-    """阶段二：基于选题写脚本。复用 agent_id 保上下文。"""
-    prompt = build_content_prompt(selection)
-    text, status, agent_id, run_id = _run_agent(prompt, agent_id)
-    print(f"  agent={agent_id} run={run_id} status={status}")
-    if status != "FINISHED":
-        raise RuntimeError(text or "内容 Agent 未正常结束")
+    user_msg = _build_adapt_user_message(article, details)
 
     last_err: Exception | None = None
+    raw_text = ""
     for attempt in range(3):
         try:
-            return _parse_script_response(
-                text, selection, exclude_keywords=exclude_keywords
-            ), agent_id
+            raw_text = chat_complete(
+                system=system_prompt,
+                user=user_msg,
+                max_tokens=8000,
+            )
+            raw = extract_json(raw_text, require_slides=True)
+            data = merge_article_into_script(raw, article)
+            return validate_article_script(data, article), agent_id
         except (ValueError, json.JSONDecodeError) as e:
             last_err = e
             if attempt >= 2:
                 break
-            print(f"  ⚠️  校验未通过，请 Agent 修正… ({e})", file=sys.stderr)
-            fix_prompt = STYLE_FIX_PROMPT.format(
-                errors=str(e),
-                source_hint=_source_hint(selection),
+            print(f"  ⚠️  校验未通过，让 {text_model()} 修正… ({e})", file=sys.stderr)
+            fix_msg = ADAPT_FIX_PROMPT.format(errors=str(e), url=article.get("url", ""))
+            if attempt == 0 and raw_text:
+                fix_msg += f"\n\n上一轮输出：\n{raw_text[:12000]}"
+            user_msg = (
+                f"{user_msg}\n\n========\n【修正提示】\n{fix_msg}"
             )
-            if attempt == 0:
-                fix_prompt += f"\n\n上一轮输出：\n{text[:12000]}"
-            text, status, agent_id, run_id = _run_agent(fix_prompt, agent_id)
-            print(f"  agent={agent_id} run={run_id} status={status} (修正轮 {attempt + 1})")
-            if status != "FINISHED":
-                raise RuntimeError(text or "Agent 修正轮未正常结束")
-
-    raise RuntimeError(f"内容脚本校验失败（已重试）: {last_err}") from last_err
+        except RuntimeError as e:
+            last_err = e
+            if attempt >= 2:
+                break
+            print(f"  ⚠️  网络/接口失败，重试… ({e})", file=sys.stderr)
+    raise RuntimeError(f"改编脚本失败（已重试）: {last_err}") from last_err
 
 
-def run_research(
-    topic: str,
+# ============================================================
+# 主入口
+# ============================================================
+def run_article_research(
     *,
     output: str | Path,
+    days: int = 7,
+    exclude_urls: list[str] | None = None,
     agent_id: str | None = None,
-    days: int = 2,
-    exclude_keywords: list[str] | None = None,
-    batch_index: int | None = None,
-    batch_total: int | None = None,
     logs_dir: Path | None = None,
     use_selection: bool = False,
     auto_pick: bool = False,
-    channel: str = "AI 热点解读",
 ) -> tuple[dict, str]:
-    """两阶段流程：选题 + 写稿。"""
     logs_dir = logs_dir or (ROOT / "logs")
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    selection_path = logs_dir / "last_selection.json"
-    saved_sel: dict | None = None
+    selection_path = logs_dir / "last_article.json"
+    saved: dict | None = None
     if use_selection and selection_path.is_file():
         try:
-            saved_sel = validate_selection(json.loads(selection_path.read_text(encoding="utf-8")))
-        except (ValueError, json.JSONDecodeError):
-            saved_sel = None
-    # 若用户传了与已保存选题不相关的新 topic，自动忽略复用
-    if saved_sel and topic:
-        kw = str(saved_sel.get("keyword", "")).lower()
-        sel_topic = str(saved_sel.get("topic", "")).lower()
-        t = topic.replace(" ", "").lower()
-        if t and (t not in kw and kw not in t and t not in sel_topic):
-            print(f"[1a] 已忽略保存的选题（topic={topic} 与上次「{saved_sel.get('topic')}」不同）")
-            saved_sel = None
+            saved = json.loads(selection_path.read_text(encoding="utf-8"))
+            if not _article_looks_ok(saved):
+                saved = None
+        except json.JSONDecodeError:
+            saved = None
 
-    if saved_sel:
-        selection = saved_sel
-        if not agent_id and (logs_dir / "cursor_agent.json").is_file():
-            try:
-                agent_id = json.loads((logs_dir / "cursor_agent.json").read_text())["agent_id"]
-            except (json.JSONDecodeError, KeyError):
-                agent_id = None
-        if not agent_id:
-            agent_id, _ = create_agent(build_content_prompt(selection))
-        print("[1a] 跳过选题，使用已保存选题")
+    if saved:
+        article = saved
+        print("[1a] 跳过找文章，复用 logs/last_article.json")
     else:
-        print(f"[1a] 选题（频道={channel}，近 {days} 天热点；先出 5 候选再人工挑）…")
-        candidates, agent_id = select_topic_candidates(
-            topic, days=days, agent_id=agent_id,
-            exclude_keywords=exclude_keywords,
-            batch_index=batch_index, batch_total=batch_total,
-            channel=channel,
+        print(f"[1a] 搜索过去 {days} 天 AI 圈热点长文（中英文各 3 候选）…")
+        candidates, agent_id = find_articles(
+            days=days, exclude_urls=exclude_urls, agent_id=agent_id,
         )
-        (logs_dir / "last_candidates.json").write_text(
+        (logs_dir / "last_article_candidates.json").write_text(
             json.dumps(candidates, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        selection = pick_candidate(candidates, auto=auto_pick)
-    print(f"  ✓ 选定: {selection['topic']} (keyword={selection['keyword']})")
-    print(f"    钩子: {selection['hook_line']}")
-    src = selection.get("source") or {}
-    if src.get("url"):
-        print(f"    参考: {src.get('site', '')} {src.get('title', '')[:50]}")
-    (logs_dir / "last_selection.json").write_text(
-        json.dumps(selection, ensure_ascii=False, indent=2), encoding="utf-8"
+        article, decision = pick_article(candidates, auto=auto_pick)
+        if decision:
+            (logs_dir / "last_article_decision.json").write_text(
+                json.dumps(decision, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+    print(f"  ✓ 选定: {article.get('title')}")
+    print(f"    站点: {article.get('site')}  日期: {article.get('published_at')}")
+    print(f"    URL : {article.get('url')}")
+    selection_path.write_text(
+        json.dumps(article, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    print("[1b] 内容制作（口播 + 画面 + 注释）…")
-    script, agent_id = write_content(
-        selection, agent_id=agent_id, exclude_keywords=exclude_keywords,
-    )
+    details_path = logs_dir / "last_article_details.json"
+    if use_selection and saved and details_path.is_file():
+        details = json.loads(details_path.read_text(encoding="utf-8"))
+        print("[1b] 复用 last_article_details.json")
+    else:
+        print("[1b] Cursor 深读原文，抽取段落/数字/引语/场景/结尾…")
+        details, agent_id = deep_read_article(article, agent_id=agent_id)
+        details_path.write_text(
+            json.dumps(details, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    print(f"  ✓ outline {len(details.get('outline') or [])} 段 / "
+          f"引语 {len(details.get('all_quotes') or [])} 条 / "
+          f"数字 {len(details.get('all_numbers') or [])} 个")
+
+    print("[1c] Opus 4.7 按文章自身节奏改编为 3-10 页中文脚本…")
+    script, _ = adapt_article_to_script(article, details=details)
 
     out_path = Path(output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     meta = {
-        "topic": topic,
+        "mode": "article",
         "days": days,
-        "batch_index": batch_index,
-        "batch_total": batch_total,
-        "exclude_keywords": exclude_keywords or [],
         "agent_id": agent_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "selection": selection,
+        "article": article,
         "script": script,
     }
     out_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -832,57 +907,44 @@ def run_research(
 
 def main() -> int:
     load_env()
-    parser = argparse.ArgumentParser(description="两阶段调研：选题 + 内容制作")
-    parser.add_argument("topic", nargs="?", default=os.environ.get("AIVIDEO_TOPIC", "今日AI热点"))
+    parser = argparse.ArgumentParser(
+        description="文章驱动调研：Cursor 找/深读英文长文 → Opus 4.7 评审/改编中文短视频脚本"
+    )
     parser.add_argument("-o", "--output", default=str(ROOT / "logs" / "last_script.json"))
+    parser.add_argument("--days", type=int, default=7, help="搜索时间窗（天），默认 7")
+    parser.add_argument("--exclude-urls", help="已制作过的 URL，逗号分隔")
     parser.add_argument("--agent-id")
-    parser.add_argument("--days", type=int, default=2, help="选题时间窗（天），默认 2（48h）")
-    parser.add_argument("--exclude", help="已制作 keyword，逗号分隔")
-    parser.add_argument("--batch-index", type=int)
-    parser.add_argument("--batch-total", type=int)
-    parser.add_argument(
-        "--use-selection",
-        action="store_true",
-        help="跳过选题，使用 logs/last_selection.json（选题已成功、仅重跑写稿时）",
-    )
-    parser.add_argument(
-        "--auto-pick", action="store_true",
-        help="不交互，直接用 5 候选中的第 1 条（批量跑/CI 用）",
-    )
-    parser.add_argument(
-        "--channel", default=os.environ.get("AIVIDEO_CHANNEL", "AI 热点解读"),
-        help="频道定位（垂直标签），默认环境变量 AIVIDEO_CHANNEL 或「AI 热点解读」",
-    )
+    parser.add_argument("--use-selection", action="store_true",
+                        help="跳过找文章，复用 logs/last_article.json")
+    parser.add_argument("--auto-pick", action="store_true",
+                        help="不交互，直接由 Opus 4.7 选最佳")
     args = parser.parse_args()
 
-    exclude_keywords = [k.strip() for k in (args.exclude or "").split(",") if k.strip()]
+    exclude_urls = [u.strip() for u in (args.exclude_urls or "").split(",") if u.strip()]
     logs_dir = ROOT / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[research] 检索方向: {args.topic}（频道={args.channel}，近 {args.days} 天，模型={os.environ.get('CURSOR_MODEL_ID', 'composer-2.5')}）")
-    if exclude_keywords:
-        print(f"  排除: {', '.join(exclude_keywords)}")
+    print(f"[research] 文章驱动 | 近 {args.days} 天 | 中英文各 3 候选 | "
+          f"搜索=Exa | 筛选/深读/改编={text_model()} (effort=low)")
 
     try:
-        script, _ = run_research(
-            args.topic,
+        script, _ = run_article_research(
             output=args.output,
-            agent_id=args.agent_id,
             days=args.days,
-            exclude_keywords=exclude_keywords or None,
-            batch_index=args.batch_index,
-            batch_total=args.batch_total,
+            exclude_urls=exclude_urls or None,
+            agent_id=args.agent_id,
             logs_dir=logs_dir,
             use_selection=args.use_selection,
             auto_pick=args.auto_pick,
-            channel=args.channel,
         )
     except (ValueError, json.JSONDecodeError, RuntimeError) as e:
-        print(f"调研失败: {e}", file=sys.stderr)
+        import traceback
+        print(f"调研失败: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        traceback.print_exc()
         return 1
 
     print(f"[done] 脚本: {args.output}")
-    print(f"  关键词={script.get('keyword')} title={script['title']} slides={len(script['slides'])}")
+    print(f"  title={script['title']}  slides={len(script['slides'])}")
     return 0
 
 
