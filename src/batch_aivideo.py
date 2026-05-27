@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from paths import ROOT
@@ -17,6 +17,8 @@ from research import load_env, run_article_research
 
 PROGRESS_FILE = ROOT / "logs" / "batch_progress.json"
 BATCH_LOG = ROOT / "logs" / "batch_run.log"
+HISTORY_FILE = ROOT / "logs" / "article_history.json"
+HISTORY_WINDOW_DAYS = int(os.environ.get("BATCH_HISTORY_DAYS", "21"))
 
 
 def log(msg: str) -> None:
@@ -51,6 +53,98 @@ def exclude_urls(progress: dict) -> list[str]:
         if u:
             urls.append(u)
     return urls
+
+
+# ============================================================
+# 跨批次/跨天主题去重：logs/article_history.json
+# ============================================================
+def load_history() -> list[dict]:
+    if not HISTORY_FILE.is_file():
+        return []
+    try:
+        data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    items = data.get("items") if isinstance(data, dict) else data
+    return [x for x in (items or []) if isinstance(x, dict)]
+
+
+def _within_window(item: dict, *, days: int) -> bool:
+    made_at = str(item.get("made_at") or "").strip()
+    if not made_at:
+        return True
+    try:
+        ts = datetime.fromisoformat(made_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts >= cutoff
+
+
+def recent_history(days: int = HISTORY_WINDOW_DAYS) -> list[dict]:
+    return [x for x in load_history() if _within_window(x, days=days)]
+
+
+def history_exclude_urls(days: int = HISTORY_WINDOW_DAYS) -> list[str]:
+    return [str(x.get("url") or "").strip() for x in recent_history(days) if x.get("url")]
+
+
+def history_recent_topics(days: int = HISTORY_WINDOW_DAYS, limit: int = 30) -> list[str]:
+    topics: list[str] = []
+    seen: set[str] = set()
+    for x in reversed(recent_history(days)):  # 最新的优先
+        t = str(x.get("title") or "").strip()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        topics.append(t)
+        if len(topics) >= limit:
+            break
+    return topics
+
+
+def append_history(item: dict) -> None:
+    url = str(item.get("url") or "").strip()
+    title = str(item.get("title") or "").strip()
+    if not url and not title:
+        return
+    items = load_history()
+    items.append({
+        "url": url,
+        "title": title,
+        "video": item.get("video"),
+        "made_at": datetime.now(timezone.utc).isoformat(),
+    })
+    # 修剪：仅保留近 90 天，避免文件膨胀
+    items = [x for x in items if _within_window(x, days=90)]
+    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    HISTORY_FILE.write_text(
+        json.dumps({"items": items, "updated_at": datetime.now(timezone.utc).isoformat()},
+                   ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def append_history_from_script(script_path: Path, video: Path | None = None) -> None:
+    """单条 run-aivideo 也写历史，保证下一条能主题去重。"""
+    try:
+        data = json.loads(script_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    article = data.get("article") or (data.get("script") or {}).get("article") or {}
+    script = data.get("script") or data
+    video_rel = None
+    if video:
+        vpath = video if video.is_absolute() else ROOT / video
+        if vpath.is_file():
+            video_rel = str(vpath.resolve().relative_to(ROOT.resolve()))
+    append_history({
+        "url": article.get("url") or (script.get("source") or {}).get("url") or "",
+        "title": article.get("title") or script.get("title") or "",
+        "video": video_rel,
+    })
 
 
 def retry(step: str, fn, *, max_attempts: int, pause: int):
@@ -102,6 +196,9 @@ def process_one(
     exclude: list[str],
     max_retries: int,
     retry_pause: int,
+    recent_topics: list[str] | None = None,
+    source: str = "feeds",
+    fresh_hours: int = 24,
 ) -> dict:
     batch_dir = ROOT / "logs" / "batch"
     batch_dir.mkdir(parents=True, exist_ok=True)
@@ -123,6 +220,9 @@ def process_one(
             exclude_urls=exclude or None,
             agent_id=agent_id,
             auto_pick=True,
+            recent_topics=recent_topics or None,
+            source=source,
+            fresh_hours=fresh_hours,
         )
         return script
 
@@ -181,6 +281,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="批量制作并发布 AI 资讯短视频")
     parser.add_argument("--count", type=int, default=int(os.environ.get("BATCH_VIDEO_COUNT", "10")))
     parser.add_argument("--days", type=int, default=int(os.environ.get("BATCH_SEARCH_DAYS", "7")))
+    parser.add_argument("--source", choices=("feeds", "exa"), default=os.environ.get("AIVIDEO_SOURCE", "feeds"))
+    parser.add_argument("--fresh-hours", type=int, default=int(os.environ.get("AIVIDEO_FRESH_HOURS", "24")))
     parser.add_argument("--max-retries", type=int, default=int(os.environ.get("BATCH_MAX_RETRIES", "5")))
     parser.add_argument("--retry-pause", type=int, default=int(os.environ.get("BATCH_RETRY_PAUSE", "30")))
     parser.add_argument(
@@ -204,7 +306,8 @@ def main() -> int:
     completed_indices = {int(x["index"]) for x in progress.get("completed") or [] if x.get("index")}
 
     log("=== AIVideo 批量任务 ===")
-    log(f"目标: {args.count} 条 | 时间窗: 近 {args.days} 天")
+    window = f"固定信息源近 {args.fresh_hours} 小时" if args.source == "feeds" else f"Exa 近 {args.days} 天"
+    log(f"目标: {args.count} 条 | 候选: {window}")
     log(f"已完成: {len(completed_indices)}/{args.count}")
     log(f"进度文件: {PROGRESS_FILE}")
     log("发布: 制作完成后运行 ./publish-all-douyin.sh")
@@ -215,7 +318,11 @@ def main() -> int:
             if index in completed_indices:
                 continue
 
-            exclude = exclude_urls(progress)
+            # 本批次内累积 + 历史窗口 URL 一并排除
+            exclude = list(dict.fromkeys(exclude_urls(progress) + history_exclude_urls()))
+            recent_topics = history_recent_topics()
+            if recent_topics:
+                log(f"  📚 近 {HISTORY_WINDOW_DAYS} 天已做过 {len(recent_topics)} 个主题，提醒 Opus 规避")
             try:
                 item = process_one(
                     index,
@@ -224,6 +331,9 @@ def main() -> int:
                     exclude=exclude,
                     max_retries=args.max_retries,
                     retry_pause=args.retry_pause,
+                    recent_topics=recent_topics,
+                    source=args.source,
+                    fresh_hours=args.fresh_hours,
                 )
             except RuntimeError as e:
                 log(f"✗ 第 {index} 条失败，60s 后从断点继续: {e}")
@@ -236,6 +346,7 @@ def main() -> int:
 
             progress.setdefault("completed", []).append(item)
             save_progress(progress)
+            append_history(item)
             completed_indices.add(index)
             log(f"★ 进度 {len(completed_indices)}/{args.count} 完成")
 

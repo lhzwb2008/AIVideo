@@ -124,6 +124,8 @@ def main() -> int:
             [str(ROOT / "run-batch-aivideo.sh"),
              "--count", str(args.count),
              "--days", str(args.days),
+             "--source", os.environ.get("AIVIDEO_SOURCE", "feeds"),
+             "--fresh-hours", os.environ.get("AIVIDEO_FRESH_HOURS", "24"),
              "--reset"],
             label="制作批量视频",
         )

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -34,6 +35,18 @@ SUBTITLE_Y = 1640              # 字幕在图片下方留白区
 COVER_DURATION_S = 2.6
 TTS_SAMPLE_RATE = 24000        # 与 DASHSCOPE_TTS_SAMPLE_RATE 保持一致
 
+# ============================================================
+# 栏目品牌：AI 全球通
+# ============================================================
+BRAND_NAME = os.environ.get("AIVIDEO_BRAND_NAME", "AI 全球通").strip()
+BRAND_TAGLINE = os.environ.get("AIVIDEO_BRAND_TAGLINE", "AI 前沿热点 · 深度剖析").strip()
+OUTRO_NARRATION = os.environ.get(
+    "AIVIDEO_OUTRO_NARRATION",
+    "我是AI全球通，专注AI前沿热点深度剖析。觉得有用就点个关注加点赞，下条更新别错过！",
+).strip()
+OUTRO_HEADLINE = os.environ.get("AIVIDEO_OUTRO_HEADLINE", "点赞 · 收藏 · 关注").strip()
+OUTRO_SUBLINE = os.environ.get("AIVIDEO_OUTRO_SUBLINE", "下条更新别错过").strip()
+
 
 def font_path() -> str:
     p = os.environ.get("AIVIDEO_FONT", "assets/HiraginoSansGB.ttc").strip()
@@ -58,6 +71,36 @@ def _fit_font_size(text: str, max_width: int, base_size: int, min_size: int = 18
     return min_size
 
 
+def _draw_brand_badge(
+    draw: ImageDraw.ImageDraw,
+    *,
+    x: int = 36,
+    y: int = 36,
+    font_size: int = 46,
+) -> None:
+    """左上角小徽标：黄色 highlight + 黑字 "AI 全球通"。栏目品牌透出。"""
+    if not BRAND_NAME:
+        return
+    font = load_font(font_size)
+    bbox = font.getbbox(BRAND_NAME)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    pad_x, pad_y = 22, 12
+    box_x1, box_y1 = x, y
+    box_x2 = x + text_w + pad_x * 2
+    box_y2 = y + text_h + pad_y * 2
+    shadow = 5
+    draw.rounded_rectangle(
+        [(box_x1 + shadow, box_y1 + shadow), (box_x2 + shadow, box_y2 + shadow)],
+        radius=16, fill=(40, 40, 40),
+    )
+    draw.rounded_rectangle(
+        [(box_x1, box_y1), (box_x2, box_y2)],
+        radius=16, fill=(254, 224, 71), outline=(40, 40, 40), width=3,
+    )
+    draw.text((box_x1 + pad_x, box_y1 + pad_y - bbox[1]), BRAND_NAME, font=font, fill=(40, 40, 40))
+
+
 def render_base_canvas(
     image_path: Path,
     *,
@@ -75,6 +118,7 @@ def render_base_canvas(
         x = (CANVAS_W - new_w) // 2
         y = (IMAGE_AREA_H - new_h) // 2
         canvas.paste(img, (x, y))
+    _draw_brand_badge(ImageDraw.Draw(canvas))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_path, "PNG")
     return out_path
@@ -108,6 +152,7 @@ def render_full_cover(image_path: Path, *, out_path: Path) -> Path:
     x = (CANVAS_W - new_w) // 2
     y = (CANVAS_H - new_h) // 2
     canvas.paste(img, (x, y))
+    _draw_brand_badge(ImageDraw.Draw(canvas), font_size=54)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_path, "PNG")
     return out_path
@@ -231,6 +276,7 @@ def render_title_cover(
             draw.text(((CANVAS_W - sw) / 2, cur_y), line, font=sub_font, fill=(70, 50, 30))
             cur_y += sub_line_h
 
+    _draw_brand_badge(draw, font_size=54)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_path, "PNG")
     return out_path
@@ -260,6 +306,130 @@ def compose_cover_clip(
     if proc.returncode != 0:
         raise RuntimeError(f"封面 clip 合成失败:\n{proc.stderr[-1500:]}")
     return out_path
+
+
+def render_outro_page(out_path: Path) -> Path:
+    """品牌尾页：超大 AI 全球通 + 引导关注点赞 + 向下箭头。"""
+    canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), BG_COLOR)
+    draw = ImageDraw.Draw(canvas)
+    _draw_grid(draw)
+
+    brand_font = load_font(_fit_font_size(BRAND_NAME, CANVAS_W - 200, base_size=200, min_size=120))
+    bw = brand_font.getbbox(BRAND_NAME)[2] - brand_font.getbbox(BRAND_NAME)[0]
+    bx = (CANVAS_W - bw) // 2
+    by = 360
+    bh = brand_font.getbbox(BRAND_NAME)[3] - brand_font.getbbox(BRAND_NAME)[1]
+    # 黄色高亮
+    draw.rectangle(
+        [(bx - 24, by + int(bh * 0.55)), (bx + bw + 24, by + bh + 30)],
+        fill=(254, 224, 71),
+    )
+    draw.text((bx, by), BRAND_NAME, font=brand_font, fill=(40, 40, 40))
+
+    if BRAND_TAGLINE:
+        tag_size = _fit_font_size(BRAND_TAGLINE, CANVAS_W - 200, base_size=68, min_size=44)
+        tag_font = load_font(tag_size)
+        tw = tag_font.getbbox(BRAND_TAGLINE)[2] - tag_font.getbbox(BRAND_TAGLINE)[0]
+        draw.text(((CANVAS_W - tw) // 2, by + bh + 80), BRAND_TAGLINE, font=tag_font, fill=(70, 50, 30))
+
+    # CTA 黄色卡片
+    box_x1, box_x2 = 80, CANVAS_W - 80
+    box_y1, box_y2 = 1180, 1680
+    shadow = 14
+    draw.rounded_rectangle(
+        [(box_x1 + shadow, box_y1 + shadow), (box_x2 + shadow, box_y2 + shadow)],
+        radius=44, fill=(40, 40, 40),
+    )
+    draw.rounded_rectangle(
+        [(box_x1, box_y1), (box_x2, box_y2)],
+        radius=44, fill=(254, 224, 71), outline=(40, 40, 40), width=6,
+    )
+
+    head_size = _fit_font_size(OUTRO_HEADLINE, CANVAS_W - 260, base_size=110, min_size=72)
+    head_font = load_font(head_size)
+    hw = head_font.getbbox(OUTRO_HEADLINE)[2] - head_font.getbbox(OUTRO_HEADLINE)[0]
+    draw.text(((CANVAS_W - hw) // 2, box_y1 + 90), OUTRO_HEADLINE, font=head_font, fill=(40, 40, 40))
+
+    if OUTRO_SUBLINE:
+        sub_size = _fit_font_size(OUTRO_SUBLINE, CANVAS_W - 260, base_size=60, min_size=40)
+        sub_font = load_font(sub_size)
+        sw = sub_font.getbbox(OUTRO_SUBLINE)[2] - sub_font.getbbox(OUTRO_SUBLINE)[0]
+        underline_y = box_y1 + 280
+        draw.line(
+            [(box_x1 + 80, underline_y), (box_x2 - 80, underline_y)],
+            fill=(196, 80, 40), width=5,
+        )
+        draw.text(((CANVAS_W - sw) // 2, box_y1 + 310), OUTRO_SUBLINE, font=sub_font, fill=(70, 50, 30))
+
+    # 关注箭头
+    cx = CANVAS_W // 2
+    ay = 1740
+    draw.line([(cx, ay), (cx, ay + 90)], fill=(40, 40, 40), width=10)
+    draw.polygon(
+        [(cx - 38, ay + 70), (cx + 38, ay + 70), (cx, ay + 135)],
+        fill=(40, 40, 40),
+    )
+
+    _draw_brand_badge(draw, font_size=54)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path, "PNG")
+    return out_path
+
+
+def _compose_audio_image_clip(
+    *,
+    image_path: Path,
+    audio_path: Path,
+    out_path: Path,
+) -> Path:
+    """无字幕版的 image+audio 合成（给尾页用，CTA 已经画在图上了）。"""
+    duration = ffprobe_duration(audio_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", str(image_path),
+        "-i", str(audio_path),
+        "-af", "pan=stereo|c0=c0|c1=c0",
+        "-r", "30",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
+        "-shortest",
+        "-t", f"{duration:.3f}",
+        str(out_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"outro clip 合成失败:\n{proc.stderr[-1500:]}")
+    return out_path
+
+
+def ensure_outro_clip() -> Path:
+    """生成一次品牌尾页 mp4，按 (brand+tagline+headline+subline+narration) 哈希缓存。"""
+    cache_dir = ROOT / "assets" / "outro"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha1(
+        json.dumps(
+            {
+                "brand": BRAND_NAME, "tagline": BRAND_TAGLINE,
+                "headline": OUTRO_HEADLINE, "subline": OUTRO_SUBLINE,
+                "narration": OUTRO_NARRATION,
+            },
+            ensure_ascii=False, sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    clip_path = cache_dir / f"outro_{key}.mp4"
+    if clip_path.is_file() and clip_path.stat().st_size > 10_000:
+        return clip_path
+
+    print(f"[outro] 首次生成品牌尾页 → {clip_path}", file=sys.stderr)
+    png_path = cache_dir / f"outro_{key}.png"
+    audio_path = cache_dir / f"outro_{key}.mp3"
+    render_outro_page(png_path)
+    if not audio_path.is_file() or audio_path.stat().st_size < 1000:
+        tts_synthesize(OUTRO_NARRATION, out_path=audio_path)
+    _compose_audio_image_clip(image_path=png_path, audio_path=audio_path, out_path=clip_path)
+    return clip_path
 
 
 _PHRASE_SPLIT = re.compile(r"[，。！？；,!?;\n]+")
@@ -509,6 +679,13 @@ def compose_video(
             work_dir=work_dir / f"phrases_{i:02d}",
         )
         clips.append(clip_path)
+
+    try:
+        outro_clip = ensure_outro_clip()
+        clips.append(outro_clip)
+        print(f"[outro] 追加品牌尾页：{outro_clip.name}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[outro] ⚠️ 生成尾页失败，跳过：{exc}", file=sys.stderr)
 
     output = output or (ROOT / "output" / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -26,21 +26,27 @@ def _format_source(source: object) -> str:
 
 def build_sau_fields(script: dict | None) -> dict[str, str]:
     """返回 publish-douyin 用的 title、desc、tags（逗号分隔，无 #）。"""
+    brand = _env("AIVIDEO_BRAND_NAME", "AI全球通").replace(" ", "")
     keyword = (script or {}).get("keyword", "").strip()
-    title = ((script or {}).get("title") or keyword or "AI热点").strip()
+    raw_title = ((script or {}).get("title") or keyword or "AI热点").strip()
+    title = raw_title if brand and brand in raw_title else (f"【{brand}】{raw_title}" if brand else raw_title)
     source = _format_source((script or {}).get("source"))
 
     tag_parts: list[str] = []
+    if brand:
+        tag_parts.append(brand)
     if keyword:
         tag_parts.append(_strip_hashtag(keyword.replace(" ", "")))
-    for raw in _env("DOUYIN_HASHTAGS", "#AI #人工智能").split():
+    for raw in _env("DOUYIN_HASHTAGS", "#AI #人工智能 #AI前沿").split():
         t = _strip_hashtag(raw)
         if t and t not in tag_parts:
             tag_parts.append(t)
 
-    desc_bits = [title]
-    if keyword and keyword not in title:
+    desc_bits = [raw_title]
+    if keyword and keyword not in raw_title:
         desc_bits.append(keyword)
+    if brand:
+        desc_bits.append(f"——{brand}，AI 前沿热点深度剖析，点关注追更新。")
     if source:
         desc_bits.append(f"参考：{source}")
     extra = _env("DOUYIN_DESC_SUFFIX")
