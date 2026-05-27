@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from douyin_caption import build_sau_fields
+from douyin_caption import build_sau_fields, _strip_urls
 from douyin_publisher import DouyinPublishError, publish_video, resolve_playwright_python
 from paths import ROOT
 from sau_client import SauError, check_douyin_session, douyin_account
@@ -101,7 +101,7 @@ def main() -> int:
         fields = build_sau_fields(script)
 
         title = args.title or fields["title"]
-        desc = args.desc or fields["desc"]
+        desc = _strip_urls(args.desc or fields["desc"])
         tags = args.tags if args.tags is not None else fields["tags"]
 
         if script is None and not args.title:

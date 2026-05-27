@@ -30,10 +30,19 @@ CANVAS_H = 1920
 IMAGE_AREA_H = 1500            # 图片占满顶部 78%
 BG_COLOR = (251, 246, 228)     # 暖米色，匹配方格纸
 TEXT_COLOR = (40, 40, 40)
-SUBTITLE_Y = 1640              # 字幕在图片下方留白区
+SUBTITLE_Y = int(os.environ.get("AIVIDEO_SUBTITLE_Y", "1260"))  # 避开抖音底部简介浮层
 
-COVER_DURATION_S = 2.6
 TTS_SAMPLE_RATE = 24000        # 与 DASHSCOPE_TTS_SAMPLE_RATE 保持一致
+
+
+def cover_duration_s() -> float:
+    """开场静音封面时长（秒）。过长易被当成卡住；0 表示跳过独立封面段。"""
+    raw = os.environ.get("AIVIDEO_COVER_DURATION_S", "0.8").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.8
+    return max(0.0, min(value, 3.0))
 
 # ============================================================
 # 栏目品牌：AI财知道
@@ -514,7 +523,7 @@ def _drawtext_filter(
         "boxcolor=black@0.55",
         "boxborderw=24",
         "x=(w-text_w)/2",
-        f"y={y}",
+        f"y={y}-text_h/2",
         "line_spacing=10",
         f"enable='between(t,{start:.3f},{end:.3f})'",
     ]
@@ -643,9 +652,14 @@ def compose_video(
                 out_path=cover_png,
                 hero_image=hero_path if hero_path.is_file() else None,
             )
-        cover_mp4 = work_dir / "clip_00_cover.mp4"
-        compose_cover_clip(cover_image=cover_png, duration=COVER_DURATION_S, out_path=cover_mp4)
-        clips.append(cover_mp4)
+        cover_dur = cover_duration_s()
+        if cover_dur > 0:
+            cover_mp4 = work_dir / "clip_00_cover.mp4"
+            compose_cover_clip(cover_image=cover_png, duration=cover_dur, out_path=cover_mp4)
+            clips.append(cover_mp4)
+            print(f"  封面停留 {cover_dur:.2f}s（可用 AIVIDEO_COVER_DURATION_S 调整）", file=sys.stderr)
+        else:
+            print("  跳过独立封面段（AIVIDEO_COVER_DURATION_S=0）", file=sys.stderr)
 
     for i, slide in enumerate(slides, start=1):
         print(f"[{i}/{total}] 合成单段：{slide.get('chapter_title') or slide.get('headline') or ''}", file=sys.stderr)
