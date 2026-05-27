@@ -35,6 +35,16 @@ SUBTITLE_Y = int(os.environ.get("AIVIDEO_SUBTITLE_Y", "1260"))  # 避开抖音�
 TTS_SAMPLE_RATE = 24000        # 与 DASHSCOPE_TTS_SAMPLE_RATE 保持一致
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def cover_duration_s() -> float:
     """开场静音封面时长（秒）。过长易被当成卡住；0 表示跳过独立封面段。"""
     raw = os.environ.get("AIVIDEO_COVER_DURATION_S", "0.8").strip()
@@ -83,13 +93,15 @@ def _fit_font_size(text: str, max_width: int, base_size: int, min_size: int = 18
 def _draw_brand_badge(
     draw: ImageDraw.ImageDraw,
     *,
-    x: int = 36,
-    y: int = 36,
+    x: int | None = None,
+    y: int | None = None,
     font_size: int = 46,
 ) -> None:
     """左上角小徽标：黄色 highlight + 黑字品牌名。栏目品牌透出。"""
     if not BRAND_NAME:
         return
+    x = _env_int("AIVIDEO_BRAND_BADGE_X", 86) if x is None else x
+    y = _env_int("AIVIDEO_BRAND_BADGE_Y", 96) if y is None else y
     font = load_font(font_size)
     bbox = font.getbbox(BRAND_NAME)
     text_w = bbox[2] - bbox[0]

@@ -3,8 +3,8 @@
 **每天一个 AI 财经为什么**。从 AI、财经、美股和中概股热点里挑最值得解释的一件事，改编成问句标题的中文短视频。Cursor Cloud Agent 联网搜索 + 深读，Claude Opus 4.7 评审与改编，AiHubMix 生图，本地 TTS + ffmpeg 合成竖屏视频，（手动）发布抖音。
 
 ```bash
-./run-aivideo.sh
-./publish-all-douyin.sh    # 制作完成后单独执行
+./make-and-publish.sh    # 生成 1 条并自动发布，成功后归档
+./schedule.sh            # 安装/重启每日定时任务
 ```
 
 ## 内容策略
@@ -26,12 +26,11 @@
 
 | 步骤 | 命令 | 产出 |
 |------|------|------|
-| 一键制作 | `./run-aivideo.sh` | 找文章 + 深读 + 改编问答脚本 + 生图 + 合成 → `output/*.mp4` |
-| 批量制作 | `./run-batch-aivideo.sh` | 多条视频，自动排除已用过的 URL |
-| **每日定时** | `./run-daily.sh` | 近 24h 中英文热点 → 制作 2 条 → 发布抖音 → 归档到 `output/published/<日期>/` |
-| 仅生图 | `./run-enrich-images.sh logs/last_script.json` | 写入 `slide.image_path` |
-| 仅合成 | `./run-compose.sh logs/last_script.json` | TTS + ffmpeg → `output/*.mp4` |
-| **发布** | `./publish-all-douyin.sh` | 发布 `output/` 下未发布的 MP4 |
+| Make + publish | `./make-and-publish.sh` | Exa 找选题 + 深读 + 改编 + 生图 + 合成 + 发布抖音 + 归档 |
+| Schedule | `./schedule.sh` | 安装/重启每日定时任务，自动制作发布并归档 |
+| Debug image only | `./scripts/run-enrich-images.sh logs/last_script.json` | 写入 `slide.image_path` |
+| Debug compose only | `./scripts/run-compose.sh logs/last_script.json` | TTS + ffmpeg → `output/*.mp4` |
+| Debug publish only | `./scripts/publish-douyin.sh output/xxx.mp4 --script logs/xxx.json` | 调试用，正常不用手动执行 |
 
 调研中间产物（都在 `logs/`）：
 
@@ -79,10 +78,8 @@ src/
 ```bash
 ./setup-sau.sh                       # 一次性
 ./douyin-login.sh                    # 扫码登录
-./publish-all-douyin.sh              # 发布全部未发布的 mp4
-./publish-all-douyin.sh --dry-run    # 预览
-./publish-all-douyin.sh --assist     # 半自动
-./publish-douyin.sh output/xxx.mp4   # 单条
+./make-and-publish.sh                # 正常入口：制作完成后自动发布
+./scripts/publish-douyin.sh output/xxx.mp4   # 单条调试
 ```
 
 记录：`logs/published_videos.json`、`logs/video_manifest.jsonl`。
@@ -92,12 +89,12 @@ src/
 每天定时跑一遍「搜近 24h 中英文 AI/财经热点 → 制作 2 条 → 发布 → 归档」：
 
 ```bash
-./restart.sh            # 安装/重启守护（改完代码也是这条）
-./restart.sh --now      # 重启并立刻试跑一次
-./restart.sh --status   # 看当前调度
-./restart.sh --stop     # 卸载守护
+./schedule.sh            # 安装/重启守护（改完代码也是这条）
+./schedule.sh --now      # 重启并立刻试跑一次
+./schedule.sh --status   # 看当前调度
+./schedule.sh --stop     # 卸载守护
 
-tail -f logs/daily_run.log
+tail -f logs/schedule_stdout.log
 ```
 
 `.env` 配置（缺省即取默认值）：

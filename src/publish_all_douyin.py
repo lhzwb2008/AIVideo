@@ -179,7 +179,7 @@ def list_videos(output_dir: Path) -> list[Path]:
 
 def publish_one(video: Path, script: Path | None, extra_args: list[str]) -> int:
     rel_video = norm_video(str(video.relative_to(ROOT)))
-    cmd = [str(ROOT / "publish-douyin.sh"), rel_video]
+    cmd = [str(ROOT / "scripts" / "publish-douyin.sh"), rel_video]
     if script and script.is_file():
         cmd.extend(["--script", str(script.relative_to(ROOT))])
     cmd.extend(extra_args)

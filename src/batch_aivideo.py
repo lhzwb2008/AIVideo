@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""批量：近 N 天 AI 新闻 → 多条视频。支持断点续跑、逐步重试直到成功。发布请用 ./publish-all-douyin.sh"""
+"""旧批量制作入口。主流程请使用 ./make-and-publish.sh。"""
 
 from __future__ import annotations
 
@@ -111,12 +111,14 @@ def append_history(item: dict) -> None:
     if not url and not title:
         return
     items = load_history()
-    items.append({
-        "url": url,
+    record = {
         "title": title,
-        "video": item.get("video"),
         "made_at": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    # 兼容旧逻辑：URL 仅用于硬排除，同主题去重主要看 title。
+    if url:
+        record["url"] = url
+    items.append(record)
     # 修剪：仅保留近 90 天，避免文件膨胀
     items = [x for x in items if _within_window(x, days=90)]
     HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -135,15 +137,9 @@ def append_history_from_script(script_path: Path, video: Path | None = None) -> 
         return
     article = data.get("article") or (data.get("script") or {}).get("article") or {}
     script = data.get("script") or data
-    video_rel = None
-    if video:
-        vpath = video if video.is_absolute() else ROOT / video
-        if vpath.is_file():
-            video_rel = str(vpath.resolve().relative_to(ROOT.resolve()))
     append_history({
         "url": article.get("url") or (script.get("source") or {}).get("url") or "",
         "title": article.get("title") or script.get("title") or "",
-        "video": video_rel,
     })
 
 
@@ -170,7 +166,7 @@ def rel_path(path: Path) -> str:
 def run_compose(script_path: Path) -> Path:
     env = os.environ.copy()
     proc = subprocess.run(
-        [str(ROOT / "run-compose.sh"), str(script_path)],
+        [str(ROOT / "scripts" / "run-compose.sh"), str(script_path)],
         cwd=ROOT,
         env=env,
         capture_output=True,
@@ -234,7 +230,7 @@ def process_one(
 
         def do_enrich() -> None:
             proc = subprocess.run(
-                [str(ROOT / "run-enrich-images.sh"), str(script_path)],
+                [str(ROOT / "scripts" / "run-enrich-images.sh"), str(script_path)],
                 cwd=ROOT,
                 env=os.environ.copy(),
                 capture_output=True,
@@ -281,7 +277,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="批量制作并发布 AI 资讯短视频")
     parser.add_argument("--count", type=int, default=int(os.environ.get("BATCH_VIDEO_COUNT", "10")))
     parser.add_argument("--days", type=int, default=int(os.environ.get("BATCH_SEARCH_DAYS", "7")))
-    parser.add_argument("--source", choices=("feeds", "exa"), default=os.environ.get("AIVIDEO_SOURCE", "feeds"))
+    parser.add_argument("--source", choices=("feeds", "exa"), default=os.environ.get("AIVIDEO_SOURCE", "exa"))
     parser.add_argument("--fresh-hours", type=int, default=int(os.environ.get("AIVIDEO_FRESH_HOURS", "24")))
     parser.add_argument("--max-retries", type=int, default=int(os.environ.get("BATCH_MAX_RETRIES", "5")))
     parser.add_argument("--retry-pause", type=int, default=int(os.environ.get("BATCH_RETRY_PAUSE", "30")))
@@ -310,7 +306,7 @@ def main() -> int:
     log(f"目标: {args.count} 条 | 候选: {window}")
     log(f"已完成: {len(completed_indices)}/{args.count}")
     log(f"进度文件: {PROGRESS_FILE}")
-    log("发布: 制作完成后运行 ./publish-all-douyin.sh")
+    log("发布: 主流程请使用 ./make-and-publish.sh")
 
     # 外层循环：直到全部成功
     while len(completed_indices) < args.count:
@@ -358,7 +354,7 @@ def main() -> int:
         # inner break → retry outer while
 
     log(f"=== 全部完成：{args.count} 条视频已制作 ===")
-    log("发布抖音: ./publish-all-douyin.sh")
+    log("发布抖音: ./make-and-publish.sh 会自动处理")
     for item in sorted(progress["completed"], key=lambda x: x["index"]):
         log(f"  [{item['index']:02d}] {item.get('title')} → {item.get('video')}")
     return 0

@@ -1,8 +1,7 @@
 """固定信息源抓取：比全网搜索更适合每日 24h 热点。
 
 目前内置：
-- AIbase 中文资讯页
-- AI News 英文首页
+- 旧版固定信息源（默认主流程已切到 Exa Search，本模块仅作兜底/调试）
 
 输出统一 article candidate dict，供 research.py 后续评审/深读/改编。
 """
@@ -11,6 +10,7 @@ from __future__ import annotations
 
 import html
 import re
+import xml.etree.ElementTree as ET
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -29,6 +29,13 @@ def _fetch(url: str, *, timeout: float = 45) -> str:
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read()
     return raw.decode("utf-8", errors="replace")
+
+
+def _rsshub_base() -> str:
+    """RSSHub 可选自建/公共实例；为空时跳过依赖 RSSHub 的路由。"""
+    import os
+
+    return os.environ.get("RSSHUB_BASE_URL", "").strip().rstrip("/")
 
 
 def _strip_tags(text: str) -> str:
@@ -96,6 +103,66 @@ def _candidate(
         "estimated_pages": 5,
         "source_type": source_type,
     }
+
+
+def _rss_text(node: ET.Element, name: str) -> str:
+    child = node.find(name)
+    if child is not None and child.text:
+        return child.text
+    for item in node:
+        if item.tag.rsplit("}", 1)[-1] == name and item.text:
+            return item.text
+    return ""
+
+
+def _parse_rss_date(raw: str) -> str:
+    raw = (raw or "").strip()
+    if not raw:
+        return _iso_date()
+    try:
+        return parsedate_to_datetime(raw).date().isoformat()
+    except (TypeError, ValueError):
+        return raw[:10] if re.match(r"\d{4}-\d{2}-\d{2}", raw) else _iso_date()
+
+
+def fetch_rss(
+    url: str,
+    *,
+    site: str,
+    language: str,
+    source_type: str,
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    text = _fetch(url)
+    root = ET.fromstring(text)
+    nodes = root.findall(".//item") or root.findall(".//{http://www.w3.org/2005/Atom}entry")
+    items: list[dict[str, Any]] = []
+    for node in nodes[:limit]:
+        title = _rss_text(node, "title")
+        link = _rss_text(node, "link")
+        if not link:
+            link_node = node.find("{http://www.w3.org/2005/Atom}link")
+            link = link_node.attrib.get("href", "") if link_node is not None else ""
+        summary = (
+            _rss_text(node, "description")
+            or _rss_text(node, "summary")
+            or _rss_text(node, "content")
+        )
+        published = _rss_text(node, "pubDate") or _rss_text(node, "published") or _rss_text(node, "updated")
+        if not title or not link:
+            continue
+        items.append(
+            _candidate(
+                title=title,
+                url=link,
+                site=site,
+                published_at=_parse_rss_date(published),
+                summary=summary or title,
+                language=language,
+                source_type=source_type,
+            )
+        )
+    return _dedup(items)
 
 
 def fetch_aibase(hours: int = 24) -> list[dict[str, Any]]:
@@ -215,9 +282,49 @@ def fetch_ai_news(hours: int = 24) -> list[dict[str, Any]]:
     return _dedup(items)
 
 
+FINANCE_RSS_SOURCES = [
+    # 直接可用源
+    ("36kr.com", "https://36kr.com/feed", "zh", "feed:36kr"),
+    ("seekingalpha.com", "https://seekingalpha.com/market_currents.xml", "en", "feed:seeking-alpha"),
+]
+
+RSSHUB_FINANCE_ROUTES = [
+    # 需要 RSSHUB_BASE_URL，例如 https://rsshub.app 或自建实例。
+    ("wallstreetcn.com", "/wallstreetcn/hot/day", "zh", "feed:wallstreetcn-hot"),
+    ("wallstreetcn.com", "/wallstreetcn/live/us-stock", "zh", "feed:wallstreetcn-us-stock"),
+    ("wallstreetcn.com", "/wallstreetcn/live/hk-stock", "zh", "feed:wallstreetcn-hk-stock"),
+    ("sina.com.cn", "/sina/finance/roll", "zh", "feed:sina-finance"),
+    ("reuters.com", "/reuters/business/finance", "en", "feed:reuters-finance"),
+    ("reuters.com", "/reuters/technology", "en", "feed:reuters-tech"),
+    ("yahoo.com", "/yahoo/news/en-US/finance", "en", "feed:yahoo-finance"),
+]
+
+
+def fetch_finance_feeds(hours: int = 24) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    sources = list(FINANCE_RSS_SOURCES)
+    rsshub = _rsshub_base()
+    if rsshub:
+        sources.extend(
+            (site, f"{rsshub}{route}", language, source_type)
+            for site, route, language, source_type in RSSHUB_FINANCE_ROUTES
+        )
+    else:
+        print("  ℹ️  未设置 RSSHUB_BASE_URL，跳过华尔街见闻/Reuters/Yahoo 等 RSSHub 财经源")
+    for site, url, language, source_type in sources:
+        try:
+            got = fetch_rss(url, site=site, language=language, source_type=source_type)
+            print(f"  📰 财经源 {site} → {len(got)} 条")
+            items.extend(got)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️  财经信息源抓取失败 {site}: {exc}")
+            continue
+    return _dedup(items)
+
+
 def fetch_feed_candidates(hours: int = 24) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    for fetcher in (fetch_aibase, fetch_ai_news):
+    for fetcher in (fetch_aibase, fetch_ai_news, fetch_finance_feeds):
         try:
             items.extend(fetcher(hours=hours))
         except Exception as exc:  # noqa: BLE001

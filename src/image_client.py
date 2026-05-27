@@ -108,15 +108,16 @@ def build_prompt(
         "Hand-drawn whiteboard sketch on light beige graph paper, vertical portrait 9:16 aspect ratio.",
         "Black ballpoint pen line drawing, casual notebook illustration style, with subtle yellow and light purple highlighter accents.",
         "Crisp clean lines, comfortable amount of empty white space, friendly and educational mood.",
+        "Important safe area for Douyin/TikTok UI: keep all meaningful text, logos, page numbers, and icons away from the top 12% of the canvas, the leftmost 8%, the rightmost 10%, and the bottom 25%. Use the middle 65% as the main information area.",
         f"Page layout: {image_prompt.strip()}" if image_prompt.strip() else "",
     ]
     if chapter_title:
         parts.append(
-            f"Top-left small handwritten chapter tag in Chinese: \"{chapter_title.strip()}\"."
+            f"Place a small handwritten chapter tag in Chinese reading \"{chapter_title.strip()}\" near the upper-left of the safe area, around 12-16% from the top and 8-12% from the left, not at the extreme corner."
         )
     if page_index and total_pages:
         parts.append(
-            f"Top-right small page number handwritten as \"{page_index:02d}/{total_pages:02d}\"."
+            f"Place a small page number handwritten as \"{page_index:02d}/{total_pages:02d}\" near the upper-right of the safe area, around 12-16% from the top and 12-16% from the right, not at the extreme corner."
         )
     labels = [str(t).strip() for t in (on_image_text or []) if str(t).strip()]
     if labels:

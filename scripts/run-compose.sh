@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 本地合成：脚本 + 配图 + TTS + ffmpeg → output/xxx.mp4
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 [[ -f .env ]] && set -a && source .env && set +a
 

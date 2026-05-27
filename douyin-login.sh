@@ -104,7 +104,7 @@ cd "$SAU_HOME"
 echo ""
 echo "登录流程结束，正在验证上传页…"
 if session_check; then
-  echo "验证通过，可以执行 ./publish-all-douyin.sh"
+  echo "验证通过，可以执行 ./make-and-publish.sh"
   exit 0
 fi
 

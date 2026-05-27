@@ -139,6 +139,7 @@ EXA_QUERIES_EN = [
     "Hacker News top AI story past week",
     "viral AI essay or report this week",
     "AI industry hot take or deep dive recent",
+    "latest AI finance market analysis earnings stock reaction",
 ]
 
 EXA_QUERIES_ZH = [
@@ -147,6 +148,18 @@ EXA_QUERIES_ZH = [
     "大模型 最新进展 解读 深度",
     "人工智能 行业观察 评论长文",
     "AGI OR 大模型 OR 智能体 中文 深度",
+    "AI 财经 美股 中概股 财报 分析 热点",
+]
+
+EXA_QUERIES_FINANCE = [
+    "latest earnings analysis Magnificent Seven stocks revenue guidance stock reaction",
+    "latest earnings analysis Chinese ADR Alibaba Tencent Baidu JD PDD NetEase Bilibili XPeng Li Auto NIO",
+    "US stock market earnings analysis AI stocks today Nvidia Microsoft Meta Alphabet Amazon Tesla",
+    "Reuters latest business finance earnings stock market AI companies",
+    "Yahoo Finance latest earnings report AI stocks Chinese ADR",
+    "Seeking Alpha latest earnings results AI stocks Chinese ADR",
+    "最新 财报 分析 美股 七姐妹 英伟达 微软 苹果 Meta Google 亚马逊 特斯拉",
+    "最新 中概股 财报 分析 阿里 腾讯 百度 京东 拼多多 网易 理想 蔚来 小鹏",
 ]
 
 # 兼容旧名字（外部不再使用）
@@ -211,6 +224,31 @@ def _format_pool_for_opus(pool: list[dict]) -> str:
             "highlights": r.get("highlights") or [],
         })
     return json.dumps(view, ensure_ascii=False, indent=2)
+
+
+def _exa_result_to_candidate(r: dict, *, language: str = "en") -> dict:
+    title = str(r.get("title") or "").strip()
+    url = str(r.get("url") or "").strip()
+    summary = str(r.get("summary") or title).strip()
+    highlights = [str(x).strip() for x in (r.get("highlights") or []) if str(x).strip()]
+    facts = highlights[:4] or [summary or title]
+    return {
+        "title": title,
+        "url": url,
+        "site": _site_from_url(url),
+        "author": r.get("author") or "",
+        "published_at": (r.get("publishedDate") or "")[:10],
+        "language": language,
+        "summary_en": summary if language == "en" else "",
+        "summary_zh": summary if language == "zh" else title,
+        "thesis": summary or title,
+        "key_facts": facts,
+        "narrative_arc": "最新财经资讯 → 核心数据 → 市场影响",
+        "heat_score": 7,
+        "heat_evidence": "Exa 财经搜索命中",
+        "estimated_pages": 5,
+        "source_type": "exa:finance",
+    }
 
 
 PICK_CANDIDATES_SYSTEM = """你是「AI财知道」选题总编。给你一批 Exa 搜回来的候选文章（含标题/URL/站点/日期/摘要/亮点片段），请按 AI 与财经圈真实热度挑出 **{n} 篇** 适合改编为短视频问答的{lang_label}长文/深度报道。
@@ -329,7 +367,7 @@ def find_articles(
     agent_id: str | None = None,
     per_lang: int = 3,
     recent_topics: list[str] | None = None,
-    source: str = "feeds",
+    source: str = "exa",
     fresh_hours: int = 24,
 ) -> tuple[list[dict], str | None]:
     """获取候选文章。默认固定信息源最近 24h；Exa 保留为兜底。"""
@@ -339,32 +377,39 @@ def find_articles(
             c for c in feed_client.fetch_feed_candidates(hours=fresh_hours)
             if str(c.get("url") or "").strip() not in excl
         ]
+        try:
+            finance_pool = _exa_search_pool(
+                days=max(1, days),
+                exclude_urls=exclude_urls,
+                queries=EXA_QUERIES_FINANCE,
+            )
+            finance_candidates = [
+                _exa_result_to_candidate(r, language="en")
+                for r in finance_pool
+                if str(r.get("url") or "").strip() not in excl
+            ][:30]
+            if finance_candidates:
+                print(f"  ✓ Exa 财经补源：{len(finance_candidates)} 篇")
+                candidates.extend(finance_candidates)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️  Exa 财经补源失败：{exc}", file=sys.stderr)
+        candidates = _dedup_results(candidates)
         if not candidates:
             raise RuntimeError("固定信息源没有抓到候选")
-        print(f"  ✓ 固定信息源候选：{len(candidates)} 篇（近 {fresh_hours} 小时）")
+        print(f"  ✓ 固定信息源候选：{len(candidates)} 篇（近 {fresh_hours} 小时，含财经补源）")
         return candidates, agent_id
 
-    pool_en = _exa_search_pool(
-        days=days, exclude_urls=exclude_urls, queries=EXA_QUERIES_EN,
+    pool = _exa_search_pool(
+        days=days,
+        exclude_urls=exclude_urls,
+        queries=EXA_QUERIES_FINANCE + EXA_QUERIES_EN + EXA_QUERIES_ZH,
     )
-    pool_zh = _exa_search_pool(
-        days=days, exclude_urls=exclude_urls, queries=EXA_QUERIES_ZH,
-    )
-    if not pool_en and not pool_zh:
-        raise RuntimeError("Exa 中英文池都没搜到任何候选")
-
-    cands_en = _pick_from_pool(
-        pool_en, n=per_lang, lang_code="en", lang_label="英文",
-        exclude_urls=exclude_urls, recent_topics=recent_topics,
-    )
-    cands_zh = _pick_from_pool(
-        pool_zh, n=per_lang, lang_code="zh", lang_label="中文",
-        exclude_urls=exclude_urls, recent_topics=recent_topics,
-    )
-    valid = cands_en + cands_zh
+    if not pool:
+        raise RuntimeError("Exa 没搜到任何候选")
+    valid = [_exa_result_to_candidate(r, language="en") for r in pool]
     if not valid:
-        raise RuntimeError("Opus 返回的候选文章均不合规")
-    print(f"  ✓ 候选合并：英文 {len(cands_en)} 篇 + 中文 {len(cands_zh)} 篇 = {len(valid)} 篇")
+        raise RuntimeError("Exa 候选文章均不合规")
+    print(f"  ✓ Exa 候选合并：{len(valid)} 篇")
     return valid, agent_id
 
 
@@ -392,100 +437,149 @@ def _print_candidates(candidates: list[dict]) -> None:
     print()
 
 
-PICK_BEST_SYSTEM = """你是抖音栏目「AI财知道」的选题总编。从候选资讯里挑 1 篇做短视频。
+SCORE_TOPICS_SYSTEM = """你是抖音栏目「AI财知道」的选题打分器。你的任务不是 6 选 1，而是给每一个候选话题独立打分，凡是分数足够高的话题都应该进入待生成队列。
 
 栏目定位：AI 和财经类「十万个为什么」。优先选择 24 小时内的新鲜事件，能用一个搜索型问句讲清楚「这是什么、为什么重要、会影响谁」。
 
-挑选标准：
-1) 新鲜：优先 24 小时内刚发生/刚发布/刚公开的事件。
-2) 重要：技术突破、模型/产品发布、监管转折、巨头战略、开发者生态、资本/商业拐点；大型美股和中概股财报、股价异动、宏观数据也优先。
-3) 可讲：有具体事实、数字、人物、冲突或趋势，不选只有一句空泛公告的软文。
-4) 去重：同一主题多条只留信息密度最高的一条。
+打分标准（topic_score 0-100）：
+- 95-100：必须做。七姐妹（Apple、Microsoft、Nvidia、Alphabet/Google、Amazon、Meta、Tesla）或重点中概股（阿里、腾讯、百度、京东、拼多多、网易、携程、贝壳、B站、理想、蔚来、小鹏等）的最新财报/业绩会/财报后股价大幅异动；或全市场级 AI/宏观/美股事件。
+- 85-94：强烈建议做。AI 巨头战略、AI 商业化拐点、重要模型/产品发布、重要监管/利率/汇率/通胀数据、美股/港股/中概股核心资产明显异动。
+- 75-84：可以做。有清晰事实、数字、冲突和搜索关键词，能讲成一个「为什么/是什么/意味着什么」。
+- 60-74：备选。信息有价值但热度或可讲性一般。
+- 0-59：不做。软文、重复、信息太薄、旧闻、标题党、缺少事实。
+
+高分加权：
+- 最新财报分析、earnings、results、guidance、revenue、profit、EPS、财报、业绩、指引、电话会：显著加分。
+- 七姐妹和重点中概股：显著加分。
+- 同时具备 AI + 财经/股价/财报属性：显著加分。
+- 财联社/华尔街见闻/Reuters/Yahoo Finance/Seeking Alpha 等可信财经源：加分，但 Seeking Alpha 的观点要标记 opinion_risk。
+
+去重规则：
+- 如果与近期已做过标题是同一主角、同一事件、同一发布、同一财报，即使 URL 不同也应 marked duplicate=true，topic_score 不得超过 40。
+- 同一事件多篇报道只保留信息密度最高、最权威的一条，其余 marked duplicate=true。
 
 输出严格 JSON。"""
 
-PICK_BEST_USER = """【当前真实日期】{today}（请用它作为新鲜度锚点；凡事件实际时间距今超过 60 天的候选都视为旧文，无论 published_at 写得多新，都直接舍弃，不要 pick 它）
+SCORE_TOPICS_USER = """【当前真实日期】{today}（请用它作为新鲜度锚点；凡事件实际时间距今超过 60 天的候选都视为旧文，无论 published_at 写得多新，都明显降分）
 
-以下是候选（JSON）。请按上述标准挑出**当下 AI 或财经圈真正热度最高且是近期事件**的 1 篇。
+【近期已做过的标题】
+{recent_topics_json}
+
+【候选资讯】
+请逐条打分，不要只选一个。
 
 {candidates_json}
 
 只输出一个 JSON 对象（不要 markdown，不要解释）：
 {{
-  "pick_index": 1-based 整数,
-  "reason": "选它的核心理由（25-50 字，必须提到具体热度证据）",
-  "ranking": [候选序号按从热到冷排列],
-  "rejected_reasons": {{ "2": "为何不选 25 字内", "3": "..." }}
+  "scored": [
+    {{
+      "index": 1-based 整数,
+      "topic_score": 0-100,
+      "priority": "must|high|medium|low|reject",
+      "question_title": "适合视频的中文问句标题",
+      "reason": "25-60字，说明为什么这个分数",
+      "duplicate": true/false,
+      "duplicate_reason": "如重复，说明与哪个历史标题或候选重复；不重复则空串",
+      "category": "ai|finance|earnings|macro|stock|mixed",
+      "opinion_risk": true/false
+    }}
+  ]
 }}"""
 
 
-def auto_pick_best_article(
+def score_articles(
     candidates: list[dict],
     *,
     recent_topics: list[str] | None = None,
-) -> tuple[dict, dict]:
-    """用 Opus 4.7 从候选里挑最佳。返回 (selected_article, decision_meta)。"""
+) -> tuple[list[dict], dict]:
+    """用 Opus 4.7 给候选逐条打分，返回按 topic_score 降序的候选队列。"""
+    max_candidates = int(os.environ.get("AIVIDEO_SCORE_MAX_CANDIDATES", "40"))
     cand_view = []
     for i, c in enumerate(candidates, 1):
+        if len(cand_view) >= max_candidates:
+            break
+        summary = str(c.get("summary_zh") or c.get("summary_en") or c.get("thesis") or "")
+        thesis = str(c.get("thesis") or "")
+        facts = [str(x)[:80] for x in (c.get("key_facts") or [])[:3]]
         cand_view.append({
             "index": i,
-            "title": c.get("title"),
+            "title": str(c.get("title") or "")[:160],
             "site": c.get("site"),
-            "summary_zh": c.get("summary_zh"),
-            "thesis": c.get("thesis"),
-            "key_facts": c.get("key_facts"),
+            "summary_zh": summary[:220],
+            "thesis": thesis[:220],
+            "key_facts": facts,
             "narrative_arc": c.get("narrative_arc"),
             "heat_score": c.get("heat_score"),
             "heat_evidence": c.get("heat_evidence"),
             "published_at": c.get("published_at"),
             "url": c.get("url"),
+            "source_type": c.get("source_type"),
         })
-    user_msg = PICK_BEST_USER.format(
+    user_msg = SCORE_TOPICS_USER.format(
         candidates_json=json.dumps(cand_view, ensure_ascii=False, indent=2),
+        recent_topics_json=json.dumps(recent_topics or [], ensure_ascii=False, indent=2),
         today=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
     )
-    if recent_topics:
-        recent_block = "\n  - ".join(recent_topics)
-        user_msg += (
-            "\n\n【近期已做过的主题（最近 21 天）】"
-            "这些主题/事件刚刚发过视频，**即使热度再高也不能再选**——同一主角、"
-            "同一事件、同一发布的不同媒体复述都算重复。请在 ranking 与 pick_index 中规避它们：\n  - "
-            + recent_block
-        )
-    print(f"  🤖 让 {text_model()} 评审 {len(candidates)} 篇候选…")
+    print(f"  🤖 让 {text_model()} 给 {len(candidates)} 篇候选逐条打分…")
     raw = chat_complete(
-        system=PICK_BEST_SYSTEM,
+        system=SCORE_TOPICS_SYSTEM,
         user=user_msg,
-        max_tokens=800,
+        max_tokens=5000,
+        response_format_json=True,
     )
     decision = extract_json(raw)
-    idx = int(decision.get("pick_index") or 1)
-    if not (1 <= idx <= len(candidates)):
-        idx = 1
-    rejected = decision.get("rejected_reasons") or {}
-    reject_text = str(rejected.get(str(idx)) or rejected.get(idx) or "")
-    if re.search(r"已做过|重复|近期已做|21天|做过", reject_text):
-        for raw_idx in decision.get("ranking") or []:
-            try:
-                cand_idx = int(raw_idx)
-            except (TypeError, ValueError):
-                continue
-            if not (1 <= cand_idx <= len(candidates)):
-                continue
-            cand_reject = str(rejected.get(str(cand_idx)) or rejected.get(cand_idx) or "")
-            if re.search(r"已做过|重复|近期已做|21天|做过", cand_reject):
-                continue
-            print(f"  ⚠️  pick_index 指向已做/重复主题，改选 ranking 中第一个非重复候选 [{cand_idx}]", file=sys.stderr)
-            idx = cand_idx
-            decision["pick_index"] = cand_idx
-            break
-    print(f"  ✓ 评审结果：选 [{idx}] — {decision.get('reason', '')}")
-    if decision.get("ranking"):
-        print(f"    排名: {decision['ranking']}")
-    rej = decision.get("rejected_reasons") or {}
-    for k, v in rej.items():
-        print(f"    舍弃 [{k}]: {v}")
-    return candidates[idx - 1], decision
+    threshold = int(os.environ.get("AIVIDEO_TOPIC_SCORE_THRESHOLD", "75"))
+    scored = decision.get("scored") or []
+    enriched: list[dict] = []
+    all_scored: list[dict] = []
+    non_duplicate: list[dict] = []
+    for row in scored:
+        try:
+            idx = int(row.get("index") or 0)
+            score = int(row.get("topic_score") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not (1 <= idx <= len(candidates)):
+            continue
+        cand = dict(candidates[idx - 1])
+        cand["_candidate_index"] = idx
+        cand["topic_score"] = score
+        cand["priority"] = row.get("priority") or ""
+        cand["question_title"] = row.get("question_title") or ""
+        cand["score_reason"] = row.get("reason") or ""
+        cand["duplicate"] = bool(row.get("duplicate"))
+        cand["duplicate_reason"] = row.get("duplicate_reason") or ""
+        cand["category"] = row.get("category") or ""
+        cand["opinion_risk"] = bool(row.get("opinion_risk"))
+        all_scored.append(cand)
+        if cand["duplicate"]:
+            continue
+        non_duplicate.append(cand)
+        if score >= threshold:
+            enriched.append(cand)
+    enriched.sort(key=lambda c: int(c.get("topic_score") or 0), reverse=True)
+    non_duplicate.sort(key=lambda c: int(c.get("topic_score") or 0), reverse=True)
+    all_scored.sort(key=lambda c: int(c.get("topic_score") or 0), reverse=True)
+    if not enriched and os.environ.get("AIVIDEO_STRICT_SCORE_THRESHOLD", "0") != "1":
+        best = (non_duplicate or all_scored or [])[0] if (non_duplicate or all_scored) else None
+        if best is None:
+            raise RuntimeError("模型没有返回可用的 scored 候选")
+        print(
+            f"  ⚠️  没有候选达到阈值 {threshold}，兜底采用最高分 {best.get('topic_score')}：{best.get('title')}",
+            file=sys.stderr,
+        )
+        enriched = [best]
+    decision["threshold"] = threshold
+    decision["accepted_count"] = len(enriched)
+    decision["fallback_used"] = bool(enriched and int(enriched[0].get("topic_score") or 0) < threshold)
+    decision["ranking"] = [int(c.get("_candidate_index") or 0) for c in enriched if c.get("_candidate_index")]
+    print(f"  ✓ 打分完成：{len(enriched)} 篇达到阈值 {threshold}")
+    for c in enriched[:10]:
+        print(f"    [{c.get('topic_score')}] {c.get('title')} — {c.get('score_reason')}")
+    if not enriched:
+        raise RuntimeError(f"没有候选达到 topic_score 阈值 {threshold}")
+    return enriched, decision
 
 
 def pick_article(
@@ -496,8 +590,8 @@ def pick_article(
 ) -> tuple[dict, dict | None]:
     _print_candidates(candidates)
     if auto:
-        article, decision = auto_pick_best_article(candidates, recent_topics=recent_topics)
-        return article, decision
+        scored, decision = score_articles(candidates, recent_topics=recent_topics)
+        return scored[0], decision
     while True:
         raw = input(f"请输入 1-{len(candidates)}（回车=1）: ").strip() or "1"
         if raw.isdigit():
@@ -888,6 +982,9 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
     meta_block = (
         f"【已选定文章 metadata】\n"
         f"- 标题: {article.get('title', '')}\n"
+        f"- 建议问句标题: {article.get('question_title', '')}\n"
+        f"- 选题分数: {article.get('topic_score', '')}  优先级: {article.get('priority', '')}  类别: {article.get('category', '')}\n"
+        f"- 打分理由: {article.get('score_reason', '')}\n"
         f"- 站点: {article.get('site', '')}  作者: {article.get('author') or '-'}  日期: {article.get('published_at') or '-'}\n"
         f"- URL: {article.get('url', '')}\n"
         f"- 中文一句话: {article.get('summary_zh', '')}\n"
@@ -900,6 +997,7 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
     return (
         f"{meta_block}\n\n{details_block}\n\n"
         "请严格根据上面的「原文深读细节」改编。输出字段只允许 title / keyword / slides；"
+        "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
         "slides 每页只填 headline / narration / image_prompt / on_image_text。"
         "不要输出 source、article、layout、lead_in、chapter_title、concept。\n\n"
         "请输出严格 JSON 对象（不要 markdown，不要解释）。"
@@ -1022,7 +1120,7 @@ def run_article_research(
         print("[1a] 跳过找文章，复用 logs/last_article.json")
     else:
         if source == "feeds":
-            print(f"[1a] 抓取固定信息源近 {fresh_hours} 小时 AI 热点…")
+            print(f"[1a] 抓取固定信息源近 {fresh_hours} 小时 AI/财经热点…")
         else:
             print(f"[1a] 搜索过去 {days} 天 AI/财经热点长文（中英文各 3 候选）…")
         candidates, agent_id = find_articles(
@@ -1041,7 +1139,7 @@ def run_article_research(
                 json.dumps(decision, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-    # ranking 顺序作为兜底候选队列：当前选中放第一，剩下按 Opus 排名补齐
+    # 打分排序作为兜底候选队列：当前最高分放第一，剩下按分数补齐。
     fallback_queue: list[dict] = [article]
     if candidate_pool and decision and isinstance(decision.get("ranking"), list):
         seen_urls = {str(article.get("url") or "")}
@@ -1050,6 +1148,21 @@ def run_article_research(
                 cand = candidate_pool[int(idx) - 1]
             except (ValueError, TypeError, IndexError):
                 continue
+            scored_match = None
+            for row in decision.get("scored") or []:
+                try:
+                    if int(row.get("index") or 0) == int(idx):
+                        scored_match = row
+                        break
+                except (TypeError, ValueError):
+                    continue
+            if scored_match:
+                cand = dict(cand)
+                cand["topic_score"] = scored_match.get("topic_score")
+                cand["priority"] = scored_match.get("priority")
+                cand["question_title"] = scored_match.get("question_title")
+                cand["score_reason"] = scored_match.get("reason")
+                cand["category"] = scored_match.get("category")
             u = str(cand.get("url") or "")
             if u and u not in seen_urls:
                 fallback_queue.append(cand)
@@ -1127,8 +1240,8 @@ def main() -> int:
     )
     parser.add_argument("-o", "--output", default=str(ROOT / "logs" / "last_script.json"))
     parser.add_argument("--days", type=int, default=7, help="搜索时间窗（天），默认 7")
-    parser.add_argument("--source", choices=("feeds", "exa"), default=os.environ.get("AIVIDEO_SOURCE", "feeds"),
-                        help="候选来源：feeds=固定信息源近 24h；exa=全网搜索兜底")
+    parser.add_argument("--source", choices=("feeds", "exa"), default=os.environ.get("AIVIDEO_SOURCE", "exa"),
+                        help="候选来源：exa=Exa Search；feeds=旧固定信息源兜底")
     parser.add_argument("--fresh-hours", type=int, default=int(os.environ.get("AIVIDEO_FRESH_HOURS", "24")),
                         help="固定信息源新鲜度窗口，默认 24 小时")
     parser.add_argument("--exclude-urls", help="已制作过的 URL，逗号分隔")

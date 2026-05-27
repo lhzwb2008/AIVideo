@@ -449,7 +449,7 @@ async def publish_video(
                     pass
                 raise DouyinPublishError(
                     "发布未完成。"
-                    + ("请查看浏览器手动点击发布。" if assist else "可试: ./publish-douyin.sh --assist")
+                    + ("请查看浏览器手动点击发布。" if assist else "可试: ./scripts/publish-douyin.sh --assist")
                 )
 
             await context.storage_state(path=str(cookie))
