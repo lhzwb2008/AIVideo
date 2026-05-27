@@ -682,6 +682,17 @@ def _fallback_details_from_article(article: dict) -> dict:
     }
 
 
+def _normalize_deep_read_details(details: dict, article: dict) -> dict:
+    """补齐深读 JSON 的必需字段，避免模型漏字段导致整条选题报废。"""
+    fallback = _fallback_details_from_article(article)
+    if not isinstance(details, dict):
+        return fallback
+    for key, value in fallback.items():
+        if not details.get(key):
+            details[key] = value
+    return details
+
+
 def deep_read_article(article: dict, *, agent_id: str | None) -> tuple[dict, str | None]:
     """Exa 抓全文 → Opus 4.7 抽细节，返回细节字典。"""
     url = str(article.get("url") or "")
@@ -727,15 +738,15 @@ def deep_read_article(article: dict, *, agent_id: str | None) -> tuple[dict, str
         max_tokens=8000,
         response_format_json=True,
     )
-    details = extract_json(raw)
+    details = _normalize_deep_read_details(extract_json(raw), article)
     required = (
         "outline", "all_numbers", "all_quotes", "people",
         "key_terms", "concrete_scenes", "actual_opening",
         "actual_ending", "narrative_beats", "author_stance",
     )
-    missing = [k for k in required if not details.get(k)]
+    missing = [k for k in required if k not in details]
     if missing:
-        raise RuntimeError(f"深读结果缺字段: {missing}")
+        raise RuntimeError(f"深读结果缺字段且兜底补齐失败: {missing}")
     return details, agent_id
 
 
@@ -879,8 +890,10 @@ def validate_article_script(data: dict, article: dict) -> dict:
             raise ValueError(f"缺少 {key}")
 
     title = str(data["title"]).strip()
-    if not (4 <= len(title) <= 18):
-        raise ValueError(f"title 须 4-18 字，当前 {len(title)}: {title!r}")
+    if len(title) < 4:
+        raise ValueError(f"title 过短，当前 {len(title)}: {title!r}")
+    if len(title) > 30:
+        data["title"] = title[:30].rstrip("，。！？,.!? ")
 
     src = data.get("source") or {}
     if not src.get("url", "").startswith("http"):
@@ -1092,6 +1105,7 @@ def run_article_research(
     recent_topics: list[str] | None = None,
     source: str = "feeds",
     fresh_hours: int = 24,
+    preselected_article: dict | None = None,
 ) -> tuple[dict, str]:
     logs_dir = logs_dir or (ROOT / "logs")
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -1115,7 +1129,10 @@ def run_article_research(
 
     candidate_pool: list[dict] = []
     decision: dict | None = None
-    if saved:
+    if preselected_article:
+        article = preselected_article
+        print("[1a] 使用本轮打分队列中的预选文章")
+    elif saved:
         article = saved
         print("[1a] 跳过找文章，复用 logs/last_article.json")
     else:

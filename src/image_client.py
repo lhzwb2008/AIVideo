@@ -108,16 +108,16 @@ def build_prompt(
         "Hand-drawn whiteboard sketch on light beige graph paper, vertical portrait 9:16 aspect ratio.",
         "Black ballpoint pen line drawing, casual notebook illustration style, with subtle yellow and light purple highlighter accents.",
         "Crisp clean lines, comfortable amount of empty white space, friendly and educational mood.",
-        "Important safe area for Douyin/TikTok UI: keep all meaningful text, logos, page numbers, and icons away from the top 12% of the canvas, the leftmost 8%, the rightmost 10%, and the bottom 25%. Use the middle 65% as the main information area.",
+        "Important safe area for Douyin/TikTok UI: keep all meaningful text, logos, page numbers, and icons away from the top 18% of the canvas, the leftmost 8%, the rightmost 12%, and the bottom 25%. Use the middle 58% as the main information area, leaving generous empty graph-paper space above.",
         f"Page layout: {image_prompt.strip()}" if image_prompt.strip() else "",
     ]
     if chapter_title:
         parts.append(
-            f"Place a small handwritten chapter tag in Chinese reading \"{chapter_title.strip()}\" near the upper-left of the safe area, around 12-16% from the top and 8-12% from the left, not at the extreme corner."
+            f"Place a small handwritten chapter tag in Chinese reading \"{chapter_title.strip()}\" near the upper-left of the safe area, around 18-22% from the top and 10-14% from the left, not at the extreme corner."
         )
     if page_index and total_pages:
         parts.append(
-            f"Place a small page number handwritten as \"{page_index:02d}/{total_pages:02d}\" near the upper-right of the safe area, around 12-16% from the top and 12-16% from the right, not at the extreme corner."
+            f"Place a small page number handwritten as \"{page_index:02d}/{total_pages:02d}\" near the upper-right of the safe area, around 18-22% from the top and 14-18% from the right, not at the extreme corner."
         )
     labels = [str(t).strip() for t in (on_image_text or []) if str(t).strip()]
     if labels:

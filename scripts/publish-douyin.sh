@@ -4,6 +4,6 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-[[ -f .env ]] && source .env
+[[ -f .env ]] && set -a && source .env && set +a
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 exec python3 "$ROOT/src/publish_douyin.py" "$@"

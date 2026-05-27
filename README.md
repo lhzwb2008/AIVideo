@@ -106,7 +106,7 @@ tail -f logs/schedule_stdout.log
 | `DAILY_RUN_COUNT` | `2` | 每天生成几条视频 |
 | `DAILY_RUN_DAYS` | `1` | 搜索时间窗（天） |
 
-发布成功的视频会被移到 `output/published/YYYYMMDD/`，第二天 `output/` 又是干净的等待新一批。
+发布成功的视频会被移到 `archive/published/YYYYMMDD/`，第二天 `output/` 又是干净的等待新一批。
 
 ## 环境变量
 

@@ -200,7 +200,22 @@ async def _fill_form(page, title: str, desc: str, tags: list[str]) -> None:
     await _dismiss_overlays(page)
     title = title[:30]
 
-    # 新版 UI：标题+简介在同一 contenteditable 编辑器内
+    # 新版 UI：标题是独立的 input（placeholder 含“填写作品标题”），简介在下方 contenteditable。
+    title_input = page.locator(
+        'input[placeholder*="作品标题"], input[placeholder*="标题"]'
+    ).first
+    title_filled = False
+    if await title_input.count():
+        try:
+            await title_input.wait_for(state="visible", timeout=15_000)
+            await title_input.click()
+            await page.keyboard.press("Meta+A")
+            await page.keyboard.press("Backspace")
+            await title_input.fill(title)
+            title_filled = True
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️ 标题输入框填写失败，将回退到编辑器：{exc}", flush=True)
+
     editor = page.locator(
         ".zone-container[contenteditable='true'], "
         "div[class*='editor-comp-publish'][contenteditable='true']"
@@ -211,9 +226,11 @@ async def _fill_form(page, title: str, desc: str, tags: list[str]) -> None:
     await editor.click()
     await page.keyboard.press("Meta+A")
     await page.keyboard.press("Backspace")
-    await page.keyboard.type(title)
-    await page.keyboard.press("Enter")
-    await page.keyboard.press("Enter")
+    if not title_filled:
+        # 旧 UI 兼容：标题+简介都写在编辑器内
+        await page.keyboard.type(title)
+        await page.keyboard.press("Enter")
+        await page.keyboard.press("Enter")
     if desc and desc != title:
         await page.keyboard.type(desc[:500])
     for tag in tags:
@@ -235,11 +252,68 @@ async def _wait_upload_done(page, timeout_s: int = 300) -> None:
     raise DouyinPublishError("视频上传超时")
 
 
-async def _pick_cover(page) -> None:
+async def _upload_custom_cover(page, cover_path: Path) -> bool:
+    if not cover_path.is_file():
+        return False
+    for text in ("选择封面", "编辑封面", "设置封面"):
+        entry = page.get_by_text(text, exact=True).first
+        try:
+            if await entry.count() and await entry.is_visible():
+                await entry.click(timeout=5000)
+                await asyncio.sleep(1)
+                break
+        except Exception:
+            continue
+
+    for text in ("上传封面", "本地上传", "上传图片", "从本地上传"):
+        btn = page.get_by_text(text, exact=False).first
+        try:
+            if await btn.count() and await btn.is_visible():
+                await btn.click(timeout=5000)
+                await asyncio.sleep(0.5)
+                break
+        except Exception:
+            continue
+
+    file_inputs = page.locator('input[type="file"]')
+    count = await file_inputs.count()
+    for i in range(count):
+        inp = file_inputs.nth(i)
+        try:
+            accept = (await inp.get_attribute("accept")) or ""
+            if accept and "image" not in accept:
+                continue
+            await inp.set_input_files(str(cover_path))
+            await asyncio.sleep(1)
+            for text in ("确定", "完成", "确认", "保存"):
+                ok = page.get_by_role("button", name=text, exact=True).first
+                if await ok.count() and await ok.is_visible():
+                    try:
+                        await ok.click(timeout=5000)
+                        await asyncio.sleep(1)
+                        print(f"  已上传自定义封面: {cover_path}", flush=True)
+                        return True
+                    except Exception:
+                        pass
+            print(f"  已上传自定义封面: {cover_path}", flush=True)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+async def _pick_cover(page, cover_path: Path | None = None) -> None:
     await _dismiss_overlays(page)
     hint = page.get_by_text("请设置封面后再发布").first
     if await hint.count() and await hint.is_visible():
         print("  需要设置封面", flush=True)
+
+    if cover_path:
+        try:
+            if await _upload_custom_cover(page, cover_path):
+                return
+        except Exception as exc:  # noqa: BLE001
+            print(f"  自定义封面上传失败，改用推荐封面: {exc}", flush=True)
 
     cover = page.locator('[class^="recommendCover-"]').first
     if await cover.count():
@@ -373,6 +447,7 @@ async def publish_video(
     root: Path | None = None,
     headed: bool | None = None,
     assist: bool = False,
+    cover_path: Path | None = None,
 ) -> None:
     _ensure_patchright()
     from patchright.async_api import async_playwright
@@ -435,7 +510,7 @@ async def publish_video(
 
             await _fill_form(page, title, desc, tag_list)
             await _wait_upload_done(page)
-            await _pick_cover(page)
+            await _pick_cover(page, cover_path=cover_path)
             await _set_ai_declaration(page)
 
             ok = await _click_publish(page, assist=assist)

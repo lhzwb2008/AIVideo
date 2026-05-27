@@ -36,6 +36,13 @@ def load_script(path: Path | None) -> dict | None:
     return data.get("script", data)
 
 
+def resolve_cover(script_path: Path | None) -> Path | None:
+    if not script_path or not script_path.is_file():
+        return None
+    cover = ROOT / "logs" / "images" / script_path.stem / "cover.png"
+    return cover if cover.is_file() else None
+
+
 def resolve_video(path: str | None) -> Path:
     if path:
         video = Path(path)
@@ -98,6 +105,7 @@ def main() -> int:
         video_path = resolve_video(args.video)
         script_path = resolve_script(video_path, args.script)
         script = load_script(script_path)
+        cover_path = resolve_cover(script_path)
         fields = build_sau_fields(script)
 
         title = args.title or fields["title"]
@@ -119,6 +127,8 @@ def main() -> int:
         print(f"简介: {desc}")
         if tags:
             print(f"标签: {tags}")
+        if cover_path:
+            print(f"封面: {cover_path}")
 
         if args.dry_run:
             return 0
@@ -144,6 +154,7 @@ def main() -> int:
                 root=ROOT,
                 headed=headed,
                 assist=args.assist,
+                cover_path=cover_path,
             )
         )
 
@@ -158,6 +169,7 @@ def main() -> int:
                     "title": title,
                     "desc": desc,
                     "tags": tags,
+                    "cover": str(cover_path) if cover_path else "",
                     "assist": args.assist,
                     "published_at": datetime.now(timezone.utc).isoformat(),
                 },

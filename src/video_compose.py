@@ -31,6 +31,7 @@ IMAGE_AREA_H = 1500            # 图片占满顶部 78%
 BG_COLOR = (251, 246, 228)     # 暖米色，匹配方格纸
 TEXT_COLOR = (40, 40, 40)
 SUBTITLE_Y = int(os.environ.get("AIVIDEO_SUBTITLE_Y", "1260"))  # 避开抖音底部简介浮层
+IMAGE_TOP_SAFE_Y = int(os.environ.get("AIVIDEO_IMAGE_TOP_SAFE_Y", "150"))
 
 TTS_SAMPLE_RATE = 24000        # 与 DASHSCOPE_TTS_SAMPLE_RATE 保持一致
 
@@ -101,7 +102,7 @@ def _draw_brand_badge(
     if not BRAND_NAME:
         return
     x = _env_int("AIVIDEO_BRAND_BADGE_X", 86) if x is None else x
-    y = _env_int("AIVIDEO_BRAND_BADGE_Y", 96) if y is None else y
+    y = _env_int("AIVIDEO_BRAND_BADGE_Y", 150) if y is None else y
     font = load_font(font_size)
     bbox = font.getbbox(BRAND_NAME)
     text_w = bbox[2] - bbox[0]
@@ -132,12 +133,14 @@ def render_base_canvas(
     canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), BG_COLOR)
     if image_path.is_file():
         img = Image.open(image_path).convert("RGB")
-        ratio = min(CANVAS_W / img.width, IMAGE_AREA_H / img.height)
+        top_safe = max(0, min(IMAGE_TOP_SAFE_Y, IMAGE_AREA_H - 400))
+        available_h = IMAGE_AREA_H - top_safe
+        ratio = min(CANVAS_W / img.width, available_h / img.height)
         new_w = int(img.width * ratio)
         new_h = int(img.height * ratio)
         img = img.resize((new_w, new_h), Image.LANCZOS)
         x = (CANVAS_W - new_w) // 2
-        y = (IMAGE_AREA_H - new_h) // 2
+        y = top_safe + (available_h - new_h) // 2
         canvas.paste(img, (x, y))
     _draw_brand_badge(ImageDraw.Draw(canvas))
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -15,7 +15,7 @@ from pathlib import Path
 from batch_aivideo import append_history_from_script, history_exclude_urls, history_recent_topics
 from paths import ROOT
 from publish_all_douyin import load_published, save_published
-from research import load_env, run_article_research
+from research import find_articles, load_env, run_article_research, score_articles
 
 
 def log(message: str) -> None:
@@ -56,7 +56,7 @@ def latest_video() -> Path:
 
 
 def archive_video(video: Path, *, date_tag: str) -> Path:
-    dest_dir = ROOT / "output" / "published" / date_tag
+    dest_dir = ROOT / "archive" / "published" / date_tag
     dest_dir.mkdir(parents=True, exist_ok=True)
     target = dest_dir / video.name
     if target.exists():
@@ -65,24 +65,68 @@ def archive_video(video: Path, *, date_tag: str) -> Path:
     return target
 
 
-def process_one(index: int, *, total: int, days: int, publish_check: bool, dry_run: bool) -> dict:
-    logs_dir = ROOT / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    script_path = logs_dir / f"last_script_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{index:02d}.json"
-
+def select_topics(*, days: int, limit: int) -> list[dict]:
     exclude = history_exclude_urls()
     recent_topics = history_recent_topics()
     if recent_topics:
         log(f"已加载历史标题 {len(recent_topics)} 条用于去重")
 
+    log(f"\n=== 选题打分：Exa 近 {days} 天，最多制作 {limit} 条 ===")
+    candidates, _ = find_articles(
+        days=days,
+        exclude_urls=exclude,
+        recent_topics=recent_topics,
+        source="exa",
+    )
+    scored, decision = score_articles(candidates, recent_topics=recent_topics)
+    selected = scored[:limit]
+
+    report = ROOT / "logs" / "make_publish_topics.json"
+    report.write_text(
+        json.dumps(
+            {
+                "days": days,
+                "limit": limit,
+                "threshold": decision.get("threshold"),
+                "candidate_count": len(candidates),
+                "accepted_count": len(scored),
+                "selected": selected,
+                "decision": decision,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    log(f"选题完成：{len(candidates)} 个候选，{len(scored)} 个过线，准备制作 {len(selected)} 条")
+    for i, topic in enumerate(selected, 1):
+        log(f"  {i}. [{topic.get('topic_score')}] {topic.get('question_title') or topic.get('title')}")
+    return selected
+
+
+def process_one(
+    index: int,
+    *,
+    total: int,
+    days: int,
+    publish_check: bool,
+    dry_run: bool,
+    article: dict,
+) -> dict:
+    logs_dir = ROOT / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    script_path = logs_dir / f"last_script_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{index:02d}.json"
+
     log(f"\n=== [{index}/{total}] 制作视频 ===")
     script, _ = run_article_research(
         output=script_path,
         days=days,
-        exclude_urls=exclude,
         auto_pick=True,
-        recent_topics=recent_topics,
+        recent_topics=history_recent_topics(),
         source="exa",
+        preselected_article=article,
     )
     title = str(script.get("title") or read_script_title(script_path) or "").strip()
     log(f"选题脚本：{title}")
@@ -122,25 +166,48 @@ def main() -> int:
     load_env()
     os.environ["AIVIDEO_SOURCE"] = "exa"
     parser = argparse.ArgumentParser(description="AI财知道：一键制作并自动发布")
-    parser.add_argument("--count", type=int, default=int(os.environ.get("DAILY_RUN_COUNT", "1")))
-    parser.add_argument("--days", type=int, default=int(os.environ.get("DAILY_RUN_DAYS", "1")))
+    parser.add_argument("--count", type=int, default=int(os.environ.get("AIVIDEO_MAX_VIDEOS_PER_RUN", "5")))
+    parser.add_argument("--days", type=int, default=int(os.environ.get("AIVIDEO_DAYS", os.environ.get("DAILY_RUN_DAYS", "7"))))
     parser.add_argument("--check", action="store_true", help="发布前检查抖音登录态")
     parser.add_argument("--dry-run", action="store_true", help="只预演发布参数，不真正发布/归档")
+    parser.add_argument("--continue-on-error", action="store_true", help="单条失败后继续下一条")
     args = parser.parse_args()
 
     made: list[dict] = []
-    try:
-        for i in range(1, args.count + 1):
-            made.append(process_one(i, total=args.count, days=args.days, publish_check=args.check, dry_run=args.dry_run))
-    except Exception as exc:  # noqa: BLE001
-        log(f"\n✗ 流程失败：{exc}")
-        log("请人工介入：检查日志、登录态或手动运行 scripts/publish-douyin.sh。")
-        return 1
+    failed: list[dict] = []
+    topics = select_topics(days=args.days, limit=args.count)
+    if not topics:
+        log("没有过线选题，本次不制作。")
+        return 0
+    for i, article in enumerate(topics, 1):
+        try:
+            made.append(
+                process_one(
+                    i,
+                    total=len(topics),
+                    days=args.days,
+                    publish_check=args.check,
+                    dry_run=args.dry_run,
+                    article=article,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            log(f"\n✗ [{i}/{len(topics)}] 单条失败：{exc}")
+            failed.append({
+                "title": article.get("question_title") or article.get("title"),
+                "url": article.get("url"),
+                "score": article.get("topic_score"),
+                "error": str(exc),
+            })
+            if not args.continue_on_error:
+                log("已终止：请先修复失败原因，再继续运行。")
+                return 1
+            continue
 
     summary = ROOT / "logs" / "make_publish_last.json"
     summary.write_text(
         json.dumps(
-            {"items": made, "updated_at": datetime.now(timezone.utc).isoformat()},
+            {"items": made, "failed": failed, "updated_at": datetime.now(timezone.utc).isoformat()},
             ensure_ascii=False,
             indent=2,
         ),
@@ -149,6 +216,10 @@ def main() -> int:
     log("\n全部完成：")
     for item in made:
         log(f"  - {item.get('title')} → {item.get('video')}")
+    if failed:
+        log("\n失败条目：")
+        for item in failed:
+            log(f"  - [{item.get('score')}] {item.get('title')} → {item.get('error')}")
     return 0
 
 
