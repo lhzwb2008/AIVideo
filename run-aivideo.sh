@@ -12,8 +12,8 @@ SOURCE="${AIVIDEO_SOURCE:-feeds}"
 FRESH_HOURS="${AIVIDEO_FRESH_HOURS:-24}"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
-echo "=== AIVideo：AI 全球通 → 中文短视频 ==="
-echo "策略:  固定优质信息源近 ${FRESH_HOURS} 小时 AI 热点 → AI 自动选 → 深读改编 3-10 页"
+echo "=== AIVideo：AI财知道 → 中文问答短视频 ==="
+echo "策略:  固定优质信息源近 ${FRESH_HOURS} 小时 AI/财经热点 → AI 自动选 → 深读改编 3-10 页"
 echo ""
 
 RESEARCH_EXTRA=()

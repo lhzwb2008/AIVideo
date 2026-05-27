@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """文章驱动的调研流水线（项目唯一管线）：
 
-1. Exa AI 搜索过去 N 天 AI 圈热门英文长文 → Claude Opus 4.7 (low) 筛 3 篇候选
+1. Exa/固定信息源搜索过去 N 天 AI 与财经热点 → Claude Opus 4.7 (low) 筛候选
 2. Claude Opus 4.7 评审挑 1 篇
 3. Exa /contents 取该文全文 → Claude Opus 4.7 抽出段落 outline / 数字 / 引语 / 场景 / 真实结尾
-4. Claude Opus 4.7 基于深读细节改编为 3-10 页中文短视频脚本
+4. Claude Opus 4.7 基于深读细节改编为问句标题的 3-10 页中文短视频脚本
 
 输出 schema 与 enrich_images.py / video_compose.py 兼容。
 """
@@ -213,11 +213,13 @@ def _format_pool_for_opus(pool: list[dict]) -> str:
     return json.dumps(view, ensure_ascii=False, indent=2)
 
 
-PICK_CANDIDATES_SYSTEM = """你是 AI 频道总编。给你一批 Exa 搜回来的候选文章（含标题/URL/站点/日期/摘要/亮点片段），请按 AI 圈真实热度挑出 **{n} 篇** 适合改编为短视频的{lang_label}长文/深度报道。
+PICK_CANDIDATES_SYSTEM = """你是「AI财知道」选题总编。给你一批 Exa 搜回来的候选文章（含标题/URL/站点/日期/摘要/亮点片段），请按 AI 与财经圈真实热度挑出 **{n} 篇** 适合改编为短视频问答的{lang_label}长文/深度报道。
+
+栏目定位：用大白话回答「AI 和财经类十万个为什么」。优先选择能被概括成一个搜索型问句的热点，例如「什么是 X」「X 为什么大涨」「X 财报到底好不好」「X 对普通人有什么影响」。
 
 挑选标准（按重要性）：
-1) AI 全网真实热度（HN 高分、X 多人转、多家媒体同步报道、Reddit/Newsletter 头条、知乎/微博/即刻热门、公众号 10w+ 等）。题材小众/偏学术也 OK，只看热不热。
-2) 自带完整叙事或核心观点（纯产品发布稿、纯参数更新、纯公关博客 pass）。
+1) AI、财经、美股、中概股全网真实热度（HN 高分、X 多人转、多家媒体同步报道、Reddit/Newsletter 头条、知乎/微博/即刻热门、公众号 10w+ 等）。尤其关注大型科技股/中概股财报、股价异动、宏观数据和监管事件。
+2) 自带完整叙事或核心观点，能讲清「这是什么、为什么重要、影响谁」；纯产品发布稿、纯参数更新、纯公关博客 pass。
 3) 必须是 N 件不同的事；同一事件的多家报道只留最权威/最热那一版。
 4) 必须是真实可访问的{lang_label}文章 URL，不是推文/视频。
 
@@ -390,13 +392,13 @@ def _print_candidates(candidates: list[dict]) -> None:
     print()
 
 
-PICK_BEST_SYSTEM = """你是抖音栏目「AI 全球通」的选题总编。从候选资讯里挑 1 篇做短视频。
+PICK_BEST_SYSTEM = """你是抖音栏目「AI财知道」的选题总编。从候选资讯里挑 1 篇做短视频。
 
-栏目定位：AI 前沿热点深度剖析。优先选择 24 小时内的新鲜事件，能讲清楚「发生了什么、为什么重要、会影响谁」。
+栏目定位：AI 和财经类「十万个为什么」。优先选择 24 小时内的新鲜事件，能用一个搜索型问句讲清楚「这是什么、为什么重要、会影响谁」。
 
 挑选标准：
 1) 新鲜：优先 24 小时内刚发生/刚发布/刚公开的事件。
-2) 重要：技术突破、模型/产品发布、监管转折、巨头战略、开发者生态、资本/商业拐点。
+2) 重要：技术突破、模型/产品发布、监管转折、巨头战略、开发者生态、资本/商业拐点；大型美股和中概股财报、股价异动、宏观数据也优先。
 3) 可讲：有具体事实、数字、人物、冲突或趋势，不选只有一句空泛公告的软文。
 4) 去重：同一主题多条只留信息密度最高的一条。
 
@@ -404,7 +406,7 @@ PICK_BEST_SYSTEM = """你是抖音栏目「AI 全球通」的选题总编。从�
 
 PICK_BEST_USER = """【当前真实日期】{today}（请用它作为新鲜度锚点；凡事件实际时间距今超过 60 天的候选都视为旧文，无论 published_at 写得多新，都直接舍弃，不要 pick 它）
 
-以下是候选（JSON）。请按上述标准挑出**当下 AI 圈真正热度最高且是近期事件**的 1 篇。
+以下是候选（JSON）。请按上述标准挑出**当下 AI 或财经圈真正热度最高且是近期事件**的 1 篇。
 
 {candidates_json}
 
@@ -646,13 +648,13 @@ def deep_read_article(article: dict, *, agent_id: str | None) -> tuple[dict, str
 # ============================================================
 # 阶段二：基于文章改编脚本
 # ============================================================
-ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI 全球通 · AI 前沿热点深度剖析」的短视频编剧。
+ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财经为什么」的短视频编剧。
 
-任务：把用户给出的文章细节改成 3-8 页中文短视频脚本。只讲文章里有依据的事实，不虚构。
+任务：把用户给出的文章细节改成 3-8 页中文短视频问答脚本。只讲文章里有依据的事实，不虚构。
 
 输出必须是单个 JSON 对象，且只需要这些字段：
 {
-  "title": "6-18字中文标题",
+  "title": "6-18字中文问句标题",
   "keyword": "2-8字关键词",
   "slides": [
     {
@@ -666,8 +668,9 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI 全球通 · AI 前沿热点深
 
 规则：
 - slides 3-8 页；第 1 页是封面钩子，最后一页是结论/影响/警示。
+- title 必须是问句，优先使用「什么是 X？」「X 为什么火了？」「X 到底意味着什么？」「X 财报到底好不好？」「X 为什么大涨/大跌？」这类搜索友好标题。
 - 不要输出 source、article、layout、lead_in、chapter_title、concept；这些由程序自动补。
-- narration 用朋友聊天式中文，避免新闻腔；不要念出“AI全球通”。
+- narration 用朋友聊天式中文，避免新闻腔；不要念出“AI财知道”。
 - on_image_text 每页 3-8 条，每条不超过 12 字。
 - image_prompt 用英文描述白板手绘图内容，不要写风格词。
 - 只输出 JSON，不要 markdown，不要解释。
@@ -1021,7 +1024,7 @@ def run_article_research(
         if source == "feeds":
             print(f"[1a] 抓取固定信息源近 {fresh_hours} 小时 AI 热点…")
         else:
-            print(f"[1a] 搜索过去 {days} 天 AI 圈热点长文（中英文各 3 候选）…")
+            print(f"[1a] 搜索过去 {days} 天 AI/财经热点长文（中英文各 3 候选）…")
         candidates, agent_id = find_articles(
             days=days, exclude_urls=exclude_urls, agent_id=agent_id,
             recent_topics=recent_topics, source=source, fresh_hours=fresh_hours,
@@ -1120,7 +1123,7 @@ def run_article_research(
 def main() -> int:
     load_env()
     parser = argparse.ArgumentParser(
-        description="文章驱动调研：Cursor 找/深读英文长文 → Opus 4.7 评审/改编中文短视频脚本"
+        description="文章驱动调研：Cursor 找/深读热点长文 → Opus 4.7 评审/改编中文问答短视频脚本"
     )
     parser.add_argument("-o", "--output", default=str(ROOT / "logs" / "last_script.json"))
     parser.add_argument("--days", type=int, default=7, help="搜索时间窗（天），默认 7")

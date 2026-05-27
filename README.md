@@ -1,6 +1,6 @@
-# AIVideo
+# AI财知道
 
-**每日一篇 AI 圈热门英文长文 → 改编为中文短视频**。Cursor Cloud Agent 联网搜索 + 深读，Claude Opus 4.7 评审与改编，AiHubMix 生图，本地 TTS + ffmpeg 合成竖屏视频，（手动）发布抖音。
+**每天一个 AI 财经为什么**。从 AI、财经、美股和中概股热点里挑最值得解释的一件事，改编成问句标题的中文短视频。Cursor Cloud Agent 联网搜索 + 深读，Claude Opus 4.7 评审与改编，AiHubMix 生图，本地 TTS + ffmpeg 合成竖屏视频，（手动）发布抖音。
 
 ```bash
 ./run-aivideo.sh
@@ -9,10 +9,10 @@
 
 ## 内容策略
 
-1. **找文章**（Exa）：按 AI 圈真实热度（HN/X/媒体/Reddit/newsletter/知乎/微博/即刻/公众号 10w+）拉**中英文各 3 篇**热点长文
+1. **找文章**（Exa / 固定信息源）：按 AI、财经、美股和中概股真实热度（HN/X/媒体/Reddit/newsletter/知乎/微博/即刻/公众号 10w+）拉**中英文各 3 篇**热点长文
 2. **挑最佳**（Claude Opus 4.7 / low thinking）：自动评审 6 篇候选，输出选中理由 + 候选排名（批量模式下逐次挑 1 篇并 exclude 已选）
 3. **深读原文**（Cursor Cloud Agent）：再次打开文章，抽出段落 outline / 所有数字 / 所有引语 / 人物 / 场景 / 真实开头结尾 / 作者立场
-4. **改编脚本**（Claude Opus 4.7 / low thinking）：基于深读细节按文章自身节奏拆 3-10 页中文短视频脚本，**不套模板，不强加 5 页**，末页顺着原文真实结尾
+4. **改编脚本**（Claude Opus 4.7 / low thinking）：基于深读细节按文章自身节奏拆 3-10 页中文问答短视频脚本，标题统一为「什么是/为什么/意味着什么/财报好不好」这类搜索友好问句，**不套模板，不强加 5 页**
 5. 风格校验：禁用词、客观引述次数、cover 钩子、narration 字数等；失败自动让 Opus 修正
 
 ## 视觉风格
@@ -26,7 +26,7 @@
 
 | 步骤 | 命令 | 产出 |
 |------|------|------|
-| 一键制作 | `./run-aivideo.sh` | 找文章 + 深读 + 改编 + 生图 + 合成 → `output/*.mp4` |
+| 一键制作 | `./run-aivideo.sh` | 找文章 + 深读 + 改编问答脚本 + 生图 + 合成 → `output/*.mp4` |
 | 批量制作 | `./run-batch-aivideo.sh` | 多条视频，自动排除已用过的 URL |
 | **每日定时** | `./run-daily.sh` | 近 24h 中英文热点 → 制作 2 条 → 发布抖音 → 归档到 `output/published/<日期>/` |
 | 仅生图 | `./run-enrich-images.sh logs/last_script.json` | 写入 `slide.image_path` |
@@ -89,7 +89,7 @@ src/
 
 ## 每日定时（macOS launchd）
 
-每天定时跑一遍「搜近 24h 中英文热点 → 制作 2 条 → 发布 → 归档」：
+每天定时跑一遍「搜近 24h 中英文 AI/财经热点 → 制作 2 条 → 发布 → 归档」：
 
 ```bash
 ./restart.sh            # 安装/重启守护（改完代码也是这条）

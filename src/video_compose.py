@@ -36,16 +36,16 @@ COVER_DURATION_S = 2.6
 TTS_SAMPLE_RATE = 24000        # 与 DASHSCOPE_TTS_SAMPLE_RATE 保持一致
 
 # ============================================================
-# 栏目品牌：AI 全球通
+# 栏目品牌：AI财知道
 # ============================================================
-BRAND_NAME = os.environ.get("AIVIDEO_BRAND_NAME", "AI 全球通").strip()
-BRAND_TAGLINE = os.environ.get("AIVIDEO_BRAND_TAGLINE", "AI 前沿热点 · 深度剖析").strip()
+BRAND_NAME = os.environ.get("AIVIDEO_BRAND_NAME", "AI财知道").strip()
+BRAND_TAGLINE = os.environ.get("AIVIDEO_BRAND_TAGLINE", "每天一个 AI 财经为什么").strip()
 OUTRO_NARRATION = os.environ.get(
     "AIVIDEO_OUTRO_NARRATION",
-    "我是AI全球通，专注AI前沿热点深度剖析。觉得有用就点个关注加点赞，下条更新别错过！",
+    "我是AI财知道，每天用大白话讲清一个AI和财经热点。觉得有用就点个关注加点赞，下条更新别错过！",
 ).strip()
 OUTRO_HEADLINE = os.environ.get("AIVIDEO_OUTRO_HEADLINE", "点赞 · 收藏 · 关注").strip()
-OUTRO_SUBLINE = os.environ.get("AIVIDEO_OUTRO_SUBLINE", "下条更新别错过").strip()
+OUTRO_SUBLINE = os.environ.get("AIVIDEO_OUTRO_SUBLINE", "一起看懂 AI 和钱的事").strip()
 
 
 def font_path() -> str:
@@ -78,7 +78,7 @@ def _draw_brand_badge(
     y: int = 36,
     font_size: int = 46,
 ) -> None:
-    """左上角小徽标：黄色 highlight + 黑字 "AI 全球通"。栏目品牌透出。"""
+    """左上角小徽标：黄色 highlight + 黑字品牌名。栏目品牌透出。"""
     if not BRAND_NAME:
         return
     font = load_font(font_size)
@@ -309,7 +309,7 @@ def compose_cover_clip(
 
 
 def render_outro_page(out_path: Path) -> Path:
-    """品牌尾页：超大 AI 全球通 + 引导关注点赞 + 向下箭头。"""
+    """品牌尾页：超大品牌名 + 引导关注点赞 + 向下箭头。"""
     canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), BG_COLOR)
     draw = ImageDraw.Draw(canvas)
     _draw_grid(draw)

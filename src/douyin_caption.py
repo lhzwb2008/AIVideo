@@ -26,9 +26,9 @@ def _format_source(source: object) -> str:
 
 def build_sau_fields(script: dict | None) -> dict[str, str]:
     """返回 publish-douyin 用的 title、desc、tags（逗号分隔，无 #）。"""
-    brand = _env("AIVIDEO_BRAND_NAME", "AI全球通").replace(" ", "")
+    brand = _env("AIVIDEO_BRAND_NAME", "AI财知道").replace(" ", "")
     keyword = (script or {}).get("keyword", "").strip()
-    raw_title = ((script or {}).get("title") or keyword or "AI热点").strip()
+    raw_title = ((script or {}).get("title") or keyword or "AI财经热点").strip()
     title = raw_title if brand and brand in raw_title else (f"【{brand}】{raw_title}" if brand else raw_title)
     source = _format_source((script or {}).get("source"))
 
@@ -37,7 +37,7 @@ def build_sau_fields(script: dict | None) -> dict[str, str]:
         tag_parts.append(brand)
     if keyword:
         tag_parts.append(_strip_hashtag(keyword.replace(" ", "")))
-    for raw in _env("DOUYIN_HASHTAGS", "#AI #人工智能 #AI前沿").split():
+    for raw in _env("DOUYIN_HASHTAGS", "#AI #人工智能 #财经 #美股 #中概股").split():
         t = _strip_hashtag(raw)
         if t and t not in tag_parts:
             tag_parts.append(t)
@@ -46,7 +46,7 @@ def build_sau_fields(script: dict | None) -> dict[str, str]:
     if keyword and keyword not in raw_title:
         desc_bits.append(keyword)
     if brand:
-        desc_bits.append(f"——{brand}，AI 前沿热点深度剖析，点关注追更新。")
+        desc_bits.append(f"——{brand}，每天一个 AI 财经为什么，点关注追更新。")
     if source:
         desc_bits.append(f"参考：{source}")
     extra = _env("DOUYIN_DESC_SUFFIX")
