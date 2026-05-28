@@ -67,7 +67,7 @@ src/
   voice_clone.py     # 百炼音色克隆（一次性）
   video_compose.py   # PIL 底图 + ffmpeg 合成 + 字幕
   cursor_client.py   # Cursor Cloud Agents REST + SSE
-  batch_aivideo.py   # 批量编排（按 URL 去重）
+  batch_aivideo.py   # 批量编排（近 7 天 URL + 标题/主题去重）
   douyin_*.py / sau_client.py / publish_*.py  # 抖音发布（vendor/social-auto-upload）
 ```
 
@@ -82,7 +82,7 @@ src/
 ./scripts/publish-douyin.sh output/xxx.mp4   # 单条调试
 ```
 
-记录：`logs/published_videos.json`、`logs/video_manifest.jsonl`。
+记录：`logs/published_videos.json`、`logs/video_manifest.jsonl`、`logs/article_history.json`。其中 `article_history.json` 会保留近期已做标题，默认近 7 天用于选题去重；可用 `BATCH_HISTORY_DAYS` 调整。
 
 ## 每日定时（macOS launchd）
 

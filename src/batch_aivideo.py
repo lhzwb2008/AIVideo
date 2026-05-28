@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -18,7 +19,34 @@ from research import load_env, run_article_research
 PROGRESS_FILE = ROOT / "logs" / "batch_progress.json"
 BATCH_LOG = ROOT / "logs" / "batch_run.log"
 HISTORY_FILE = ROOT / "logs" / "article_history.json"
-HISTORY_WINDOW_DAYS = int(os.environ.get("BATCH_HISTORY_DAYS", "21"))
+HISTORY_WINDOW_DAYS = int(os.environ.get("BATCH_HISTORY_DAYS", "7"))
+
+_COMPANY_ALIASES = {
+    "pdd": ("pdd", "pdd holdings", "pinduoduo", "拼多多"),
+    "baidu": ("bidu", "baidu", "百度"),
+    "netease": ("ntes", "netease", "网易"),
+    "kuaishou": ("kuaishou", "快手"),
+    "bilibili": ("bili", "bilibili", "b站", "哔哩哔哩"),
+    "alibaba": ("baba", "alibaba", "阿里", "阿里巴巴"),
+    "tencent": ("tencent", "腾讯"),
+    "jd": ("jd", "jd.com", "京东"),
+    "nio": ("nio", "蔚来"),
+    "li_auto": ("li auto", "li", "理想汽车", "理想"),
+    "xpeng": ("xpeng", "xpev", "小鹏"),
+    "meta": ("meta", "facebook"),
+    "nvidia": ("nvidia", "nvda", "英伟达"),
+    "alphabet": ("alphabet", "google", "googl", "谷歌"),
+    "microsoft": ("microsoft", "msft", "微软"),
+    "amazon": ("amazon", "amzn", "亚马逊"),
+    "tesla": ("tesla", "tsla", "特斯拉"),
+}
+
+_EARNINGS_RE = re.compile(
+    r"财报|业绩|营收|利润|盈利|亏损|earnings|results|revenue|profit|eps|guidance|quarter",
+    re.I,
+)
+_STOCK_MOVE_RE = re.compile(r"股价|大涨|暴涨|大跌|暴跌|下跌|上涨|跌|涨|stock|shares?", re.I)
+_QUARTER_RE = re.compile(r"\bq[1-4]\b|first quarter|second quarter|third quarter|fourth quarter|一季|二季|三季|四季|第[一二三四]季", re.I)
 
 
 def log(msg: str) -> None:
@@ -105,6 +133,101 @@ def history_recent_topics(days: int = HISTORY_WINDOW_DAYS, limit: int = 30) -> l
     return topics
 
 
+def _topic_text(item: dict) -> str:
+    parts = [
+        item.get("title"),
+        item.get("script_title"),
+        item.get("article_title"),
+        item.get("question_title"),
+        item.get("summary_zh"),
+        item.get("summary_en"),
+        item.get("thesis"),
+        item.get("score_reason"),
+        item.get("reason"),
+    ]
+    facts = item.get("key_facts")
+    if isinstance(facts, list):
+        parts.extend(facts)
+    return " ".join(str(x) for x in parts if str(x or "").strip()).lower()
+
+
+def _compact_topic_text(text: str) -> str:
+    text = re.sub(r"https?://\S+", " ", text.lower())
+    text = re.sub(r"[\W_]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _companies_in_text(text: str) -> set[str]:
+    found: set[str] = set()
+    haystack = f" {_compact_topic_text(text)} "
+    raw = text.lower()
+    for company, aliases in _COMPANY_ALIASES.items():
+        for alias in aliases:
+            alias_l = alias.lower()
+            if re.search(r"[\u4e00-\u9fff]", alias_l):
+                if alias_l in raw:
+                    found.add(company)
+                    break
+            elif f" {alias_l} " in haystack:
+                found.add(company)
+                break
+    return found
+
+
+def _token_set(text: str) -> set[str]:
+    stop = {
+        "the", "and", "for", "with", "from", "this", "that", "what", "why",
+        "stock", "price", "news", "quote", "history", "finance", "inc", "ltd",
+        "公司", "视频", "什么", "为什么", "到底", "是否", "市场",
+    }
+    tokens = set(re.findall(r"[a-z0-9]{2,}|[\u4e00-\u9fff]{2,}", _compact_topic_text(text)))
+    return {t for t in tokens if t not in stop}
+
+
+def duplicate_topic_reason(candidate: dict, recent_items: list[dict] | None = None) -> str:
+    """本地兜底去重：同公司+同季度财报/股价异动，或标题高度相似，都视为重复。"""
+    cand_text = _topic_text(candidate)
+    if not cand_text:
+        return ""
+    cand_companies = _companies_in_text(cand_text)
+    cand_tokens = _token_set(cand_text)
+    cand_has_earnings = bool(_EARNINGS_RE.search(cand_text))
+    cand_has_stock_move = bool(_STOCK_MOVE_RE.search(cand_text))
+    cand_has_quarter = bool(_QUARTER_RE.search(cand_text))
+    for old in recent_items if recent_items is not None else recent_history():
+        old_text = _topic_text(old)
+        if not old_text:
+            continue
+        old_title = str(old.get("title") or old.get("script_title") or old.get("article_title") or "").strip()
+        old_companies = _companies_in_text(old_text)
+        same_company = bool(cand_companies & old_companies)
+        old_has_earnings = bool(_EARNINGS_RE.search(old_text))
+        old_has_stock_move = bool(_STOCK_MOVE_RE.search(old_text))
+        old_has_quarter = bool(_QUARTER_RE.search(old_text))
+        if same_company and cand_has_earnings and old_has_earnings:
+            if cand_has_quarter or old_has_quarter or cand_has_stock_move or old_has_stock_move:
+                return f"同公司同财报/股价事件已做过：{old_title}"
+        old_tokens = _token_set(old_text)
+        if cand_tokens and old_tokens:
+            overlap = len(cand_tokens & old_tokens) / max(1, min(len(cand_tokens), len(old_tokens)))
+            if overlap >= 0.72 and (same_company or cand_has_earnings == old_has_earnings):
+                return f"标题/主题高度相似：{old_title}"
+    return ""
+
+
+def filter_duplicate_topics(candidates: list[dict], *, days: int = HISTORY_WINDOW_DAYS) -> list[dict]:
+    recent = recent_history(days)
+    kept: list[dict] = []
+    for cand in candidates:
+        reason = duplicate_topic_reason(cand, recent)
+        if reason:
+            title = cand.get("question_title") or cand.get("title")
+            print(f"  ↯ 去重拦截：{title}（{reason}）")
+            continue
+        kept.append(cand)
+    return kept
+
+
 def append_history(item: dict) -> None:
     url = str(item.get("url") or "").strip()
     title = str(item.get("title") or "").strip()
@@ -115,6 +238,10 @@ def append_history(item: dict) -> None:
         "title": title,
         "made_at": datetime.now(timezone.utc).isoformat(),
     }
+    for key in ("script_title", "article_title", "question_title"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            record[key] = value
     # 兼容旧逻辑：URL 仅用于硬排除，同主题去重主要看 title。
     if url:
         record["url"] = url
@@ -140,6 +267,9 @@ def append_history_from_script(script_path: Path, video: Path | None = None) -> 
     append_history({
         "url": article.get("url") or (script.get("source") or {}).get("url") or "",
         "title": article.get("title") or script.get("title") or "",
+        "article_title": article.get("title") or "",
+        "script_title": script.get("title") or "",
+        "question_title": article.get("question_title") or "",
     })
 
 

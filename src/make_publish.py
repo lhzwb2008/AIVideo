@@ -12,7 +12,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from batch_aivideo import append_history_from_script, history_exclude_urls, history_recent_topics
+from batch_aivideo import (
+    append_history_from_script,
+    duplicate_topic_reason,
+    filter_duplicate_topics,
+    history_exclude_urls,
+    history_recent_topics,
+)
 from paths import ROOT
 from publish_all_douyin import load_published, save_published
 from research import find_articles, load_env, run_article_research, score_articles
@@ -68,7 +74,7 @@ def archive_video(video: Path, *, date_tag: str) -> Path:
 def select_topic_pool(*, days: int) -> list[dict]:
     """返回**所有过线的候选**（按分降序），上层按需逐条尝试，失败就换下一条。"""
     exclude = history_exclude_urls()
-    recent_topics = history_recent_topics()
+    recent_topics = history_recent_topics(limit=80)
     if recent_topics:
         log(f"已加载历史标题 {len(recent_topics)} 条用于去重")
 
@@ -79,7 +85,12 @@ def select_topic_pool(*, days: int) -> list[dict]:
         recent_topics=recent_topics,
         source="exa",
     )
+    candidates = filter_duplicate_topics(candidates)
+    if not candidates:
+        log("候选均命中近 7 天本地去重，本次不制作。")
+        return []
     scored, decision = score_articles(candidates, recent_topics=recent_topics)
+    scored = filter_duplicate_topics(scored)
 
     report = ROOT / "logs" / "make_publish_topics.json"
     report.write_text(
@@ -119,11 +130,15 @@ def process_one(
     script_path = logs_dir / f"last_script_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{index:02d}.json"
 
     log(f"\n=== [{index}/{target}] 制作视频 ===")
+    duplicate_reason = duplicate_topic_reason(article)
+    if duplicate_reason:
+        title = article.get("question_title") or article.get("title")
+        raise RuntimeError(f"近 7 天重复选题：{title}（{duplicate_reason}）")
     script, _ = run_article_research(
         output=script_path,
         days=days,
         auto_pick=True,
-        recent_topics=history_recent_topics(),
+        recent_topics=history_recent_topics(limit=80),
         source="exa",
         preselected_article=article,
     )
