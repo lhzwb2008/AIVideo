@@ -1,4 +1,4 @@
-"""百炼 DashScope CosyVoice TTS 客户端（HTTP 非流式）。"""
+"""TTS 客户端：支持豆包声音复刻与百炼 CosyVoice。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
+import uuid
+from base64 import b64decode
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -24,10 +26,21 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def provider() -> str:
+    return _env("TTS_PROVIDER", "doubao").lower()
+
+
 def api_key() -> str:
     key = _env("DASHSCOPE_API_KEY")
     if not key:
         raise RuntimeError("缺少 DASHSCOPE_API_KEY")
+    return key
+
+
+def doubao_api_key() -> str:
+    key = _env("VOLCENGINE_TTS_API_KEY")
+    if not key:
+        raise RuntimeError("缺少 VOLCENGINE_TTS_API_KEY")
     return key
 
 
@@ -44,10 +57,14 @@ def voice() -> str:
 
 
 def fmt() -> str:
+    if provider() in {"doubao", "volcengine", "volc"}:
+        return _env("VOLCENGINE_TTS_FORMAT", "mp3")
     return _env("DASHSCOPE_TTS_FORMAT", "mp3")
 
 
 def sample_rate() -> int:
+    if provider() in {"doubao", "volcengine", "volc"}:
+        return int(_env("VOLCENGINE_TTS_SAMPLE_RATE", "24000"))
     return int(_env("DASHSCOPE_TTS_SAMPLE_RATE", "24000"))
 
 
@@ -60,6 +77,8 @@ def default_rate() -> float:
 
 def atempo() -> float:
     try:
+        if provider() in {"doubao", "volcengine", "volc"}:
+            return float(_env("VOLCENGINE_TTS_ATEMPO", _env("DASHSCOPE_TTS_ATEMPO", "1.0")))
         return float(_env("DASHSCOPE_TTS_ATEMPO", "1.0"))
     except ValueError:
         return 1.0
@@ -81,6 +100,49 @@ def preprocess_enabled() -> bool:
 
 def synth_endpoint() -> str:
     return f"{base_url()}/api/v1/services/audio/tts/SpeechSynthesizer"
+
+
+def doubao_endpoint() -> str:
+    return _env("VOLCENGINE_TTS_ENDPOINT", "https://openspeech.bytedance.com/api/v3/tts/unidirectional")
+
+
+def doubao_resource_id() -> str:
+    return _env("VOLCENGINE_TTS_RESOURCE_ID", "seed-icl-2.0")
+
+
+def doubao_speaker() -> str:
+    return _env("VOLCENGINE_TTS_SPEAKER", "S_6uN8A8f22")
+
+
+def doubao_model() -> str:
+    return _env("VOLCENGINE_TTS_MODEL", "seed-tts-2.0-standard")
+
+
+def doubao_uid() -> str:
+    return _env("VOLCENGINE_TTS_UID", "aivideo")
+
+
+def doubao_speech_rate() -> int:
+    raw = _env("VOLCENGINE_TTS_SPEECH_RATE")
+    if raw:
+        try:
+            return int(float(raw))
+        except ValueError:
+            return 0
+    try:
+        ratio = float(_env("VOLCENGINE_TTS_RATE", _env("DASHSCOPE_TTS_RATE", "1.0")))
+    except ValueError:
+        ratio = 1.0
+    if ratio >= 1:
+        return max(0, min(100, round((ratio - 1.0) * 100)))
+    return max(-50, min(0, round((ratio - 1.0) * 100)))
+
+
+def doubao_loudness_rate() -> int:
+    try:
+        return int(float(_env("VOLCENGINE_TTS_LOUDNESS_RATE", "0")))
+    except ValueError:
+        return 0
 
 
 # 英文缩写/品牌 → 中文口播读法（按词长降序，避免子串误替换）
@@ -188,6 +250,40 @@ def _http_post(url: str, body: dict[str, Any], *, timeout: float = 120) -> dict[
         raise RuntimeError(f"HTTP {exc.code}: {raw[:500]}") from exc
 
 
+def _doubao_post(body: dict[str, Any], *, timeout: float = 120) -> list[dict[str, Any]]:
+    req = urllib.request.Request(
+        doubao_endpoint(),
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "X-Api-Key": doubao_api_key(),
+            "X-Api-Resource-Id": doubao_resource_id(),
+            "X-Api-Request-Id": str(uuid.uuid4()),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode()
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        logid = exc.headers.get("X-Tt-Logid", "")
+        suffix = f" logid={logid}" if logid else ""
+        raise RuntimeError(f"豆包 TTS HTTP {exc.code}{suffix}: {raw[:500]}") from exc
+    chunks: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            chunks.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"豆包 TTS 返回无法解析: {line[:300]}") from exc
+    if not chunks:
+        raise RuntimeError("豆包 TTS 返回为空")
+    return chunks
+
+
 def _download_audio(url: str, out_path: Path, *, timeout: float = 120) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with urllib.request.urlopen(url, timeout=timeout) as resp:
@@ -256,7 +352,53 @@ def _synth_once(
     return _download_audio(url, out_path, timeout=timeout)
 
 
-def _ffmpeg_concat(paths: list[Path], out_path: Path, *, pause_ms: int = 250) -> Path:
+def _doubao_synth_once(
+    text: str,
+    *,
+    out_path: Path,
+    voice_id: str | None = None,
+    audio_format: str | None = None,
+    sr: int | None = None,
+    rate: float | None = None,
+    timeout: float = 120,
+) -> Path:
+    payload_text = preprocess_tts_text(text) if preprocess_enabled() else text
+    speech_rate = doubao_speech_rate()
+    if rate is not None:
+        speech_rate = max(-50, min(100, round((float(rate) - 1.0) * 100)))
+    body: dict[str, Any] = {
+        "user": {"uid": doubao_uid()},
+        "namespace": "BidirectionalTTS",
+        "req_params": {
+            "text": payload_text,
+            "speaker": voice_id or doubao_speaker(),
+            "model": doubao_model(),
+            "audio_params": {
+                "format": audio_format or fmt(),
+                "sample_rate": sr or sample_rate(),
+                "speech_rate": speech_rate,
+                "loudness_rate": doubao_loudness_rate(),
+            },
+        },
+    }
+
+    chunks = _doubao_post(body, timeout=timeout)
+    audio = bytearray()
+    for chunk in chunks:
+        code = chunk.get("code")
+        if code not in {0, 20000000, None}:
+            raise RuntimeError(f"豆包 TTS 失败: {json.dumps(chunk, ensure_ascii=False)[:400]}")
+        audio_b64 = chunk.get("data")
+        if audio_b64:
+            audio.extend(b64decode(audio_b64))
+    if not audio:
+        raise RuntimeError(f"豆包 TTS 响应缺少 data: {json.dumps(chunks[-1], ensure_ascii=False)[:400]}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(bytes(audio))
+    return out_path
+
+
+def _ffmpeg_concat(paths: list[Path], out_path: Path, *, pause_ms: int = 250, sr: int | None = None) -> Path:
     """多段 mp3 拼接，句间插入短静音。"""
     if not paths:
         raise ValueError("concat 需要至少一段音频")
@@ -265,14 +407,14 @@ def _ffmpeg_concat(paths: list[Path], out_path: Path, *, pause_ms: int = 250) ->
             out_path.write_bytes(paths[0].read_bytes())
         return out_path
 
-    sr = sample_rate()
+    audio_sr = sr or sample_rate()
     with tempfile.TemporaryDirectory(prefix="tts_seg_") as tmp:
         tmpdir = Path(tmp)
         silence = tmpdir / "silence.mp3"
         subprocess.run(
             [
                 "ffmpeg", "-y", "-f", "lavfi",
-                "-i", f"anullsrc=r={sr}:cl=mono",
+                "-i", f"anullsrc=r={audio_sr}:cl=mono",
                 "-t", f"{pause_ms / 1000:.3f}",
                 "-c:a", "libmp3lame", "-b:a", "64k",
                 str(silence),
@@ -296,7 +438,62 @@ def _ffmpeg_concat(paths: list[Path], out_path: Path, *, pause_ms: int = 250) ->
     return out_path
 
 
-def synthesize(
+def _synthesize_doubao(
+    text: str,
+    *,
+    out_path: Path,
+    voice_id: str | None = None,
+    audio_format: str | None = None,
+    sr: int | None = None,
+    rate: float | None = None,
+    segment: bool | None = None,
+    timeout: float = 120,
+) -> Path:
+    tempo = atempo()
+    synth_out = out_path
+    tmp_ctx: tempfile.TemporaryDirectory[str] | None = None
+    if abs(tempo - 1.0) >= 0.001:
+        tmp_ctx = tempfile.TemporaryDirectory(prefix="tts_post_")
+        synth_out = Path(tmp_ctx.name) / out_path.name
+
+    do_segment = segment if segment is not None else segment_enabled()
+    sentences = split_sentences(preprocess_tts_text(text) if preprocess_enabled() else text)
+
+    try:
+        if do_segment and len(sentences) > 1:
+            with tempfile.TemporaryDirectory(prefix="tts_parts_") as tmp:
+                tmpdir = Path(tmp)
+                parts: list[Path] = []
+                for i, sent in enumerate(sentences):
+                    part = tmpdir / f"part_{i:02d}.mp3"
+                    _doubao_synth_once(
+                        sent,
+                        out_path=part,
+                        voice_id=voice_id,
+                        audio_format=audio_format,
+                        sr=sr,
+                        rate=rate,
+                        timeout=timeout,
+                    )
+                    parts.append(part)
+                _ffmpeg_concat(parts, synth_out, sr=sr)
+        else:
+            _doubao_synth_once(
+                text,
+                out_path=synth_out,
+                voice_id=voice_id,
+                audio_format=audio_format,
+                sr=sr,
+                rate=rate,
+                timeout=timeout,
+            )
+        return _postprocess_audio(synth_out, out_path, tempo=tempo)
+    finally:
+        if tmp_ctx is not None:
+            tmp_ctx.cleanup()
+
+
+def _synthesize_dashscope(
     text: str,
     *,
     out_path: Path,
@@ -309,11 +506,6 @@ def synthesize(
     segment: bool | None = None,
     timeout: float = 120,
 ) -> Path:
-    """合成一段音频并下载到 out_path。默认整段合成，保留模型自然气口。"""
-    t = (text or "").strip()
-    if not t:
-        raise ValueError("TTS 文本为空")
-
     tempo = atempo()
     synth_out = out_path
     tmp_ctx: tempfile.TemporaryDirectory[str] | None = None
@@ -322,7 +514,7 @@ def synthesize(
         synth_out = Path(tmp_ctx.name) / out_path.name
 
     do_segment = segment if segment is not None else segment_enabled()
-    sentences = split_sentences(preprocess_tts_text(t) if preprocess_enabled() else t)
+    sentences = split_sentences(preprocess_tts_text(text) if preprocess_enabled() else text)
 
     try:
         if do_segment and len(sentences) > 1:
@@ -346,7 +538,7 @@ def synthesize(
                 _ffmpeg_concat(parts, synth_out)
         else:
             _synth_once(
-                t,
+                text,
                 out_path=synth_out,
                 voice_id=voice_id,
                 model_id=model_id,
@@ -360,6 +552,51 @@ def synthesize(
     finally:
         if tmp_ctx is not None:
             tmp_ctx.cleanup()
+
+
+def synthesize(
+    text: str,
+    *,
+    out_path: Path,
+    voice_id: str | None = None,
+    model_id: str | None = None,
+    audio_format: str | None = None,
+    sr: int | None = None,
+    rate: float | None = None,
+    use_ssml: bool | None = None,
+    segment: bool | None = None,
+    timeout: float = 120,
+) -> Path:
+    """合成一段音频并下载到 out_path。默认整段合成，保留模型自然气口。"""
+    t = (text or "").strip()
+    if not t:
+        raise ValueError("TTS 文本为空")
+
+    if provider() in {"dashscope", "bailian", "aliyun"}:
+        return _synthesize_dashscope(
+            t,
+            out_path=out_path,
+            voice_id=voice_id,
+            model_id=model_id,
+            audio_format=audio_format,
+            sr=sr,
+            rate=rate,
+            use_ssml=use_ssml,
+            segment=segment,
+            timeout=timeout,
+        )
+    if provider() in {"doubao", "volcengine", "volc"}:
+        return _synthesize_doubao(
+            t,
+            out_path=out_path,
+            voice_id=voice_id,
+            audio_format=audio_format,
+            sr=sr,
+            rate=rate,
+            segment=segment,
+            timeout=timeout,
+        )
+    raise RuntimeError(f"未知 TTS_PROVIDER={provider()}，可选 doubao 或 dashscope")
 
 
 def main() -> int:

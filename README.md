@@ -53,7 +53,7 @@
 | 找文章 / 深读 | Cursor Cloud Agent | `CURSOR_MODEL_ID`（默认 `composer-2.5`） |
 | 评审 / 改编 | AiHubMix Chat | `AIHUBMIX_TEXT_MODEL`（默认 `claude-opus-4-7`，`reasoning_effort=low`） |
 | 生图 | AiHubMix Images | `AIHUBMIX_IMAGE_MODEL`（默认 `gpt-image-2`） |
-| TTS | DashScope CosyVoice | `DASHSCOPE_TTS_VOICE` |
+| TTS | 豆包声音复刻 / DashScope CosyVoice | `TTS_PROVIDER` |
 
 ## 关键模块
 
@@ -63,7 +63,7 @@ src/
   text_client.py     # AiHubMix chat（thinking 预算最低）
   image_client.py    # AiHubMix gpt-image-2 生图（含重试）
   enrich_images.py   # 逐页生图，断点续跑
-  tts_client.py      # 百炼 CosyVoice TTS
+  tts_client.py      # TTS 分流：豆包声音复刻 / 百炼 CosyVoice
   voice_clone.py     # 百炼音色克隆（一次性）
   video_compose.py   # PIL 底图 + ffmpeg 合成 + 字幕
   cursor_client.py   # Cursor Cloud Agents REST + SSE
@@ -110,7 +110,21 @@ tail -f logs/schedule_stdout.log
 
 ## 环境变量
 
-见 `.env.example`：`CURSOR_*`、`AIHUBMIX_*`（含 `AIHUBMIX_TEXT_MODEL`、`AIHUBMIX_REASONING_EFFORT`、`AIHUBMIX_THINKING_BUDGET`）、`DASHSCOPE_*`、`AIVIDEO_*`、`SAU_*`、`DOUYIN_*`。
+见 `.env.example`：`CURSOR_*`、`AIHUBMIX_*`（含 `AIHUBMIX_TEXT_MODEL`、`AIHUBMIX_REASONING_EFFORT`、`AIHUBMIX_THINKING_BUDGET`）、`TTS_PROVIDER`、`VOLCENGINE_TTS_*`、`DASHSCOPE_*`、`AIVIDEO_*`、`SAU_*`、`DOUYIN_*`。
+
+TTS 默认使用豆包声音复刻：
+
+```bash
+TTS_PROVIDER=doubao
+VOLCENGINE_TTS_RESOURCE_ID=seed-icl-2.0
+VOLCENGINE_TTS_SPEAKER=S_6uN8A8f22
+```
+
+如需切回百炼：
+
+```bash
+TTS_PROVIDER=dashscope
+```
 
 ## 克隆个人音色（一次性）
 
