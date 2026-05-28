@@ -37,6 +37,16 @@ IMAGE_TOP_SAFE_Y = int(os.environ.get("AIVIDEO_IMAGE_TOP_SAFE_Y", "150"))
 TTS_SAMPLE_RATE = 24000        # 与 DASHSCOPE_TTS_SAMPLE_RATE 保持一致
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -764,6 +774,78 @@ def _concat_clips_hardcut(clips: list[Path], out_path: Path, work_dir: Path) -> 
     return out_path
 
 
+_BGM_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac"}
+
+
+def _bgm_dir() -> Path:
+    raw = os.environ.get("AIVIDEO_BGM_DIR", "assets/bgm").strip()
+    return Path(raw) if Path(raw).is_absolute() else ROOT / raw
+
+
+def _bgm_enabled() -> bool:
+    raw = os.environ.get("AIVIDEO_BGM_ENABLED", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def select_bgm(script_stem: str) -> Path | None:
+    """按日期和脚本稳定轮换曲库，避免每条都使用同一首。"""
+    if not _bgm_enabled():
+        return None
+    bgm_dir = _bgm_dir()
+    if not bgm_dir.is_dir():
+        return None
+    tracks = sorted(p for p in bgm_dir.iterdir() if p.is_file() and p.suffix.lower() in _BGM_EXTS)
+    if not tracks:
+        return None
+    seed = hashlib.sha1(f"{datetime.now().strftime('%Y%m%d')}|{script_stem}".encode("utf-8")).digest()
+    return tracks[int.from_bytes(seed[:4], "big") % len(tracks)]
+
+
+def mix_bgm(
+    *,
+    video_path: Path,
+    bgm_path: Path,
+    out_path: Path,
+) -> Path:
+    """给最终成片铺一层低音量 BGM，并用人声做 ducking，保证口播清楚。"""
+    duration = ffprobe_duration(video_path)
+    volume = max(0.0, min(_env_float("AIVIDEO_BGM_VOLUME", 0.12), 1.0))
+    fade = max(0.0, min(_env_float("AIVIDEO_BGM_FADE_S", 1.2), max(0.0, duration / 2)))
+    duck_threshold = _env_float("AIVIDEO_BGM_DUCK_THRESHOLD", 0.03)
+    duck_ratio = max(1.0, _env_float("AIVIDEO_BGM_DUCK_RATIO", 8.0))
+
+    fade_out_start = max(0.0, duration - fade)
+    bgm_filter = (
+        f"[1:a]aformat=channel_layouts=stereo,volume={volume:.4f},"
+        f"afade=t=in:st=0:d={fade:.3f},"
+        f"afade=t=out:st={fade_out_start:.3f}:d={fade:.3f}[bgm0]"
+    )
+    voice_filter = "[0:a]aformat=channel_layouts=stereo[voice]"
+    # sidechaincompress 会在人声出现时自动压低 BGM，避免动感音乐盖住关键词。
+    duck_filter = (
+        f"[bgm0][voice]sidechaincompress=threshold={duck_threshold:.4f}:"
+        f"ratio={duck_ratio:.2f}:attack=30:release=600[bgm]"
+    )
+    mix_filter = "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-stream_loop", "-1", "-i", str(bgm_path),
+        "-filter_complex", ";".join([voice_filter, bgm_filter, duck_filter, mix_filter]),
+        "-map", "0:v", "-map", "[aout]",
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
+        "-shortest",
+        str(out_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"BGM 混音失败:\n{proc.stderr[-1800:]}")
+    return out_path
+
+
 def compose_video(
     script_file: Path,
     *,
@@ -865,7 +947,14 @@ def compose_video(
     output = output or (ROOT / "output" / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
     output.parent.mkdir(parents=True, exist_ok=True)
     print(f"[concat] {len(clips)} 段 → {output}", file=sys.stderr)
-    concat_clips(clips, output, work_dir)
+    bgm = select_bgm(script_file.stem)
+    if bgm:
+        voice_only = work_dir / f"{output.stem}_voice_only.mp4"
+        concat_clips(clips, voice_only, work_dir)
+        print(f"[bgm] 混入背景音乐：{bgm.name}", file=sys.stderr)
+        mix_bgm(video_path=voice_only, bgm_path=bgm, out_path=output)
+    else:
+        concat_clips(clips, output, work_dir)
     print(f"完成：{output} ({output.stat().st_size//1024} KB)", file=sys.stderr)
 
     last_video = ROOT / "logs" / "last_video.txt"
@@ -877,6 +966,7 @@ def compose_video(
             "script": str(script_file),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "compose": "local",
+            "bgm": str(bgm) if bgm else "",
         }, ensure_ascii=False) + "\n")
     return output
 
