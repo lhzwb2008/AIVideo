@@ -103,7 +103,7 @@ tail -f logs/schedule_stdout.log
 |------|------|------|
 | `DAILY_RUN_HOUR` | `10` | 每天几点跑（0-23） |
 | `DAILY_RUN_MINUTE` | `0` | 几分 |
-| `DAILY_RUN_COUNT` | `1` | 单次执行生成几条视频（仅在跑定时任务时生效；手动跑用 `./make-and-publish.sh [N]` 或 `AIVIDEO_MAX_VIDEOS_PER_RUN` 覆盖，默认也是 1） |
+| `DAILY_RUN_COUNT` | `1` | 单次执行生成几条视频（仅在跑定时任务时生效；手动跑用 `./make-and-publish.sh [N]` 或 `AIVIDEO_MAX_VIDEOS_PER_RUN` 覆盖，手动入口默认 3） |
 | `DAILY_RUN_DAYS` | `1` | 搜索时间窗（天） |
 
 发布成功的视频会被移到 `archive/published/YYYYMMDD/`，第二天 `output/` 又是干净的等待新一批。

@@ -776,6 +776,8 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
 - title 必须是问句，优先使用「什么是 X？」「X 为什么火了？」「X 到底意味着什么？」「X 财报到底好不好？」「X 为什么大涨/大跌？」这类搜索友好标题。
 - 不要输出 source、article、layout、lead_in、chapter_title、concept；这些由程序自动补。
 - narration 用朋友聊天式中文，避免新闻腔；不要念出“AI财知道”。
+- 口播要像栏目自己的财经解读：把文章、作者、机构观点只当作内部依据，不要主动说「文章认为」「作者指出」「文中提到」「某某的观点」。
+- 如果需要交代不确定性，用「从这些数据看」「关键要看」「风险在于」这类表达，不要把判断外包给来源。
 - on_image_text 每页 3-8 条，每条不超过 12 字。
 - image_prompt 用英文描述白板手绘图内容，不要写风格词。
 - 只输出 JSON，不要 markdown，不要解释。
@@ -870,8 +872,13 @@ _BANNED_PHRASES = (
     "联手", "揪出", "悄悄启动", "雪片般", "一口气挖", "引发热议", "再次刷新",
     "令人瞩目", "值得关注",
 )
-_FORMAL_ATTRIBUTION = re.compile(r"文章认为|报道指|文章称|文章援引|消息人士")
-_COVER_BAD_START = re.compile(r"^(文章|报道|消息|援引|据.{1,6}报道)")
+_FORMAL_ATTRIBUTION = re.compile(
+    r"文章认为|文章指出|文章提到|文章称|文中认为|文中指出|文中提到|"
+    r"作者认为|作者指出|作者提到|作者称|"
+    r"报道指|报道称|报道提到|报道认为|文章援引|消息人士|"
+    r".{1,12}的观点|观点认为"
+)
+_COVER_BAD_START = re.compile(r"^(文章|报道|消息|援引|作者|文中|据.{1,6}报道)")
 
 
 def _slide_texts(slide: dict) -> list[str]:
@@ -958,8 +965,8 @@ def validate_article_script(data: dict, article: dict) -> dict:
                     raise ValueError(f"第 {page} 页含禁用词「{p}」")
             formal_count += len(_FORMAL_ATTRIBUTION.findall(txt))
 
-    if formal_count > 1:
-        raise ValueError(f"全片客观引述最多 1 次，当前 {formal_count} 次")
+    if formal_count > 0:
+        raise ValueError(f"口播禁止显性引用文章/作者/外部观点，当前 {formal_count} 次")
 
     return data
 
@@ -988,6 +995,7 @@ ADAPT_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重�
 - slides 长度 3-10；第 1 页 layout=cover（含 subtitle），其余 layout=body（含 lead_in）
 - 每页有 chapter_title / concept / headline / narration / image_prompt / on_image_text
 - 必须忠实于已选定文章原文（URL: {url}），不虚构事实
+- 口播必须像「AI财知道」自己的财经解读，不要说「文章认为」「作者指出」「文中提到」「某某的观点」；来源只作内部依据。
 """
 
 
@@ -1012,7 +1020,9 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
         "请严格根据上面的「原文深读细节」改编。输出字段只允许 title / keyword / slides；"
         "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
         "slides 每页只填 headline / narration / image_prompt / on_image_text。"
-        "不要输出 source、article、layout、lead_in、chapter_title、concept。\n\n"
+        "不要输出 source、article、layout、lead_in、chapter_title、concept。"
+        "写法上要直接给出本栏目的判断和解释，禁止在口播里说「文章认为」「作者指出」「文中提到」「某某的观点」；"
+        "来源信息只用于事实依据，不对观众显性提及。\n\n"
         "请输出严格 JSON 对象（不要 markdown，不要解释）。"
     )
 

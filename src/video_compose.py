@@ -807,12 +807,14 @@ def mix_bgm(
     bgm_path: Path,
     out_path: Path,
 ) -> Path:
-    """给最终成片铺一层低音量 BGM，并用人声做 ducking，保证口播清楚。"""
+    """给最终成片铺一层可听但不抢人声的低音量 BGM。"""
     duration = ffprobe_duration(video_path)
-    volume = max(0.0, min(_env_float("AIVIDEO_BGM_VOLUME", 0.12), 1.0))
+    volume = max(0.0, min(_env_float("AIVIDEO_BGM_VOLUME", 0.35), 1.0))
     fade = max(0.0, min(_env_float("AIVIDEO_BGM_FADE_S", 1.2), max(0.0, duration / 2)))
-    duck_threshold = _env_float("AIVIDEO_BGM_DUCK_THRESHOLD", 0.03)
-    duck_ratio = max(1.0, _env_float("AIVIDEO_BGM_DUCK_RATIO", 8.0))
+    voice_volume = max(0.1, min(_env_float("AIVIDEO_BGM_VOICE_VOLUME", 1.0), 2.0))
+    duck_enabled = os.environ.get("AIVIDEO_BGM_DUCKING", "0").strip().lower() not in {"0", "false", "no", "off"}
+    duck_threshold = _env_float("AIVIDEO_BGM_DUCK_THRESHOLD", 0.12)
+    duck_ratio = max(1.0, _env_float("AIVIDEO_BGM_DUCK_RATIO", 2.5))
 
     fade_out_start = max(0.0, duration - fade)
     bgm_filter = (
@@ -820,20 +822,24 @@ def mix_bgm(
         f"afade=t=in:st=0:d={fade:.3f},"
         f"afade=t=out:st={fade_out_start:.3f}:d={fade:.3f}[bgm0]"
     )
-    voice_filter = "[0:a]aformat=channel_layouts=stereo[voice]"
-    # sidechaincompress 会在人声出现时自动压低 BGM，避免动感音乐盖住关键词。
-    duck_filter = (
-        f"[bgm0][voice]sidechaincompress=threshold={duck_threshold:.4f}:"
-        f"ratio={duck_ratio:.2f}:attack=30:release=600[bgm]"
-    )
-    mix_filter = "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+    voice_filter = f"[0:a]aformat=channel_layouts=stereo,volume={voice_volume:.4f}[voice]"
+    filters = [voice_filter, bgm_filter]
+    if duck_enabled:
+        filters.append(
+            f"[bgm0][voice]sidechaincompress=threshold={duck_threshold:.4f}:"
+            f"ratio={duck_ratio:.2f}:attack=80:release=350[bgm]"
+        )
+    else:
+        filters.append("[bgm0]anull[bgm]")
+    mix_filter = "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
+    filters.append(mix_filter)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "ffmpeg", "-y",
         "-i", str(video_path),
         "-stream_loop", "-1", "-i", str(bgm_path),
-        "-filter_complex", ";".join([voice_filter, bgm_filter, duck_filter, mix_filter]),
+        "-filter_complex", ";".join(filters),
         "-map", "0:v", "-map", "[aout]",
         "-c:v", "copy",
         "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",

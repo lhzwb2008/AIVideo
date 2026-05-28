@@ -165,7 +165,7 @@ def main() -> int:
     load_env()
     os.environ["AIVIDEO_SOURCE"] = "exa"
     parser = argparse.ArgumentParser(description="AI财知道：一键制作并自动发布")
-    parser.add_argument("--count", type=int, default=int(os.environ.get("AIVIDEO_MAX_VIDEOS_PER_RUN", "1")),
+    parser.add_argument("--count", type=int, default=int(os.environ.get("AIVIDEO_MAX_VIDEOS_PER_RUN", "3")),
                         help="本次需要成功制作并发布的视频数（任一条失败自动跳到下一候选）")
     parser.add_argument("--days", type=int, default=int(os.environ.get("AIVIDEO_DAYS", os.environ.get("DAILY_RUN_DAYS", "7"))))
     parser.add_argument("--check", action="store_true", help="发布前检查抖音登录态")
