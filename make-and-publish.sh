@@ -7,7 +7,7 @@ cd "$ROOT"
 [[ -f .env ]] && set -a && source .env && set +a
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
-COUNT="${1:-${AIVIDEO_MAX_VIDEOS_PER_RUN:-5}}"
+COUNT="${1:-${AIVIDEO_MAX_VIDEOS_PER_RUN:-1}}"
 DAYS="${AIVIDEO_DAYS:-${DAILY_RUN_DAYS:-7}}"
 
 python3 "$ROOT/src/make_publish.py" --count "$COUNT" --days "$DAYS" --check

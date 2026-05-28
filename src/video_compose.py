@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -30,7 +31,7 @@ CANVAS_H = 1920
 IMAGE_AREA_H = 1500            # 图片占满顶部 78%
 BG_COLOR = (251, 246, 228)     # 暖米色，匹配方格纸
 TEXT_COLOR = (40, 40, 40)
-SUBTITLE_Y = int(os.environ.get("AIVIDEO_SUBTITLE_Y", "1260"))  # 避开抖音底部简介浮层
+SUBTITLE_Y = int(os.environ.get("AIVIDEO_SUBTITLE_Y", "1480"))  # 紧贴抖音底部置顶评论/简介浮层上方
 IMAGE_TOP_SAFE_Y = int(os.environ.get("AIVIDEO_IMAGE_TOP_SAFE_Y", "150"))
 
 TTS_SAMPLE_RATE = 24000        # 与 DASHSCOPE_TTS_SAMPLE_RATE 保持一致
@@ -66,6 +67,21 @@ OUTRO_NARRATION = os.environ.get(
 ).strip()
 OUTRO_HEADLINE = os.environ.get("AIVIDEO_OUTRO_HEADLINE", "点赞 · 收藏 · 关注").strip()
 OUTRO_SUBLINE = os.environ.get("AIVIDEO_OUTRO_SUBLINE", "一起看懂 AI 和钱的事").strip()
+
+# 尾页旁白每条视频随机选一条，避免每天产出末尾 mp4 字节完全相同被抖音判重复。
+# 用 "|" 分隔自定义变体，否则使用下面的默认池。
+_OUTRO_VARIANTS_RAW = os.environ.get("AIVIDEO_OUTRO_NARRATION_VARIANTS", "").strip()
+if _OUTRO_VARIANTS_RAW:
+    OUTRO_NARRATION_VARIANTS = [s.strip() for s in _OUTRO_VARIANTS_RAW.split("|") if s.strip()]
+else:
+    OUTRO_NARRATION_VARIANTS = [
+        OUTRO_NARRATION,
+        "我是AI财知道，每天用大白话讲一个AI财经热点。点个关注，明天同一时间见！",
+        "今天的AI财经为什么就讲到这。觉得有用就点赞收藏，关注我别错过下一条。",
+        "AI财知道陪你看懂AI和钱的事。点关注，每天一条，新鲜的认知不掉队。",
+        "就到这。如果这条让你多懂一点，麻烦点个赞，关注我们继续每天更新。",
+        "我是AI财知道，专挑值得解释的AI财经热点。点赞关注，明天继续陪你看世界。",
+    ]
 
 
 def font_path() -> str:
@@ -319,6 +335,7 @@ def compose_cover_clip(
         "-loop", "1", "-i", str(cover_image),
         "-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate={TTS_SAMPLE_RATE}",
         "-t", f"{duration:.3f}",
+        "-vf", _kenburns_filter(0, duration),
         "-r", "30",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20",
         "-pix_fmt", "yuv420p",
@@ -413,6 +430,7 @@ def _compose_audio_image_clip(
         "ffmpeg", "-y",
         "-loop", "1", "-i", str(image_path),
         "-i", str(audio_path),
+        "-vf", _kenburns_filter(0, duration),
         "-af", "pan=stereo|c0=c0|c1=c0",
         "-r", "30",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20",
@@ -428,16 +446,25 @@ def _compose_audio_image_clip(
     return out_path
 
 
-def ensure_outro_clip() -> Path:
-    """生成一次品牌尾页 mp4，按 (brand+tagline+headline+subline+narration) 哈希缓存。"""
+def ensure_outro_clip(*, script_stem: str = "") -> Path:
+    """生成品牌尾页 mp4。按 (日期 + 脚本) 选 narration 变体，并把它进 hash key，
+    确保每天/每条视频的尾页 mp4 字节都不同，避免抖音对相同尾页打"重复内容"。
+    同一脚本同一天仍然命中缓存（重跑 compose 不浪费 TTS）。
+    """
     cache_dir = ROOT / "assets" / "outro"
     cache_dir.mkdir(parents=True, exist_ok=True)
+
+    today = datetime.now().strftime("%Y%m%d")
+    seed = hashlib.sha1(f"{today}|{script_stem}".encode("utf-8")).digest()
+    variants = OUTRO_NARRATION_VARIANTS or [OUTRO_NARRATION]
+    narration = variants[seed[0] % len(variants)]
+
     key = hashlib.sha1(
         json.dumps(
             {
                 "brand": BRAND_NAME, "tagline": BRAND_TAGLINE,
                 "headline": OUTRO_HEADLINE, "subline": OUTRO_SUBLINE,
-                "narration": OUTRO_NARRATION,
+                "narration": narration, "date": today, "stem": script_stem,
             },
             ensure_ascii=False, sort_keys=True,
         ).encode("utf-8")
@@ -446,12 +473,12 @@ def ensure_outro_clip() -> Path:
     if clip_path.is_file() and clip_path.stat().st_size > 10_000:
         return clip_path
 
-    print(f"[outro] 首次生成品牌尾页 → {clip_path}", file=sys.stderr)
+    print(f"[outro] 生成尾页变体 → {clip_path.name}（{narration[:18]}…）", file=sys.stderr)
     png_path = cache_dir / f"outro_{key}.png"
     audio_path = cache_dir / f"outro_{key}.mp3"
     render_outro_page(png_path)
     if not audio_path.is_file() or audio_path.stat().st_size < 1000:
-        tts_synthesize(OUTRO_NARRATION, out_path=audio_path)
+        tts_synthesize(narration, out_path=audio_path)
     _compose_audio_image_clip(image_path=png_path, audio_path=audio_path, out_path=clip_path)
     return clip_path
 
@@ -506,6 +533,40 @@ def ffprobe_duration(path: Path) -> float:
     return float(out)
 
 
+def _kenburns_filter(direction: int, duration: float, fps: int = 30) -> str:
+    """生成 Ken Burns 缓推/缓拉/平移滤镜，避免画面纯静态被抖音判 PPT 低质。
+
+    direction: 0=推近, 1=拉远, 2=右平移, 3=下平移；按 slide index 轮换。
+    """
+    n = max(2, int(round(duration * fps)))
+    if direction % 4 == 0:
+        zp = (
+            "z='min(pzoom+0.0008,1.08)'"
+            ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+        )
+    elif direction % 4 == 1:
+        zp = (
+            "z='if(eq(on,0),1.08,max(1.0,pzoom-0.0008))'"
+            ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+        )
+    elif direction % 4 == 2:
+        zp = (
+            "z=1.06"
+            f":x='iw/2-(iw/zoom/2)+(on/{n})*80-40'"
+            ":y='ih/2-(ih/zoom/2)'"
+        )
+    else:
+        zp = (
+            "z=1.06"
+            ":x='iw/2-(iw/zoom/2)'"
+            f":y='ih/2-(ih/zoom/2)+(on/{n})*80-40'"
+        )
+    return (
+        f"scale=2160:3840:flags=lanczos,"
+        f"zoompan={zp}:d={n}:s={CANVAS_W}x{CANVAS_H}:fps={fps}"
+    )
+
+
 _DRAWTEXT_ESCAPE = str.maketrans({"\\": r"\\", ":": r"\:", "'": r"\'", "%": r"\%"})
 
 
@@ -552,6 +613,7 @@ def compose_clip(
     narration: str,
     out_path: Path,
     work_dir: Path,
+    kenburns_direction: int = 0,
 ) -> Path:
     duration = ffprobe_duration(audio_path)
     phrases = split_narration(narration) or [narration[:18]]
@@ -560,7 +622,7 @@ def compose_clip(
     work_dir.mkdir(parents=True, exist_ok=True)
     font = font_path()
 
-    filters: list[str] = []
+    filters: list[str] = [_kenburns_filter(kenburns_direction, duration)]
     for idx, (phrase, (start, end)) in enumerate(zip(phrases, spans)):
         tf = _make_phrase_textfile(phrase, work_dir / f"phrase_{idx:02d}.txt")
         filters.append(
@@ -573,7 +635,7 @@ def compose_clip(
                 end=end,
             )
         )
-    filter_chain = ",".join(filters) if filters else "null"
+    filter_chain = ",".join(filters)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -596,21 +658,104 @@ def compose_clip(
     return out_path
 
 
+# 页间转场池：每页轮换不同 xfade 类型，避免单一过渡也成模板特征
+_XFADE_TRANSITIONS = [
+    "fade", "slideleft", "slideright", "slideup",
+    "wiperight", "fade", "circleopen", "smoothleft",
+]
+XFADE_DURATION = float(os.environ.get("AIVIDEO_XFADE_DURATION", "0.4"))
+
+
 def concat_clips(clips: list[Path], out_path: Path, work_dir: Path) -> Path:
+    """先尝试 xfade + acrossfade 软转场；失败则回退到硬切 concat。"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if len(clips) == 1:
+        shutil.copy(clips[0], out_path)
+        return out_path
+    try:
+        return _concat_clips_xfade(clips, out_path)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[concat] xfade 失败，回退硬切：{exc}", file=sys.stderr)
+        return _concat_clips_hardcut(clips, out_path, work_dir)
+
+
+def _output_jitter_args() -> list[str]:
+    """B6: 给最终 mp4 引入元数据/编码参数扰动，打破容器与帧序列指纹。"""
+    crf = random.randint(19, 22)
+    gop = random.choice([60, 75, 90, 120, 150])
+    created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+    title_suffix = hashlib.sha1(os.urandom(8)).hexdigest()[:8]
+    return [
+        "-crf", str(crf),
+        "-g", str(gop),
+        "-metadata", f"creation_time={created}",
+        "-metadata", f"title=aicaizhidao-{title_suffix}",
+        "-metadata", f"comment=build-{title_suffix}",
+    ]
+
+
+def _concat_clips_xfade(clips: list[Path], out_path: Path) -> Path:
+    durations = [ffprobe_duration(c) for c in clips]
+    t = max(0.15, min(XFADE_DURATION, 1.0))
+    # 任何片段比转场还短时退回硬切，避免 offset 算错
+    if min(durations) <= t + 0.05:
+        raise RuntimeError(f"存在过短片段（min={min(durations):.2f}s ≤ {t+0.05:.2f}s）")
+
+    inputs: list[str] = []
+    for c in clips:
+        inputs += ["-i", str(c)]
+
+    filters: list[str] = []
+    prev_v, prev_a = "0:v", "0:a"
+    cum = durations[0]
+    for i in range(1, len(clips)):
+        offset = cum - t
+        trans = _XFADE_TRANSITIONS[(i - 1) % len(_XFADE_TRANSITIONS)]
+        v_out = f"v{i}"
+        a_out = f"a{i}"
+        filters.append(
+            f"[{prev_v}][{i}:v]xfade=transition={trans}:duration={t}:offset={offset:.3f}[{v_out}]"
+        )
+        filters.append(
+            f"[{prev_a}][{i}:a]acrossfade=d={t}:c1=tri:c2=tri[{a_out}]"
+        )
+        prev_v, prev_a = v_out, a_out
+        cum += durations[i] - t
+
+    filter_complex = ";".join(filters)
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-filter_complex", filter_complex,
+        "-map", f"[{prev_v}]", "-map", f"[{prev_a}]",
+        "-r", "30",
+        "-c:v", "libx264", "-preset", "medium",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
+        "-movflags", "+faststart",
+        *_output_jitter_args(),
+        str(out_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"xfade concat 失败:\n{proc.stderr[-1800:]}")
+    return out_path
+
+
+def _concat_clips_hardcut(clips: list[Path], out_path: Path, work_dir: Path) -> Path:
     list_file = work_dir / "concat.txt"
     list_file.write_text(
         "\n".join(f"file '{c.resolve()}'" for c in clips) + "\n",
         encoding="utf-8",
     )
-    # 直接 reencode，避免不同片段编码参数差异导致的播放卡顿/音频乱码
     cmd = [
         "ffmpeg", "-y", "-f", "concat", "-safe", "0",
         "-i", str(list_file),
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-c:v", "libx264", "-preset", "medium",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
         "-movflags", "+faststart",
+        *_output_jitter_args(),
         str(out_path),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -706,11 +851,12 @@ def compose_video(
             narration=narration,
             out_path=clip_path,
             work_dir=work_dir / f"phrases_{i:02d}",
+            kenburns_direction=i - 1,
         )
         clips.append(clip_path)
 
     try:
-        outro_clip = ensure_outro_clip()
+        outro_clip = ensure_outro_clip(script_stem=script_file.stem)
         clips.append(outro_clip)
         print(f"[outro] 追加品牌尾页：{outro_clip.name}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001

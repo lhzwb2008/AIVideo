@@ -105,7 +105,9 @@ def main() -> int:
         video_path = resolve_video(args.video)
         script_path = resolve_script(video_path, args.script)
         script = load_script(script_path)
-        cover_path = resolve_cover(script_path)
+        # 抖音端用视频首帧自动当封面足够好，跳过封面上传步骤（之前的 Playwright
+        # 上传封面经常失败，且会拖慢发布流程）。
+        cover_path: Path | None = None
         fields = build_sau_fields(script)
 
         title = args.title or fields["title"]

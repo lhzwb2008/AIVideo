@@ -308,25 +308,15 @@ async def _pick_cover(page, cover_path: Path | None = None) -> None:
     if await hint.count() and await hint.is_visible():
         print("  需要设置封面", flush=True)
 
-    if cover_path:
-        try:
-            if await _upload_custom_cover(page, cover_path):
-                return
-        except Exception as exc:  # noqa: BLE001
-            print(f"  自定义封面上传失败，改用推荐封面: {exc}", flush=True)
+    if not cover_path:
+        print("  跳过封面设置，使用抖音默认首帧封面", flush=True)
+        return
 
-    cover = page.locator('[class^="recommendCover-"]').first
-    if await cover.count():
-        try:
-            await cover.click(timeout=5000)
-            confirm = page.get_by_text("是否确认应用此封面？", exact=False).first
-            if await confirm.count() and await confirm.is_visible():
-                await page.get_by_role("button", name="确定", exact=True).click()
-            print("  已选推荐封面", flush=True)
-            await asyncio.sleep(1)
+    try:
+        if await _upload_custom_cover(page, cover_path):
             return
-        except Exception:
-            pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"  自定义封面上传失败，保留默认首帧封面: {exc}", flush=True)
 
     choose = page.get_by_text("选择封面", exact=True).first
     if await choose.count() and await choose.is_visible():

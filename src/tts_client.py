@@ -10,6 +10,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +66,9 @@ def atempo() -> float:
 
 
 def ssml_enabled() -> bool:
-    return _env_bool("DASHSCOPE_TTS_SSML", False)
+    # 默认整段合成并在标点处用 SSML break 控制停顿。这样能修正断句，
+    # 又不会像分段合成那样在每个小句开头反复产生明显呼吸声。
+    return _env_bool("DASHSCOPE_TTS_SSML", True)
 
 
 def segment_enabled() -> bool:
@@ -158,11 +161,11 @@ def text_to_ssml(text: str) -> str:
             chunk = "".join(buf).strip()
             if chunk:
                 ms = _break_ms_for_char(ch)
-                chunks.append(f"{chunk}<break time=\"{ms}ms\"/>")
+                chunks.append(f"{escape(chunk)}<break time=\"{ms}ms\"/>")
             buf = []
     tail = "".join(buf).strip()
     if tail:
-        chunks.append(tail)
+        chunks.append(escape(tail))
     inner = "".join(chunks)
     return f"<speak>{inner}</speak>"
 
