@@ -27,6 +27,7 @@ from make_publish import (
     archive_video,
     latest_video,
     log,
+    publish_social,
     read_script_title,
     rel,
     run,
@@ -113,6 +114,10 @@ def process_topic(
     append_history_from_script(script_path)
     archived = archive_video(video, date_tag=datetime.now().strftime("%Y%m%d"))
     log(f"发布成功，已归档：{rel(archived)}")
+
+    log(f"\n=== [{index}/{target}] 联动发布其它平台 ===")
+    publish_social(archived, script_path)
+
     return {"title": title, "video": rel(archived), "script": rel(script_path), "published": True}
 
 

@@ -9,6 +9,33 @@ from pathlib import Path
 
 from paths import ROOT
 TARGET = ROOT / "vendor" / "social-auto-upload" / "uploader" / "douyin_uploader" / "main.py"
+XHS_TARGET = ROOT / "vendor" / "social-auto-upload" / "uploader" / "xiaohongshu_uploader" / "main.py"
+
+# 小红书 fill_tags 容错版：弹不出官方话题下拉时，按空格把 #标签 作为普通文本提交，
+# 不再因 TimeoutError 整个发布失败。
+XHS_FILL_TAGS = '''    async def fill_tags(self, page: Page) -> None:
+        if not getattr(self, "tags", None):
+            return
+
+        if not getattr(self, "desc", ""):
+            desc = page.locator('p[data-placeholder*="输入正文描述"]')
+            await desc.click()
+
+        for tag in self.tags:  # AIVIDEO_PATCH: 容错处理所有 tags
+            await page.keyboard.type("#" + tag, delay=30)
+            try:
+                await page.locator('#creator-editor-topic-container').wait_for(
+                    state="visible",
+                    timeout=3000,
+                )
+                first_item = page.locator('#creator-editor-topic-container .item').first
+                await first_item.wait_for(state="visible", timeout=2000)
+                await first_item.click()
+            except Exception:
+                # 没有官方话题联想（如品牌词），按空格把它当普通 #标签 文本提交
+                await page.keyboard.press("Space")
+            await page.wait_for_timeout(300)
+'''
 
 HELPER = '''
 def _resolve_chrome_path() -> str:
@@ -248,5 +275,26 @@ def patch(path: Path) -> None:
     print(f"已打补丁: {path}")
 
 
+def patch_xhs(path: Path) -> None:
+    if not path.is_file():
+        print(f"跳过小红书补丁：未找到 {path}", file=sys.stderr)
+        return
+    text = path.read_text(encoding="utf-8")
+    if "AIVIDEO_PATCH: 容错处理所有 tags" in text:
+        print(f"小红书补丁已存在，跳过: {path}")
+        return
+    pattern = (
+        r"    async def fill_tags\(self, page: Page\) -> None:\n"
+        r".*?await first_item\.click\(\)\n"
+    )
+    if not re.search(pattern, text, re.DOTALL):
+        print("小红书补丁锚点缺失（upstream 可能已变更），跳过", file=sys.stderr)
+        return
+    text = re.sub(pattern, XHS_FILL_TAGS, text, count=1, flags=re.DOTALL)
+    path.write_text(text, encoding="utf-8")
+    print(f"已打小红书补丁: {path}")
+
+
 if __name__ == "__main__":
     patch(TARGET)
+    patch_xhs(XHS_TARGET)

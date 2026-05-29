@@ -84,17 +84,63 @@ def _interleave_by_direction(cands: list[dict]) -> list[dict]:
     return out
 
 
-def direction_quotas(target: int, present: list[str]) -> dict[str, int]:
-    """按优先级在「实际有候选的方向」间均分目标条数。
+# 理想配额（按 target=5 设计）：A股 爆点为主，AI / 港美股 各 1 条点缀。
+# 可用 AIVIDEO_DIR_QUOTA 覆盖，格式如 "astock:3,ai:1,hkus:1"。
+DIRECTION_BASE_QUOTA = {"astock": 3, "ai": 1, "hkus": 1}
 
-    target=3 且三方向都有 → 每个方向各 1 条；某方向缺候选时名额顺延给其它方向。
+
+def _base_quota() -> dict[str, int]:
+    raw = os.environ.get("AIVIDEO_DIR_QUOTA", "").strip()
+    if not raw:
+        return dict(DIRECTION_BASE_QUOTA)
+    base = {d: 0 for d in DIRECTION_ORDER}
+    for part in raw.split(","):
+        if ":" not in part:
+            continue
+        k, _, v = part.partition(":")
+        k = k.strip()
+        if k in base:
+            try:
+                base[k] = max(0, int(v.strip()))
+            except ValueError:
+                pass
+    return base if any(base.values()) else dict(DIRECTION_BASE_QUOTA)
+
+
+def direction_quotas(target: int, present: list[str]) -> dict[str, int]:
+    """在「实际有候选的方向」间按 A股优先的加权方式分配目标条数。
+
+    target=5 且三方向都有 → A股 3 / AI 1 / 港美股 1（DIRECTION_BASE_QUOTA）。
+    某方向缺候选时名额按优先级顺延给其它方向；target 与基准不一致时按优先级增减。
     """
     order = [d for d in DIRECTION_ORDER if d in present]
     quotas = {d: 0 for d in DIRECTION_ORDER}
-    if not order:
+    if not order or target <= 0:
         return quotas
-    for k in range(max(0, target)):
-        quotas[order[k % len(order)]] += 1
+    n = len(order)
+    base = _base_quota()
+    remaining = target
+    # 1) 方向数 <= 目标：先保证每个在场方向各 1 条作为下限
+    if target >= n:
+        for d in order:
+            quotas[d] = 1
+        remaining -= n
+    # 2) 剩余名额按基准权重优先补给（A股 先补到基准，再 AI、港美股）
+    while remaining > 0:
+        progressed = False
+        for d in order:
+            if remaining <= 0:
+                break
+            if quotas[d] < base.get(d, 0):
+                quotas[d] += 1
+                remaining -= 1
+                progressed = True
+        if not progressed:
+            break
+    # 3) 仍有剩余（target 超过基准总额）：全部压给最高优先级在场方向（A股）
+    while remaining > 0:
+        quotas[order[0]] += 1
+        remaining -= 1
     return quotas
 
 
@@ -129,6 +175,54 @@ def latest_video() -> Path:
     if not video.is_file():
         raise RuntimeError(f"视频文件不存在: {video}")
     return video
+
+
+# ============================================================
+# 多平台联动发布：抖音成功后顺手发小红书（best-effort，失败不阻断）
+# ============================================================
+# 平台 → 开关环境变量；小红书默认开启（"两个媒体"=抖音+小红书），其余默认关闭。
+SOCIAL_PLATFORMS = {
+    "xiaohongshu": ("AIVIDEO_PUBLISH_XHS", True),
+    "kuaishou": ("AIVIDEO_PUBLISH_KS", False),
+    "shipinhao": ("AIVIDEO_PUBLISH_SHIPINHAO", False),
+}
+SOCIAL_LABEL = {"xiaohongshu": "小红书", "kuaishou": "快手", "shipinhao": "视频号"}
+
+
+def _social_enabled(platform: str) -> bool:
+    env_key, default = SOCIAL_PLATFORMS[platform]
+    value = os.environ.get(env_key)
+    if value is None or value.strip() == "":
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def publish_social(video: Path, script_path: Path) -> None:
+    """把已发抖音的同一条视频顺手发到启用的其它平台。任一平台失败只告警，不影响主流程。"""
+    from backfill_social import load_platform_published, save_platform_published
+
+    for platform in SOCIAL_PLATFORMS:
+        if not _social_enabled(platform):
+            continue
+        label = SOCIAL_LABEL[platform]
+        try:
+            done = load_platform_published(platform)
+            if video.name in done:
+                log(f"  [{label}] 已发过，跳过")
+                continue
+            cmd = [
+                str(ROOT / "scripts" / "publish-social.sh"),
+                platform,
+                rel(video),
+                "--script",
+                rel(script_path),
+            ]
+            run(cmd, label=f"发布{label}")
+            done.add(video.name)
+            save_platform_published(platform, done)
+            log(f"  [{label}] 发布成功")
+        except Exception as exc:  # noqa: BLE001
+            log(f"  ⚠️ [{label}] 发布失败（不影响抖音/主流程）：{exc}")
 
 
 def archive_video(video: Path, *, date_tag: str) -> Path:
@@ -253,6 +347,10 @@ def process_one(
 
     archived = archive_video(video, date_tag=datetime.now().strftime("%Y%m%d"))
     log(f"发布成功，已记录标题并归档：{rel(archived)}")
+
+    log(f"\n=== [{index}/{target}] 联动发布其它平台 ===")
+    publish_social(archived, script_path)
+
     return {
         "title": title,
         "video": rel(archived),
@@ -265,9 +363,9 @@ def main() -> int:
     load_env()
     os.environ["AIVIDEO_SOURCE"] = "exa"
     parser = argparse.ArgumentParser(description="AI财知道：一键制作并自动发布")
-    parser.add_argument("--count", type=int, default=int(os.environ.get("AIVIDEO_MAX_VIDEOS_PER_RUN", "3")),
+    parser.add_argument("--count", type=int, default=int(os.environ.get("AIVIDEO_MAX_VIDEOS_PER_RUN", "5")),
                         help="本次需要成功制作并发布的视频数（任一条失败自动跳到下一候选）")
-    parser.add_argument("--days", type=int, default=int(os.environ.get("AIVIDEO_DAYS", os.environ.get("DAILY_RUN_DAYS", "7"))))
+    parser.add_argument("--days", type=int, default=int(os.environ.get("AIVIDEO_DAYS", os.environ.get("DAILY_RUN_DAYS", "1"))))
     parser.add_argument("--check", action="store_true", help="发布前检查抖音登录态")
     parser.add_argument("--dry-run", action="store_true", help="只预演发布参数，不真正发布/归档")
     args = parser.parse_args()

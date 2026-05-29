@@ -1,6 +1,6 @@
 # AI财知道
 
-**每天一个 AI 财经为什么**。从 AI、财经、美股和中概股热点里挑最值得解释的一件事，改编成问句标题的中文短视频。Cursor Cloud Agent 联网搜索 + 深读，Claude Opus 4.7 评审与改编，AiHubMix 生图，本地 TTS + ffmpeg 合成竖屏视频，（手动）发布抖音。
+**每天一个 AI 财经为什么**。从 AI、财经、美股和中概股热点里挑最值得解释的一件事，改编成问句标题的中文短视频。Cursor Cloud Agent 联网搜索 + 深读，Claude Opus 评审与改编，AiHubMix 生图，本地 TTS + ffmpeg 合成竖屏视频，自动发布抖音并联动发布小红书（可选快手 / 视频号），成功后归档。
 
 ```bash
 ./make-and-publish.sh    # 自动选题：生成并自动发布，成功后归档
@@ -53,7 +53,7 @@ echo "1 小鹏财报 2 韬定律是什么" | ./make-topics.sh -        # 从 std
 
 | 步骤 | 命令 | 产出 |
 |------|------|------|
-| Make + publish | `./make-and-publish.sh` | Exa 找选题 + 深读 + 改编 + 生图 + 合成 + 发布抖音 + 归档 |
+| Make + publish | `./make-and-publish.sh` | Exa 找选题 + 深读 + 改编 + 生图 + 合成 + 发布抖音 + 联动小红书 + 归档 |
 | Schedule | `./schedule.sh` | 安装/重启每日定时任务，自动制作发布并归档 |
 | Debug image only | `./scripts/run-enrich-images.sh logs/last_script.json` | 写入 `slide.image_path` |
 | Debug compose only | `./scripts/run-compose.sh logs/last_script.json` | TTS + ffmpeg → `output/*.mp4` |
@@ -97,7 +97,13 @@ src/
   video_compose.py   # PIL 底图 + ffmpeg 合成 + 字幕
   cursor_client.py   # Cursor Cloud Agents REST + SSE
   batch_aivideo.py   # 批量编排（近 7 天 URL + 标题/主题去重）
-  douyin_*.py / sau_client.py / publish_*.py  # 抖音发布（vendor/social-auto-upload）
+  make_publish.py    # 自动选题一键制作发布编排（含抖音成功后联动多平台 publish_social）
+  douyin_*.py / sau_client.py / publish_douyin.py  # 抖音发布（独立 patchright）
+  douyin_caption.py  # 抖音标题/简介/话题生成
+  social_caption.py  # 小红书/快手/视频号风格文案生成（复用 douyin_caption）
+  social_publisher.py# 统一多平台发布器（直连 vendor/social-auto-upload 的 uploader）
+  backfill_social.py # 把抖音存量视频批量补发到其它平台
+  apply_sau_patches.py # 给 vendor 打兼容补丁（抖音登录 + 小红书话题容错）
 ```
 
 ## 抖音发布（与制作分离）
@@ -112,6 +118,78 @@ src/
 ```
 
 记录：`logs/published_videos.json`、`logs/video_manifest.jsonl`、`logs/article_history.json`。其中 `article_history.json` 会保留近期已做标题，默认近 7 天用于选题去重；可用 `BATCH_HISTORY_DAYS` 调整。
+
+## 多平台发布（小红书 / 快手 / 视频号）
+
+复用 `vendor/social-auto-upload`，与抖音一套工具。主流程会在抖音发布成功后，按 `.env` 开关顺手联动发布（best-effort，失败不阻断抖音）。
+
+```bash
+./social-login.sh xiaohongshu          # 扫码登录（kuaishou / shipinhao 同理）
+./social-login.sh xiaohongshu --check  # 校验登录态
+./scripts/publish-xiaohongshu.sh output/xxx.mp4 --script logs/xxx.json   # 单条调试
+./scripts/backfill-social.sh xiaohongshu --dry-run   # 把抖音存量批量补发到小红书
+```
+
+开关：`AIVIDEO_PUBLISH_XHS`（默认 1）、`AIVIDEO_PUBLISH_KS`、`AIVIDEO_PUBLISH_SHIPINHAO`。各平台已发记录：`logs/published_<platform>.json`。
+
+## 各平台账号简介（复制用）
+
+统一定位：**AI财知道｜每天一个 AI 和财经的为什么，A股·美股·港股都聊，用大白话讲清。**
+
+> 合规提示：均已加「不构成投资建议」。财经平台（雪球/富途/东方财富）风控较严，简介中避免“荐股/收益/带单”等字眼。
+
+**昵称统一**：`AI财知道`
+
+**一句话签名（≤20字，B站/微博等短签名）**
+
+```
+每天一个 AI 和财经的为什么，大白话讲清。
+```
+
+**抖音（个人简介 ≤70 字）**
+
+```
+每天用大白话讲清一个 AI 和财经热点，A股·美股·港股都聊。看懂趋势，不追涨杀跌。内容仅为分享，不构成投资建议。
+```
+
+**快手（个人简介 ≤60 字）**
+
+```
+每天一个 AI 和财经的为什么，A股·美股·港股都聊，用大白话讲清。内容仅供参考，不构成投资建议。
+```
+
+**小红书（个人简介，支持换行/emoji，≤100 字）**
+
+```
+📈 AI财知道 | 每天一个 AI 和财经的为什么
+用大白话讲清财报、热点和趋势，A股·美股·港股都聊
+🤖 AI 选题 + 人工编排，看懂 AI 和钱的事
+⚠️ 内容仅为分享，不构成投资建议
+```
+
+**视频号（个人简介 ≤80 字）**
+
+```
+每天一个 AI 和财经的为什么。用大白话讲清财报、热点与趋势，A股·美股·港股都聊。看懂 AI 和钱的事，理性看市，不构成投资建议。
+```
+
+**B站（个性签名 ≤70 字）**
+
+```
+每天一个 AI 和财经的为什么｜财报·热点·趋势用大白话讲清｜A股·美股·港股都聊｜内容仅为分享，不构成投资建议
+```
+
+**雪球（个人简介，偏专业 ≤150 字）**
+
+```
+AI财知道。聚焦 AI 与财经交叉地带：财报拆解、行业趋势、热点公司基本面，A股、美股、港股与中概股都覆盖。坚持用大白话讲清逻辑与数据，重事实、轻情绪。所有内容仅为信息整理与个人观点分享，不构成任何投资建议，据此操作风险自担。
+```
+
+**富途牛牛 / 东方财富股吧（动态/个人简介 ≤120 字）**
+
+```
+AI财知道。每天梳理一个 AI 与财经热点，拆解财报与基本面，A股·美股·港股都聊，用大白话讲清逻辑。内容仅为信息分享与个人观点，不构成投资建议，市场有风险，决策请独立判断。
+```
 
 ## 每日定时（macOS launchd）
 
@@ -139,7 +217,7 @@ tail -f logs/schedule_stdout.log
 
 ## 环境变量
 
-见 `.env.example`：`CURSOR_*`、`AIHUBMIX_*`（含 `AIHUBMIX_TEXT_MODEL`、`AIHUBMIX_REASONING_EFFORT`、`AIHUBMIX_THINKING_BUDGET`）、`TTS_PROVIDER`、`VOLCENGINE_TTS_*`、`DASHSCOPE_*`、`AIVIDEO_*`、`SAU_*`、`DOUYIN_*`。
+见 `.env.example`：`CURSOR_*`、`AIHUBMIX_*`（含 `AIHUBMIX_TEXT_MODEL`、`AIHUBMIX_REASONING_EFFORT`、`AIHUBMIX_THINKING_BUDGET`）、`TTS_PROVIDER`、`VOLCENGINE_TTS_*`、`DASHSCOPE_*`、`AIVIDEO_*`、`SAU_*`、`DOUYIN_*`、多平台联动（`AIVIDEO_PUBLISH_XHS/KS/SHIPINHAO`、`XHS_HASHTAGS`、`SAU_XHS_ACCOUNT` 等）。
 
 TTS 默认使用豆包声音复刻：
 
