@@ -693,19 +693,32 @@ def _normalize_deep_read_details(details: dict, article: dict) -> dict:
     return details
 
 
-def deep_read_article(article: dict, *, agent_id: str | None) -> tuple[dict, str | None]:
-    """Exa 抓全文 → Opus 4.7 抽细节，返回细节字典。"""
+def deep_read_article(
+    article: dict,
+    *,
+    agent_id: str | None,
+    full_text: str | None = None,
+) -> tuple[dict, str | None]:
+    """Exa 抓全文 → Opus 4.7 抽细节，返回细节字典。
+
+    full_text 给定时直接用它当原文（指定话题模式下用户自带内容/已搜回来的正文），
+    跳过 Exa /contents 抓取。
+    """
     url = str(article.get("url") or "")
-    if article.get("source_type") == "feed:aibase" and url.rstrip("/") == "https://www.aibase.com/zh/news":
-        print("  📥 AIbase 首页条目无单篇静态 URL，使用标题/摘要轻量细节")
-        return _fallback_details_from_article(article), agent_id
-    try:
-        full_text = _fetch_article_text(url)
-    except RuntimeError as exc:
-        if str(article.get("source_type") or "").startswith("feed:"):
-            print(f"  ⚠️  抓全文失败，使用信息源摘要兜底：{exc}", file=sys.stderr)
+    if full_text is None:
+        if article.get("source_type") == "feed:aibase" and url.rstrip("/") == "https://www.aibase.com/zh/news":
+            print("  📥 AIbase 首页条目无单篇静态 URL，使用标题/摘要轻量细节")
             return _fallback_details_from_article(article), agent_id
-        raise
+        try:
+            full_text = _fetch_article_text(url)
+        except RuntimeError as exc:
+            if str(article.get("source_type") or "").startswith("feed:"):
+                print(f"  ⚠️  抓全文失败，使用信息源摘要兜底：{exc}", file=sys.stderr)
+                return _fallback_details_from_article(article), agent_id
+            raise
+    else:
+        full_text = full_text.strip()
+        print(f"  📥 使用给定原文（{len(full_text)} 字符），跳过 Exa 抓取")
     user_msg = DEEP_READ_USER_TEMPLATE.format(
         title=article.get("title", ""),
         site=article.get("site", ""),
@@ -751,11 +764,83 @@ def deep_read_article(article: dict, *, agent_id: str | None) -> tuple[dict, str
 
 
 # ============================================================
+# 指定话题模式：没有合适文章时，让模型用自身知识写科普细节
+# ============================================================
+SELF_AUTHOR_SYSTEM = """你是「AI财知道」的资深科普研究员。用户会给你一个话题，请基于你已掌握的可靠知识，整理出适合改编成中文短视频的素材。
+
+要求：
+- 面向完全不懂的小白，用通俗易懂、科普向的方式组织内容。
+- 只写你**有把握、确定为真**的事实；不确定的数字/日期宁可不写，绝不编造具体数字、引语或人名。
+- 全部用中文输出。只输出严格 JSON。"""
+
+SELF_AUTHOR_USER = """【话题】{title_hint}
+
+{provided_block}【当前真实日期】{today}
+
+请基于你掌握的可靠知识，输出一个 JSON 对象（不要 markdown，不要解释），键名严格如下：
+- `outline`：这个话题讲清楚需要的段落 outline，每段一行中文概括（≤30 字），至少 6 行，按由浅入深的科普顺序。
+- `all_numbers`：与话题相关、你**有把握**的关键数字/比例/时间，附上下文；不确定就少写或留空数组。
+- `all_quotes`：相关的经典说法/定义/观点（可空数组），每条注明出处或属于常识。
+- `people`：相关的关键人物及身份（可空）。
+- `companies_or_institutions`：相关公司/机构（可空）。
+- `key_terms`：话题涉及的术语，每个一句中文白话解释（≤25 字）。
+- `concrete_scenes`：能帮助理解的具体例子/场景 3-6 条，越具体越好。
+- `actual_opening`：一个能抓住普通观众的开场（≤80 字）。
+- `actual_ending`：一个收尾/启示句（≤120 字）。
+- `narrative_beats`：科普讲解的节奏 5-8 拍（「先…然后…最后…」）。
+- `author_stance`：本栏目对这个话题的一句话判断/态度。
+- `omit_in_video`：建议不展开讲的内容 2-4 条。
+"""
+
+
+def author_details_from_knowledge(
+    title_hint: str,
+    *,
+    provided_content: str | None = None,
+) -> dict:
+    """没有合适文章时，让 Opus 基于自身知识产出科普向 details。"""
+    provided_block = ""
+    if provided_content and provided_content.strip():
+        provided_block = (
+            "【用户已提供的内容（请作为主要依据，可在此基础上补充常识，但不要与之矛盾）】\n"
+            f"{provided_content.strip()}\n\n"
+        )
+    user_msg = SELF_AUTHOR_USER.format(
+        title_hint=title_hint,
+        provided_block=provided_block,
+        today=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+    )
+    print(f"  🤖 {text_model()} 用自身知识整理「{title_hint}」科普细节…")
+    raw = chat_complete(
+        system=SELF_AUTHOR_SYSTEM,
+        user=user_msg,
+        max_tokens=6000,
+        response_format_json=True,
+    )
+    article_stub = {
+        "title": title_hint,
+        "summary_zh": title_hint,
+        "thesis": title_hint,
+        "key_facts": [title_hint],
+        "narrative_arc": "科普讲解",
+    }
+    return _normalize_deep_read_details(extract_json(raw), article_stub)
+
+
+# ============================================================
 # 阶段二：基于文章改编脚本
 # ============================================================
+def max_slides() -> int:
+    """单条视频最多页数（= 最多生图数）。默认 5，可用 AIVIDEO_MAX_SLIDES 覆盖。"""
+    try:
+        return max(3, int(os.environ.get("AIVIDEO_MAX_SLIDES", "5")))
+    except ValueError:
+        return 5
+
+
 ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财经为什么」的短视频编剧。
 
-任务：把用户给出的文章细节改成 3-8 页中文短视频问答脚本。只讲文章里有依据的事实，不虚构。
+任务：把用户给出的文章细节改成 3-5 页中文短视频问答脚本（页数宁少勿多，控制在 5 页以内，信息密度高、节奏快）。只讲文章里有依据的事实，不虚构。
 
 输出必须是单个 JSON 对象，且只需要这些字段：
 {
@@ -772,7 +857,8 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
 }
 
 规则：
-- slides 3-8 页；第 1 页是封面钩子，最后一页是结论/影响/警示。
+- slides 3-5 页（最多 5 页）；第 1 页是封面钩子，最后一页是结论/影响/警示。
+- 最后一页的 narration 收尾时，要**先根据这个话题自然抛出一个开放式问题**引导观众去评论区讨论（结合本期具体内容，不要套「你怎么看」这种空话，要有具体钩子，比如「你会押注哪一家」「这个价格你觉得贵不贵」之类与本期话题强相关的问题），**再**自然带一句让大家点赞收藏关注；不要生硬。
 - title 必须是问句，优先使用「什么是 X？」「X 为什么火了？」「X 到底意味着什么？」「X 财报到底好不好？」「X 为什么大涨/大跌？」这类搜索友好标题。
 - 不要输出 source、article、layout、lead_in、chapter_title、concept；这些由程序自动补。
 - narration 用朋友聊天式中文，避免新闻腔；不要念出“AI财知道”。
@@ -837,6 +923,11 @@ def soft_sanitize_script(data: dict) -> dict:
     slides = data.get("slides")
     if not isinstance(slides, list):
         return data
+    # 控制页数：超出上限时保留前 N-1 页 + 最后一页（结论），避免砍掉收尾
+    limit = max_slides()
+    if len(slides) > limit:
+        slides = slides[: limit - 1] + [slides[-1]]
+        data["slides"] = slides
     for i, slide in enumerate(slides):
         if not isinstance(slide, dict):
             continue
@@ -903,12 +994,17 @@ def validate_article_script(data: dict, article: dict) -> dict:
         data["title"] = title[:30].rstrip("，。！？,.!? ")
 
     src = data.get("source") or {}
-    if not src.get("url", "").startswith("http"):
+    src_url = str(src.get("url") or "")
+    # 指定话题模式（自带内容/模型自写）允许没有来源 URL；有 URL 时必须合法。
+    if src_url and not src_url.startswith("http"):
+        raise ValueError("source.url 必须是有效链接")
+    if not src_url and not article.get("_no_source"):
         raise ValueError("source.url 必须是有效链接")
 
     slides = data["slides"]
-    if not isinstance(slides, list) or not (3 <= len(slides) <= 10):
-        raise ValueError(f"slides 数量须 3-10，当前 {len(slides) if isinstance(slides, list) else '非数组'}")
+    limit = max_slides()
+    if not isinstance(slides, list) or not (3 <= len(slides) <= limit):
+        raise ValueError(f"slides 数量须 3-{limit}，当前 {len(slides) if isinstance(slides, list) else '非数组'}")
 
     formal_count = 0
     for i, slide in enumerate(slides):
@@ -992,7 +1088,7 @@ ADAPT_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重�
 {errors}
 
 仍按之前要求：
-- slides 长度 3-10；第 1 页 layout=cover（含 subtitle），其余 layout=body（含 lead_in）
+- slides 长度 3-5（最多 5 页）；第 1 页 layout=cover（含 subtitle），其余 layout=body（含 lead_in）
 - 每页有 chapter_title / concept / headline / narration / image_prompt / on_image_text
 - 必须忠实于已选定文章原文（URL: {url}），不虚构事实
 - 口播必须像「AI财知道」自己的财经解读，不要说「文章认为」「作者指出」「文中提到」「某某的观点」；来源只作内部依据。
@@ -1116,6 +1212,7 @@ def run_article_research(
     source: str = "feeds",
     fresh_hours: int = 24,
     preselected_article: dict | None = None,
+    preselected_details: dict | None = None,
 ) -> tuple[dict, str]:
     logs_dir = logs_dir or (ROOT / "logs")
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -1210,7 +1307,10 @@ def run_article_research(
         )
 
         details_path = logs_dir / "last_article_details.json"
-        if use_selection and saved and try_idx == 0 and details_path.is_file():
+        if preselected_details and try_idx == 0:
+            details = preselected_details
+            print("[1b] 使用指定话题模式预备好的深读细节")
+        elif use_selection and saved and try_idx == 0 and details_path.is_file():
             try:
                 details = json.loads(details_path.read_text(encoding="utf-8"))
                 print("[1b] 复用 last_article_details.json")

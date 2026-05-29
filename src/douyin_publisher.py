@@ -346,7 +346,16 @@ async def _click_radio_by_text(page, text: str) -> bool:
     return False
 
 
+def _declare_ai_enabled() -> bool:
+    """默认不主动申报 AI 创作（申报反而影响流量，且内容含大量人工编排）。
+    需要时设 DOUYIN_DECLARE_AI=1 打开。"""
+    return _env("DOUYIN_DECLARE_AI", "").lower() in ("1", "true", "yes", "on")
+
+
 async def _set_ai_declaration(page) -> None:
+    if not _declare_ai_enabled():
+        print("  跳过 AI 内容声明（DOUYIN_DECLARE_AI 未开启）", flush=True)
+        return
     await _dismiss_overlays(page)
     for entry in ("自主声明", "发文助手自主声明", "高级设置"):
         el = page.get_by_text(entry, exact=False).first
@@ -375,14 +384,16 @@ async def _handle_declaration_modal(page) -> bool:
             return False
     except Exception:
         return False
-    for label in ("内容由AI生成", "AI生成"):
-        radio = modal.locator(f'label.semi-radio:has-text("{label}")').first
-        if await radio.count():
-            try:
-                await radio.click(timeout=5000)
-                break
-            except Exception:
-                continue
+    if _declare_ai_enabled():
+        for label in ("内容由AI生成", "AI生成"):
+            radio = modal.locator(f'label.semi-radio:has-text("{label}")').first
+            if await radio.count():
+                try:
+                    await radio.click(timeout=5000)
+                    break
+                except Exception:
+                    continue
+    # 不申报时：不勾任何 AI 选项，直接确认/继续发布把弹窗带过去
     for name in ("确定", "确认", "继续发布"):
         btn = modal.get_by_role("button", name=name, exact=True).first
         if await btn.count() and await btn.is_visible():

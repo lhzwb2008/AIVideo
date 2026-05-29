@@ -61,6 +61,78 @@ def _seo_terms(script: dict | None, tag_parts: list[str]) -> list[str]:
     return terms[:8]
 
 
+def _script_text(script: dict | None) -> str:
+    """把脚本里的标题/关键词/各页文字拼成一个大字符串，用于关键词匹配。"""
+    parts: list[str] = [
+        str((script or {}).get("title") or ""),
+        str((script or {}).get("keyword") or ""),
+    ]
+    for slide in (script or {}).get("slides") or []:
+        if not isinstance(slide, dict):
+            continue
+        parts.append(str(slide.get("headline") or ""))
+        parts.append(str(slide.get("narration") or ""))
+        for label in slide.get("on_image_text") or []:
+            parts.append(str(label))
+    return " ".join(parts)
+
+
+# 财报/股市信号词：命中才追加股市类搜索关键词，避免乱加
+_FINANCE_SIGNAL = (
+    "财报", "业绩", "营收", "净利", "利润", "毛利", "指引", "电话会", "季报", "年报",
+    "股价", "股票", "市值", "估值", "净现金", "现金流", "负债", "EPS", "earnings",
+    "revenue", "guidance", "营业额", "盈利", "亏损", "美股", "港股", "中概",
+)
+
+# 公司 → 关联市场/板块关键词（只在文中出现该公司时才加）
+_COMPANY_MARKET = {
+    ("蔚来", "NIO"): ["中概股", "港股", "新能源车", "造车新势力"],
+    ("小鹏", "XPeng", "XPENG"): ["中概股", "港股", "新能源车", "造车新势力"],
+    ("理想", "Li Auto", "理想汽车"): ["中概股", "港股", "新能源车", "造车新势力"],
+    ("阿里", "阿里巴巴", "Alibaba"): ["中概股", "港股"],
+    ("腾讯", "Tencent"): ["港股"],
+    ("百度", "Baidu"): ["中概股", "港股"],
+    ("京东", "JD"): ["中概股", "港股"],
+    ("拼多多", "PDD", "Temu"): ["中概股", "美股"],
+    ("网易", "NetEase"): ["中概股", "港股"],
+    ("B站", "哔哩哔哩", "Bilibili"): ["中概股"],
+    ("英伟达", "Nvidia", "NVDA"): ["美股", "科技股", "AI概念股"],
+    ("苹果", "Apple"): ["美股", "科技股"],
+    ("微软", "Microsoft"): ["美股", "科技股"],
+    ("特斯拉", "Tesla"): ["美股", "新能源车"],
+    ("Meta", "脸书"): ["美股", "科技股"],
+    ("谷歌", "Google", "Alphabet"): ["美股", "科技股"],
+    ("亚马逊", "Amazon"): ["美股", "科技股"],
+}
+
+
+def _finance_seo_keywords(script: dict | None) -> list[str]:
+    """财报/股市类话题：返回相关的搜索热词（命中公司或财报信号才返回）。"""
+    text = _script_text(script)
+    if not text:
+        return []
+    is_finance = any(sig.lower() in text.lower() for sig in _FINANCE_SIGNAL)
+    keywords: list[str] = []
+
+    def add(k: str) -> None:
+        if k and k not in keywords:
+            keywords.append(k)
+
+    matched_company = False
+    for aliases, markets in _COMPANY_MARKET.items():
+        if any(alias.lower() in text.lower() for alias in aliases):
+            matched_company = True
+            for m in markets:
+                add(m)
+    # 命中财报信号但没匹配到具体公司时，给一组通用股市热词
+    if is_finance and not matched_company:
+        for k in ("美股", "港股", "中概股", "财报"):
+            add(k)
+    elif matched_company and any(s in text for s in ("财报", "业绩", "营收", "净利", "净现金", "财务")):
+        add("财报")
+    return keywords[:6]
+
+
 def build_sau_fields(script: dict | None) -> dict[str, str]:
     """返回 publish-douyin 用的 title、desc、tags（逗号分隔，无 #）。"""
     brand = _env("AIVIDEO_BRAND_NAME", "AI财知道").replace(" ", "")
@@ -78,10 +150,18 @@ def build_sau_fields(script: dict | None) -> dict[str, str]:
         if t and t not in tag_parts:
             tag_parts.append(t)
 
+    # 财报/股市类话题：追加港股/美股/中概股等相关搜索热词（仅在内容相关时）
+    finance_kw = _finance_seo_keywords(script)
+    for kw in finance_kw:
+        if kw not in tag_parts:
+            tag_parts.append(kw)
+
     seo_terms = _seo_terms(script, tag_parts)
     desc_bits = [raw_title]
     if keyword and keyword not in raw_title:
         desc_bits.append(keyword)
+    if finance_kw:
+        desc_bits.append(f"相关：{'、'.join(finance_kw)}。")
     if seo_terms:
         desc_bits.append(f"关注关键词：{'、'.join(seo_terms)}。")
     if brand:

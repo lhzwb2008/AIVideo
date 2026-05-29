@@ -9,8 +9,11 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+import cost_tracker
 
 from batch_aivideo import (
     append_history_from_script,
@@ -195,6 +198,7 @@ def main() -> int:
     target = max(1, args.count)
     log(f"\n目标成功 {target} 条；候选池共 {len(pool)} 条，按分数从高到低逐条尝试，失败自动换下一条。")
 
+    run_start = time.time()
     made: list[dict] = []
     failed: list[dict] = []
     for attempt_idx, article in enumerate(pool, 1):
@@ -248,6 +252,7 @@ def main() -> int:
         log(f"\n失败 {len(failed)} 条：")
         for item in failed:
             log(f"  ✗ [{item.get('score')}] {item.get('title')} → {item.get('error')}")
+    log("\n" + cost_tracker.report_window(run_start, videos=len(made)))
     return 0 if len(made) >= target else 1
 
 

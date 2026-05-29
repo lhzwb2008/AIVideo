@@ -118,6 +118,11 @@ def chat_complete(
                     )
                 if not isinstance(content, str) or not content.strip():
                     raise RuntimeError(f"chat 返回 content 为空: {raw[:300]}")
+                try:
+                    import cost_tracker
+                    cost_tracker.record_text(data.get("usage"))
+                except Exception:
+                    pass
                 return content
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""

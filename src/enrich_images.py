@@ -169,13 +169,16 @@ def enrich_script_file(
         if isinstance(entry, dict) and entry.get("is_cover"):
             prev_cover_fp = str(entry.get("fingerprint") or "") or None
             break
-    cover_task_needed = bool(title) and (
+    # 默认不再单独生成 AI 封面海报，省一张图（开场页用正文首图叠标题，见 video_compose 回退）。
+    # 需要独立封面海报时设 AIVIDEO_AI_COVER=1。
+    ai_cover_enabled = os.environ.get("AIVIDEO_AI_COVER", "0").lower() in ("1", "true", "yes", "on")
+    cover_task_needed = ai_cover_enabled and bool(title) and (
         force
         or not (cover_path.is_file() and cover_path.stat().st_size > 1024)
         or prev_cover_fp != cover_fp
     )
     cover_meta_entry: dict | None = None
-    if title and not cover_task_needed:
+    if title and ai_cover_enabled and not cover_task_needed:
         cover_meta_entry = {
             "index": 0,
             "image_path": str(cover_path.relative_to(ROOT)),

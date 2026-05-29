@@ -204,6 +204,11 @@ def generate_image(
     item = (data.get("data") or [{}])[0]
     if not isinstance(item, dict):
         raise RuntimeError(f"生图响应异常: {json.dumps(data, ensure_ascii=False)[:400]}")
+    try:
+        import cost_tracker
+        cost_tracker.record_image(data.get("usage"))
+    except Exception:
+        pass
 
     result: dict[str, Any] = {
         "elapsed_s": round(time.time() - started, 1),
