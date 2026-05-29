@@ -831,16 +831,17 @@ def author_details_from_knowledge(
 # 阶段二：基于文章改编脚本
 # ============================================================
 def max_slides() -> int:
-    """单条视频最多页数（= 最多生图数）。默认 5，可用 AIVIDEO_MAX_SLIDES 覆盖。"""
+    """单条视频最多正文页数。默认 4（再加 1 张全屏封面海报 = 总共 5 张图）。
+    可用 AIVIDEO_MAX_SLIDES 覆盖。"""
     try:
-        return max(3, int(os.environ.get("AIVIDEO_MAX_SLIDES", "5")))
+        return max(3, int(os.environ.get("AIVIDEO_MAX_SLIDES", "4")))
     except ValueError:
-        return 5
+        return 4
 
 
 ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财经为什么」的短视频编剧。
 
-任务：把用户给出的文章细节改成 3-5 页中文短视频问答脚本（页数宁少勿多，控制在 5 页以内，信息密度高、节奏快）。只讲文章里有依据的事实，不虚构。
+任务：把用户给出的文章细节改成 3-4 页中文短视频问答脚本（页数宁少勿多，最多 4 页，信息密度高、节奏快）。只讲文章里有依据的事实，不虚构。
 
 输出必须是单个 JSON 对象，且只需要这些字段：
 {
@@ -857,7 +858,7 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
 }
 
 规则：
-- slides 3-5 页（最多 5 页）；第 1 页是封面钩子，最后一页是结论/影响/警示。
+- slides 3-4 页（最多 4 页）；第 1 页是封面钩子，最后一页是结论/影响/警示。
 - 最后一页的 narration 收尾时，要**先根据这个话题自然抛出一个开放式问题**引导观众去评论区讨论（结合本期具体内容，不要套「你怎么看」这种空话，要有具体钩子，比如「你会押注哪一家」「这个价格你觉得贵不贵」之类与本期话题强相关的问题），**再**自然带一句让大家点赞收藏关注；不要生硬。
 - title 必须是问句，优先使用「什么是 X？」「X 为什么火了？」「X 到底意味着什么？」「X 财报到底好不好？」「X 为什么大涨/大跌？」这类搜索友好标题。
 - 不要输出 source、article、layout、lead_in、chapter_title、concept；这些由程序自动补。
@@ -1088,7 +1089,7 @@ ADAPT_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重�
 {errors}
 
 仍按之前要求：
-- slides 长度 3-5（最多 5 页）；第 1 页 layout=cover（含 subtitle），其余 layout=body（含 lead_in）
+- slides 长度 3-4（最多 4 页）；第 1 页 layout=cover（含 subtitle），其余 layout=body（含 lead_in）
 - 每页有 chapter_title / concept / headline / narration / image_prompt / on_image_text
 - 必须忠实于已选定文章原文（URL: {url}），不虚构事实
 - 口播必须像「AI财知道」自己的财经解读，不要说「文章认为」「作者指出」「文中提到」「某某的观点」；来源只作内部依据。
