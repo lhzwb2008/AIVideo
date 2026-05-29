@@ -36,31 +36,6 @@ def _append_unique(items: list[str], value: str, *, max_len: int = 16) -> None:
     items.append(value)
 
 
-def _seo_terms(script: dict | None, tag_parts: list[str]) -> list[str]:
-    """从脚本内容抽短关键词，只用于站内 SEO，不使用来源和外链。"""
-    terms: list[str] = []
-    for tag in tag_parts:
-        _append_unique(terms, tag)
-
-    for value in (
-        (script or {}).get("keyword"),
-        (script or {}).get("title"),
-    ):
-        _append_unique(terms, str(value or ""), max_len=18)
-
-    slides = (script or {}).get("slides")
-    if isinstance(slides, list):
-        for slide in slides:
-            if not isinstance(slide, dict):
-                continue
-            _append_unique(terms, str(slide.get("headline") or ""))
-            for label in slide.get("on_image_text") or []:
-                _append_unique(terms, str(label), max_len=12)
-            if len(terms) >= 8:
-                break
-    return terms[:8]
-
-
 def _script_text(script: dict | None) -> str:
     """把脚本里的标题/关键词/各页文字拼成一个大字符串，用于关键词匹配。"""
     parts: list[str] = [
@@ -77,11 +52,31 @@ def _script_text(script: dict | None) -> str:
     return " ".join(parts)
 
 
+def _subject_text(script: dict | None) -> str:
+    """只取「主角」文本：标题 + 关键词 + 封面/各页大标题（headline）。
+    用于判断本视频真正在讲谁，避免口播里顺带提一句别的公司就被加一堆无关标签。"""
+    parts: list[str] = [
+        str((script or {}).get("title") or ""),
+        str((script or {}).get("keyword") or ""),
+    ]
+    for slide in (script or {}).get("slides") or []:
+        if isinstance(slide, dict):
+            parts.append(str(slide.get("headline") or ""))
+    return " ".join(parts)
+
+
 # 财报/股市信号词：命中才追加股市类搜索关键词，避免乱加
 _FINANCE_SIGNAL = (
     "财报", "业绩", "营收", "净利", "利润", "毛利", "指引", "电话会", "季报", "年报",
     "股价", "股票", "市值", "估值", "净现金", "现金流", "负债", "EPS", "earnings",
     "revenue", "guidance", "营业额", "盈利", "亏损", "美股", "港股", "中概",
+)
+
+# A股 信号词：命中即判定为 A股 话题
+_ASTOCK_SIGNAL = (
+    "a股", "涨停", "跌停", "龙虎榜", "游资", "科创板", "创业板", "北向", "北交所",
+    "沪深", "沪指", "深成指", "创业板指", "科创50", "连板", "妖股", "人气股",
+    "打板", "主力资金", "两市", "沪市", "深市", "题材股", "概念股", "集合竞价", "深股通", "沪股通",
 )
 
 # 公司 → 关联市场/板块关键词（只在文中出现该公司时才加）
@@ -107,65 +102,85 @@ _COMPANY_MARKET = {
 
 
 def _finance_seo_keywords(script: dict | None) -> list[str]:
-    """财报/股市类话题：返回相关的搜索热词（命中公司或财报信号才返回）。"""
-    text = _script_text(script)
-    if not text:
+    """股市类话题：只返回与本视频**主角**强相关的少量搜索热词（最多 3 个）。
+
+    只看「主角文本」（标题+关键词+各页大标题），不扫口播全文，避免顺带提一句别的
+    公司就被加无关标签。原则：宁少勿多，A股 只给「A股」，公司只给其所属市场。
+    """
+    subject = _subject_text(script).lower()
+    if not subject:
         return []
-    is_finance = any(sig.lower() in text.lower() for sig in _FINANCE_SIGNAL)
     keywords: list[str] = []
 
     def add(k: str) -> None:
         if k and k not in keywords:
             keywords.append(k)
 
-    matched_company = False
+    # 1) A股 话题：只加「A股」，板块靠脚本 keyword 自带，不再堆砌
+    if any(sig in subject for sig in _ASTOCK_SIGNAL):
+        add("A股")
+        return keywords[:3]
+
+    # 2) 港美股/中概：只认主角文本里出现的公司，给其所属市场
     for aliases, markets in _COMPANY_MARKET.items():
-        if any(alias.lower() in text.lower() for alias in aliases):
-            matched_company = True
+        if any(alias.lower() in subject for alias in aliases):
             for m in markets:
                 add(m)
-    # 命中财报信号但没匹配到具体公司时，给一组通用股市热词
-    if is_finance and not matched_company:
-        for k in ("美股", "港股", "中概股", "财报"):
-            add(k)
-    elif matched_company and any(s in text for s in ("财报", "业绩", "营收", "净利", "净现金", "财务")):
-        add("财报")
-    return keywords[:6]
+
+    # 3) 没匹配到公司但主角明显是财报/股市话题：按主角里出现的市场补一个
+    if not keywords and any(sig.lower() in subject for sig in _FINANCE_SIGNAL):
+        for mkt in ("美股", "港股", "中概"):
+            if mkt in subject:
+                add("中概股" if mkt == "中概" else mkt)
+        if not keywords:
+            add("财报")
+    return keywords[:3]
+
+
+def _topic_keywords(script: dict | None) -> list[str]:
+    """本条视频的内容关键词：优先用脚本里大模型按内容写好的 hashtags；
+    旧脚本没有 hashtags 时，回退到轻量启发式（公司/A股 信号）。最多 5 个。"""
+    raw = (script or {}).get("hashtags")
+    kws: list[str] = []
+    if isinstance(raw, list):
+        for t in raw:
+            _append_unique(kws, str(t or ""), max_len=14)
+    if not kws:  # 兼容旧脚本
+        kws = _finance_seo_keywords(script)
+    return kws[:5]
 
 
 def build_sau_fields(script: dict | None) -> dict[str, str]:
-    """返回 publish-douyin 用的 title、desc、tags（逗号分隔，无 #）。"""
+    """返回 publish-douyin 用的 title、desc、tags（逗号分隔，无 #）。
+
+    内容关键词由选题/脚本生成阶段的大模型按内容写好（script.hashtags），这里不再写死。
+    """
     brand = _env("AIVIDEO_BRAND_NAME", "AI财知道").replace(" ", "")
     keyword = (script or {}).get("keyword", "").strip()
     raw_title = ((script or {}).get("title") or keyword or "AI财经热点").strip()
     title = raw_title if brand and brand in raw_title else (f"【{brand}】{raw_title}" if brand else raw_title)
 
+    topic_kw = _topic_keywords(script)
+
+    # tags = 品牌 + 内容关键词 + 少量频道级常青标签，去重后控制总量
     tag_parts: list[str] = []
     if brand:
         tag_parts.append(brand)
-    if keyword:
-        tag_parts.append(_strip_hashtag(keyword.replace(" ", "")))
-    for raw in _env("DOUYIN_HASHTAGS", "#AI #人工智能 #财经 #美股 #中概股").split():
+    for kw in topic_kw:
+        if kw not in tag_parts:
+            tag_parts.append(kw)
+    for raw in _env("DOUYIN_HASHTAGS", "#AI #财经 #股市").split():
         t = _strip_hashtag(raw)
         if t and t not in tag_parts:
             tag_parts.append(t)
 
-    # 财报/股市类话题：追加港股/美股/中概股等相关搜索热词（仅在内容相关时）
-    finance_kw = _finance_seo_keywords(script)
-    for kw in finance_kw:
-        if kw not in tag_parts:
-            tag_parts.append(kw)
-
-    seo_terms = _seo_terms(script, tag_parts)
     desc_bits = [raw_title]
     if keyword and keyword not in raw_title:
         desc_bits.append(keyword)
-    if finance_kw:
-        desc_bits.append(f"相关：{'、'.join(finance_kw)}。")
-    if seo_terms:
-        desc_bits.append(f"关注关键词：{'、'.join(seo_terms)}。")
+    if topic_kw:
+        desc_bits.append(f"相关：{'、'.join(topic_kw)}。")
     if brand:
-        desc_bits.append(f"——{brand}，每天一个 AI 财经为什么，点关注追更新。")
+        desc_bits.append(f"——{brand}，每天一个 AI 和股市的为什么，A股、美股、港股都聊，点关注追更新。")
     extra = _env("DOUYIN_DESC_SUFFIX")
     if extra:
         desc_bits.append(_strip_urls(extra))
@@ -173,5 +188,5 @@ def build_sau_fields(script: dict | None) -> dict[str, str]:
     return {
         "title": title[:100],
         "desc": _strip_urls(" ".join(desc_bits))[:1000],
-        "tags": ",".join(tag_parts[:10]),
+        "tags": ",".join(tag_parts[:8]),
     }

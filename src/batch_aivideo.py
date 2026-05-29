@@ -151,6 +151,18 @@ def _topic_text(item: dict) -> str:
     return " ".join(str(x) for x in parts if str(x or "").strip()).lower()
 
 
+def _title_text(item: dict) -> str:
+    """只取标题类字段（文章主角），用于「同公司」判定，避免摘要里顺带提及的
+    公司名（如 A股 半导体文造提到英伟达）把候选误判成该公司的重复。"""
+    parts = [
+        item.get("title"),
+        item.get("script_title"),
+        item.get("article_title"),
+        item.get("question_title"),
+    ]
+    return " ".join(str(x) for x in parts if str(x or "").strip()).lower()
+
+
 def _compact_topic_text(text: str) -> str:
     text = re.sub(r"https?://\S+", " ", text.lower())
     text = re.sub(r"[\W_]+", " ", text)
@@ -189,7 +201,8 @@ def duplicate_topic_reason(candidate: dict, recent_items: list[dict] | None = No
     cand_text = _topic_text(candidate)
     if not cand_text:
         return ""
-    cand_companies = _companies_in_text(cand_text)
+    # 「同公司」只认标题里的主角公司，不认摘要/key_facts 里顺带提及的，避免误杀。
+    cand_companies = _companies_in_text(_title_text(candidate))
     cand_tokens = _token_set(cand_text)
     cand_has_earnings = bool(_EARNINGS_RE.search(cand_text))
     cand_has_stock_move = bool(_STOCK_MOVE_RE.search(cand_text))
@@ -199,7 +212,7 @@ def duplicate_topic_reason(candidate: dict, recent_items: list[dict] | None = No
         if not old_text:
             continue
         old_title = str(old.get("title") or old.get("script_title") or old.get("article_title") or "").strip()
-        old_companies = _companies_in_text(old_text)
+        old_companies = _companies_in_text(_title_text(old))
         same_company = bool(cand_companies & old_companies)
         old_has_earnings = bool(_EARNINGS_RE.search(old_text))
         old_has_stock_move = bool(_STOCK_MOVE_RE.search(old_text))
@@ -208,9 +221,12 @@ def duplicate_topic_reason(candidate: dict, recent_items: list[dict] | None = No
             if cand_has_quarter or old_has_quarter or cand_has_stock_move or old_has_stock_move:
                 return f"同公司同财报/股价事件已做过：{old_title}"
         old_tokens = _token_set(old_text)
-        if cand_tokens and old_tokens:
-            overlap = len(cand_tokens & old_tokens) / max(1, min(len(cand_tokens), len(old_tokens)))
-            if overlap >= 0.72 and (same_company or cand_has_earnings == old_has_earnings):
+        # 相似度分支只在「同公司」时启用，且用 Jaccard（并集分母）避免短中文标题被
+        # 少数通用财经词（营收/季度/增长等）误判为重复，从而错杀无公司关联的 A股 爆点。
+        if same_company and len(cand_tokens) >= 4 and len(old_tokens) >= 4:
+            inter = len(cand_tokens & old_tokens)
+            jaccard = inter / max(1, len(cand_tokens | old_tokens))
+            if jaccard >= 0.6:
                 return f"标题/主题高度相似：{old_title}"
     return ""
 

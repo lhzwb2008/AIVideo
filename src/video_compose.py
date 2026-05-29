@@ -70,13 +70,13 @@ def cover_duration_s() -> float:
 # 栏目品牌：AI财知道
 # ============================================================
 BRAND_NAME = os.environ.get("AIVIDEO_BRAND_NAME", "AI财知道").strip()
-BRAND_TAGLINE = os.environ.get("AIVIDEO_BRAND_TAGLINE", "每天一个 AI 财经为什么").strip()
+BRAND_TAGLINE = os.environ.get("AIVIDEO_BRAND_TAGLINE", "每天一个 AI 和股市的为什么").strip()
 OUTRO_NARRATION = os.environ.get(
     "AIVIDEO_OUTRO_NARRATION",
-    "我是AI财知道，每天用大白话讲清一个AI和财经热点。觉得有用就点个关注加点赞，下条更新别错过！",
+    "我是AI财知道，每天用大白话讲清一个AI和股市热点，A股美股港股都聊。觉得有用就点个关注加点赞，下条更新别错过！",
 ).strip()
 OUTRO_HEADLINE = os.environ.get("AIVIDEO_OUTRO_HEADLINE", "点赞 · 收藏 · 关注").strip()
-OUTRO_SUBLINE = os.environ.get("AIVIDEO_OUTRO_SUBLINE", "一起看懂 AI 和钱的事").strip()
+OUTRO_SUBLINE = os.environ.get("AIVIDEO_OUTRO_SUBLINE", "看懂 AI 和股市的事").strip()
 
 # 尾页旁白每条视频随机选一条，避免每天产出末尾 mp4 字节完全相同被抖音判重复。
 # 用 "|" 分隔自定义变体，否则使用下面的默认池。
@@ -86,11 +86,11 @@ if _OUTRO_VARIANTS_RAW:
 else:
     OUTRO_NARRATION_VARIANTS = [
         OUTRO_NARRATION,
-        "我是AI财知道，每天用大白话讲一个AI财经热点。点个关注，明天同一时间见！",
-        "今天的AI财经为什么就讲到这。觉得有用就点赞收藏，关注我别错过下一条。",
-        "AI财知道陪你看懂AI和钱的事。点关注，每天一条，新鲜的认知不掉队。",
+        "我是AI财知道，每天用大白话讲一个AI和股市热点。点个关注，明天同一时间见！",
+        "今天的AI和股市为什么就讲到这。觉得有用就点赞收藏，关注我别错过下一条。",
+        "AI财知道陪你看懂AI和钱的事，A股美股港股都聊。点关注，每天一条不掉队。",
         "就到这。如果这条让你多懂一点，麻烦点个赞，关注我们继续每天更新。",
-        "我是AI财知道，专挑值得解释的AI财经热点。点赞关注，明天继续陪你看世界。",
+        "我是AI财知道，专挑值得解释的AI和股市热点。点赞关注，明天继续陪你看世界。",
     ]
 
 

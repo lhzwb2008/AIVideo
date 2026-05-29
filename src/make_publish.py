@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,72 @@ from research import find_articles, load_env, run_article_research, score_articl
 
 def log(message: str) -> None:
     print(message, flush=True)
+
+
+# ============================================================
+# 选题方向分桶：保证一次产出覆盖 A股 / AI / 港美股 三个方向
+# ============================================================
+DIRECTION_ORDER = ("astock", "ai", "hkus")
+DIRECTION_LABEL = {"astock": "A股", "ai": "AI", "hkus": "港美股"}
+
+_ASTOCK_KW = re.compile(
+    r"a股|涨停|跌停|龙虎榜|游资|科创板|创业板|北向|北交所|沪深|沪指|深成指|创业板指|"
+    r"科创50|连板|妖股|人气股|打板|涨停板|主力资金|两市|沪市|深市|题材股|概念股|集合竞价",
+    re.I,
+)
+_HKUS_KW = re.compile(
+    r"美股|港股|中概|纳斯达克|纳指|道指|标普|nasdaq|nyse|s&p|hong kong|hkex|"
+    r"七姐妹|magnificent|wall street|华尔街",
+    re.I,
+)
+
+
+def direction_bucket(cand: dict) -> str:
+    """把候选归到 astock / ai / hkus 三个方向之一。
+
+    优先级：A股专源/标记/关键词 → AI → 港美股（含中概股）。
+    """
+    st = str(cand.get("source_type") or "")
+    cat = str(cand.get("category") or "").lower()
+    text = " ".join(
+        str(cand.get(k) or "")
+        for k in ("title", "question_title", "summary_zh", "summary_en", "thesis", "site")
+    ).lower()
+    if st == "exa:astock" or cat == "astock" or (_ASTOCK_KW.search(text) and not _HKUS_KW.search(text)):
+        return "astock"
+    if cat == "ai":
+        return "ai"
+    if cat in {"earnings", "stock", "finance", "macro"}:
+        return "hkus"
+    # mixed / 未知：有港美股信号归港美股，否则归 AI。
+    return "hkus" if _HKUS_KW.search(text) else "ai"
+
+
+def _interleave_by_direction(cands: list[dict]) -> list[dict]:
+    """按方向轮转交错（A股 → AI → 港美股 → …），保留各方向内部原有顺序。"""
+    buckets: dict[str, list[dict]] = {d: [] for d in DIRECTION_ORDER}
+    for c in cands:
+        buckets[direction_bucket(c)].append(c)
+    out: list[dict] = []
+    while any(buckets[d] for d in DIRECTION_ORDER):
+        for d in DIRECTION_ORDER:
+            if buckets[d]:
+                out.append(buckets[d].pop(0))
+    return out
+
+
+def direction_quotas(target: int, present: list[str]) -> dict[str, int]:
+    """按优先级在「实际有候选的方向」间均分目标条数。
+
+    target=3 且三方向都有 → 每个方向各 1 条；某方向缺候选时名额顺延给其它方向。
+    """
+    order = [d for d in DIRECTION_ORDER if d in present]
+    quotas = {d: 0 for d in DIRECTION_ORDER}
+    if not order:
+        return quotas
+    for k in range(max(0, target)):
+        quotas[order[k % len(order)]] += 1
+    return quotas
 
 
 def rel(path: Path) -> str:
@@ -92,8 +159,18 @@ def select_topic_pool(*, days: int) -> list[dict]:
     if not candidates:
         log("候选均命中近 7 天本地去重，本次不制作。")
         return []
+    # 打分只覆盖前 N 个候选（AIVIDEO_SCORE_MAX_CANDIDATES，默认 40），而 A股 池是追加在最后的。
+    # 这里按方向轮转交错（A股 优先打头），确保三方向都进入打分窗口，A股 不再被挤出。
+    candidates = _interleave_by_direction(candidates)
+    pre = {d: 0 for d in DIRECTION_ORDER}
+    for c in candidates:
+        pre[direction_bucket(c)] += 1
+    log(f"  候选方向分布：A股 {pre['astock']}，AI {pre['ai']}，港美股 {pre['hkus']}（已交错排序送打分）")
     scored, decision = score_articles(candidates, recent_topics=recent_topics)
     scored = filter_duplicate_topics(scored)
+
+    for cand in scored:
+        cand["direction"] = direction_bucket(cand)
 
     report = ROOT / "logs" / "make_publish_topics.json"
     report.write_text(
@@ -113,9 +190,14 @@ def select_topic_pool(*, days: int) -> list[dict]:
         encoding="utf-8",
     )
 
-    log(f"选题完成：{len(candidates)} 个候选，{len(scored)} 个过线进入候选池")
+    by_dir: dict[str, int] = {d: 0 for d in DIRECTION_ORDER}
+    for cand in scored:
+        by_dir[cand.get("direction", "ai")] = by_dir.get(cand.get("direction", "ai"), 0) + 1
+    dir_brief = "，".join(f"{DIRECTION_LABEL[d]} {by_dir[d]}" for d in DIRECTION_ORDER)
+    log(f"选题完成：{len(candidates)} 个候选，{len(scored)} 个过线进入候选池（{dir_brief}）")
     for i, topic in enumerate(scored, 1):
-        log(f"  {i}. [{topic.get('topic_score')}] {topic.get('question_title') or topic.get('title')}")
+        tag = DIRECTION_LABEL.get(topic.get("direction", ""), "?")
+        log(f"  {i}. [{tag}|{topic.get('topic_score')}] {topic.get('question_title') or topic.get('title')}")
     return scored
 
 
@@ -196,40 +278,72 @@ def main() -> int:
         return 0
 
     target = max(1, args.count)
-    log(f"\n目标成功 {target} 条；候选池共 {len(pool)} 条，按分数从高到低逐条尝试，失败自动换下一条。")
+    present = [d for d in DIRECTION_ORDER if any(a.get("direction") == d for a in pool)]
+    quotas = direction_quotas(target, present)
+    quota_brief = "，".join(
+        f"{DIRECTION_LABEL[d]} {quotas[d]}" for d in DIRECTION_ORDER if quotas[d] > 0
+    )
+    log(f"\n目标成功 {target} 条（按方向配额：{quota_brief}）；候选池共 {len(pool)} 条。")
+    log("先按方向配额各取最高分，缺口再用剩余候选回填，失败自动换下一条。")
 
     run_start = time.time()
     made: list[dict] = []
     failed: list[dict] = []
-    for attempt_idx, article in enumerate(pool, 1):
+    used_urls: set[str] = set()
+    made_by_dir: dict[str, int] = {d: 0 for d in DIRECTION_ORDER}
+    attempt_no = 0
+
+    def try_article(article: dict, *, respect_quota: bool) -> bool:
+        """尝试制作+发布一条；成功返回 True。respect_quota=True 时只做未满配额的方向。"""
+        nonlocal attempt_no
         if len(made) >= target:
-            break
+            return False
+        url = str(article.get("url") or "").strip()
+        if url and url in used_urls:
+            return False
+        d = article.get("direction", "ai")
+        if respect_quota and made_by_dir.get(d, 0) >= quotas.get(d, 0):
+            return False
         title = article.get("question_title") or article.get("title")
-        log(f"\n>>> 尝试 #{attempt_idx} [{article.get('topic_score')}] {title}")
+        attempt_no += 1
+        log(f"\n>>> 尝试 #{attempt_no} [{DIRECTION_LABEL.get(d, '?')}|{article.get('topic_score')}] {title}")
+        used_urls.add(url)
         try:
-            made.append(
-                process_one(
-                    len(made) + 1,
-                    target=target,
-                    days=args.days,
-                    publish_check=args.check,
-                    dry_run=args.dry_run,
-                    article=article,
-                )
+            result = process_one(
+                len(made) + 1,
+                target=target,
+                days=args.days,
+                publish_check=args.check,
+                dry_run=args.dry_run,
+                article=article,
             )
+            result["direction"] = d
+            made.append(result)
+            made_by_dir[d] = made_by_dir.get(d, 0) + 1
+            return True
         except Exception as exc:  # noqa: BLE001
-            log(f"\n✗ 候选失败 [{article.get('topic_score')}] {title}：{exc}")
+            log(f"\n✗ 候选失败 [{DIRECTION_LABEL.get(d, '?')}|{article.get('topic_score')}] {title}：{exc}")
             failed.append({
                 "title": title,
                 "url": article.get("url"),
                 "score": article.get("topic_score"),
+                "direction": d,
                 "error": str(exc),
             })
-            if len(made) + (len(pool) - attempt_idx) < target:
-                log(f"⚠️ 剩余候选不足以达成目标 {target} 条，提前终止。")
+            return False
+
+    # 阶段一：按方向配额，各方向取最高分（保证 A股/AI/港美股 都覆盖）。
+    for article in pool:
+        if len(made) >= target:
+            break
+        try_article(article, respect_quota=True)
+    # 阶段二：仍有缺口（某方向无候选或全失败）→ 放开配额，用剩余候选按分回填。
+    if len(made) < target:
+        log(f"\n[回填] 配额阶段产出 {len(made)}/{target} 条，放开方向限制继续补足…")
+        for article in pool:
+            if len(made) >= target:
                 break
-            log("↻ 换下一候选重试…")
-            continue
+            try_article(article, respect_quota=False)
 
     summary = ROOT / "logs" / "make_publish_last.json"
     summary.write_text(
@@ -245,9 +359,13 @@ def main() -> int:
         ),
         encoding="utf-8",
     )
-    log(f"\n全部完成：成功 {len(made)}/{target}")
+    cover_brief = "，".join(
+        f"{DIRECTION_LABEL[d]} {made_by_dir[d]}" for d in DIRECTION_ORDER if made_by_dir[d] > 0
+    )
+    log(f"\n全部完成：成功 {len(made)}/{target}（方向覆盖：{cover_brief or '无'}）")
     for item in made:
-        log(f"  ✓ {item.get('title')} → {item.get('video')}")
+        tag = DIRECTION_LABEL.get(item.get("direction", ""), "?")
+        log(f"  ✓ [{tag}] {item.get('title')} → {item.get('video')}")
     if failed:
         log(f"\n失败 {len(failed)} 条：")
         for item in failed:

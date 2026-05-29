@@ -299,6 +299,21 @@ RSSHUB_FINANCE_ROUTES = [
     ("yahoo.com", "/yahoo/news/en-US/finance", "en", "feed:yahoo-finance"),
 ]
 
+# A股「爆品」专用 RSSHub 路由：以散户最关注、最易引爆话题的源为主。
+# 同样需要 RSSHUB_BASE_URL；为空时整体跳过。
+RSSHUB_ASTOCK_ROUTES = [
+    # 财联社电报：A股 24h 异动/涨停/突发最快的源（爆点首选）。
+    ("cls.cn", "/cls/telegraph", "zh", "feed:cls-telegraph"),
+    ("cls.cn", "/cls/depth/1000", "zh", "feed:cls-depth"),  # 头条深度
+    ("cls.cn", "/cls/hot", "zh", "feed:cls-hot"),  # 热门
+    # 华尔街见闻 A股 实时快讯。
+    ("wallstreetcn.com", "/wallstreetcn/live/a-stock", "zh", "feed:wallstreetcn-a-stock"),
+    # 东方财富：散户人气最高，自带热门个股话题性。
+    ("eastmoney.com", "/eastmoney/news/cjpl", "zh", "feed:eastmoney-cjpl"),  # 财经评论
+    # 新浪财经 A股 滚动。
+    ("sina.com.cn", "/sina/finance/stock", "zh", "feed:sina-stock"),
+]
+
 
 def fetch_finance_feeds(hours: int = 24) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
@@ -307,10 +322,10 @@ def fetch_finance_feeds(hours: int = 24) -> list[dict[str, Any]]:
     if rsshub:
         sources.extend(
             (site, f"{rsshub}{route}", language, source_type)
-            for site, route, language, source_type in RSSHUB_FINANCE_ROUTES
+            for site, route, language, source_type in RSSHUB_FINANCE_ROUTES + RSSHUB_ASTOCK_ROUTES
         )
     else:
-        print("  ℹ️  未设置 RSSHUB_BASE_URL，跳过华尔街见闻/Reuters/Yahoo 等 RSSHub 财经源")
+        print("  ℹ️  未设置 RSSHUB_BASE_URL，跳过华尔街见闻/财联社/东财/Reuters/Yahoo 等 RSSHub 财经源")
     for site, url, language, source_type in sources:
         try:
             got = fetch_rss(url, site=site, language=language, source_type=source_type)

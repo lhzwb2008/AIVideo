@@ -1,4 +1,4 @@
-"""AiHubMix OpenAI-compatible chat completions（用于中间判断/筛选逻辑，默认 Claude Opus 4.7）。
+"""AiHubMix OpenAI-compatible chat completions（用于中间判断/筛选逻辑，默认 Claude Opus 4.8）。
 
 约定：调研找文章 / 改编脚本 仍由 Cursor Cloud Agent 处理；本模块只做"中间判断"
 （如从候选里挑最佳）的轻量调用。生图依然走 image_client.py。
@@ -30,8 +30,8 @@ def base_url() -> str:
 
 
 def text_model() -> str:
-    """中间判断默认用 Claude Opus 4.7；可用 AIHUBMIX_TEXT_MODEL 覆盖。"""
-    return _env("AIHUBMIX_TEXT_MODEL", "claude-opus-4-7")
+    """中间判断默认用 Claude Opus 4.8；可用 AIHUBMIX_TEXT_MODEL 覆盖。"""
+    return _env("AIHUBMIX_TEXT_MODEL", "claude-opus-4-8")
 
 
 def thinking_budget() -> int:

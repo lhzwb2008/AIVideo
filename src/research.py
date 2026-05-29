@@ -162,6 +162,21 @@ EXA_QUERIES_FINANCE = [
     "最新 中概股 财报 分析 阿里 腾讯 百度 京东 拼多多 网易 理想 蔚来 小鹏",
 ]
 
+# A股「爆品」专用：目标是吸引眼球、能引爆评论区的热点，不一定是最优质内容。
+# 偏向题材爆炒、涨停潮、妖股、游资、人气榜、龙虎榜、风口概念、产业链异动。
+EXA_QUERIES_ASTOCK = [
+    "A股 今日 涨停潮 题材 概念 板块 异动 资金抢筹 龙虎榜",
+    "A股 妖股 连板 游资 抱团 炒作 风口 人气股 热度榜",
+    "财联社 A股 电报 异动 涨停 突发 龙虎榜 主力资金",
+    "东方财富 股吧 人气股 热度榜 散户 抢筹 热门个股",
+    "同花顺 强势股 题材归因 北向资金 主力净流入 概念板块",
+    "雪球 热门 A股 个股 讨论 大涨 大跌 业绩暴雷 黑马",
+    "A股 半导体 AI算力 机器人 算力 国产替代 大涨 龙头 炒作",
+    "A股 上市 IPO 新股 暴涨 业绩预增 重组 并购 概念 爆发",
+    "A股 大跌 暴跌 闪崩 退市 风险 监管 问询函 减持 利空",
+    "sina.com.cn OR cls.cn OR eastmoney.com A股 今日热点 行情 解读",
+]
+
 # 兼容旧名字（外部不再使用）
 EXA_QUERIES = EXA_QUERIES_EN
 
@@ -226,12 +241,15 @@ def _format_pool_for_opus(pool: list[dict]) -> str:
     return json.dumps(view, ensure_ascii=False, indent=2)
 
 
-def _exa_result_to_candidate(r: dict, *, language: str = "en") -> dict:
+def _exa_result_to_candidate(
+    r: dict, *, language: str = "en", source_type: str = "exa:finance",
+) -> dict:
     title = str(r.get("title") or "").strip()
     url = str(r.get("url") or "").strip()
     summary = str(r.get("summary") or title).strip()
     highlights = [str(x).strip() for x in (r.get("highlights") or []) if str(x).strip()]
     facts = highlights[:4] or [summary or title]
+    is_astock = source_type == "exa:astock"
     return {
         "title": title,
         "url": url,
@@ -243,11 +261,14 @@ def _exa_result_to_candidate(r: dict, *, language: str = "en") -> dict:
         "summary_zh": summary if language == "zh" else title,
         "thesis": summary or title,
         "key_facts": facts,
-        "narrative_arc": "最新财经资讯 → 核心数据 → 市场影响",
-        "heat_score": 7,
-        "heat_evidence": "Exa 财经搜索命中",
+        "narrative_arc": (
+            "热点爆发 → 资金/题材逻辑 → 后市看点" if is_astock
+            else "最新财经资讯 → 核心数据 → 市场影响"
+        ),
+        "heat_score": 9 if is_astock else 7,
+        "heat_evidence": "Exa A股爆点搜索命中（最高优先）" if is_astock else "Exa 财经搜索命中",
         "estimated_pages": 5,
-        "source_type": "exa:finance",
+        "source_type": source_type,
     }
 
 
@@ -256,7 +277,8 @@ PICK_CANDIDATES_SYSTEM = """你是「AI财知道」选题总编。给你一批 E
 栏目定位：用大白话回答「AI 和财经类十万个为什么」。优先选择能被概括成一个搜索型问句的热点，例如「什么是 X」「X 为什么大涨」「X 财报到底好不好」「X 对普通人有什么影响」。
 
 挑选标准（按重要性）：
-1) AI、财经、美股、中概股全网真实热度（HN 高分、X 多人转、多家媒体同步报道、Reddit/Newsletter 头条、知乎/微博/即刻热门、公众号 10w+ 等）。尤其关注大型科技股/中概股财报、股价异动、宏观数据和监管事件。
+1) AI、财经、美股、中概股、**A股** 全网真实热度（HN 高分、X 多人转、多家媒体同步报道、Reddit/Newsletter 头条、知乎/微博/即刻热门、公众号 10w+、东方财富股吧/雪球/同花顺人气榜高热度等）。尤其关注大型科技股/中概股财报、股价异动、宏观数据和监管事件。
+   · **A股 爆品特别说明**：A股 部分以「爆品」为目标——优先选最能吸引眼球、能引爆评论区的热点（涨停潮、连板妖股、游资抱团、龙虎榜、人气股榜、题材爆炒、风口概念、业绩暴雷/暴增、突发利空利好），**不一定要是质量最高/最深度的内容，但必须够热够有话题性**。财联社电报、东方财富、同花顺、雪球、新浪财经里散户最关注、转发讨论最多的那种就是首选。
 2) 自带完整叙事或核心观点，能讲清「这是什么、为什么重要、影响谁」；纯产品发布稿、纯参数更新、纯公关博客 pass。
 3) 必须是 N 件不同的事；同一事件的多家报道只留最权威/最热那一版。
 4) 必须是真实可访问的{lang_label}文章 URL，不是推文/视频。
@@ -393,6 +415,22 @@ def find_articles(
                 candidates.extend(finance_candidates)
         except Exception as exc:  # noqa: BLE001
             print(f"  ⚠️  Exa 财经补源失败：{exc}", file=sys.stderr)
+        try:
+            astock_pool = _exa_search_pool(
+                days=max(1, min(days, 3)),
+                exclude_urls=exclude_urls,
+                queries=EXA_QUERIES_ASTOCK,
+            )
+            astock_candidates = [
+                _exa_result_to_candidate(r, language="zh", source_type="exa:astock")
+                for r in astock_pool
+                if str(r.get("url") or "").strip() not in excl
+            ][:30]
+            if astock_candidates:
+                print(f"  ✓ Exa A股爆点补源：{len(astock_candidates)} 篇")
+                candidates.extend(astock_candidates)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️  Exa A股补源失败：{exc}", file=sys.stderr)
         candidates = _dedup_results(candidates)
         if not candidates:
             raise RuntimeError("固定信息源没有抓到候选")
@@ -404,9 +442,27 @@ def find_articles(
         exclude_urls=exclude_urls,
         queries=EXA_QUERIES_FINANCE + EXA_QUERIES_EN + EXA_QUERIES_ZH,
     )
-    if not pool:
-        raise RuntimeError("Exa 没搜到任何候选")
     valid = [_exa_result_to_candidate(r, language="en") for r in pool]
+
+    # A股 爆点池：单独用更短的时间窗（题材炒作时效性强）+ 中文标记。
+    seen_urls = {str(c.get("url") or "").strip() for c in valid}
+    try:
+        astock_pool = _exa_search_pool(
+            days=max(1, min(days, 3)),
+            exclude_urls=exclude_urls,
+            queries=EXA_QUERIES_ASTOCK,
+        )
+        astock_valid = [
+            _exa_result_to_candidate(r, language="zh", source_type="exa:astock")
+            for r in astock_pool
+            if str(r.get("url") or "").strip() not in seen_urls
+        ]
+        if astock_valid:
+            print(f"  ✓ Exa A股爆点：{len(astock_valid)} 篇")
+            valid.extend(astock_valid)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠️  Exa A股搜索失败：{exc}", file=sys.stderr)
+
     if not valid:
         raise RuntimeError("Exa 候选文章均不合规")
     print(f"  ✓ Exa 候选合并：{len(valid)} 篇")
@@ -441,18 +497,27 @@ SCORE_TOPICS_SYSTEM = """你是抖音栏目「AI财知道」的选题打分器�
 
 栏目定位：AI 和财经类「十万个为什么」。优先选择 24 小时内的新鲜事件，能用一个搜索型问句讲清楚「这是什么、为什么重要、会影响谁」。
 
+★★ 最高优先级：A股「爆品」是本栏目的**第一权重**，高于美股、高于中概股 ★★
+- 当一条 A股 爆点候选与美股/中概股候选热度、可讲性相近时，**永远优先选 A股**，并给它更高的 topic_score。
+- A股 部分以「爆品」为目标——**优先吸引眼球、有话题性、能引爆评论区，不要求是质量最高或最深度的内容**。
+
 打分标准（topic_score 0-100）：
-- 95-100：必须做。七姐妹（Apple、Microsoft、Nvidia、Alphabet/Google、Amazon、Meta、Tesla）或重点中概股（阿里、腾讯、百度、京东、拼多多、网易、携程、贝壳、B站、理想、蔚来、小鹏等）的最新财报/业绩会/财报后股价大幅异动；或全市场级 AI/宏观/美股事件。
-- 85-94：强烈建议做。AI 巨头战略、AI 商业化拐点、重要模型/产品发布、重要监管/利率/汇率/通胀数据、美股/港股/中概股核心资产明显异动。
+- 95-100：必须做。**首选 A股 爆点（涨停潮/妖股连板/龙虎榜大战/游资抱团/人气股榜前排/题材总爆发/重磅 IPO 暴涨/业绩暴雷暴增/突发利空利好），只要真实新鲜即可进此档**；其次才是七姐妹（Apple、Microsoft、Nvidia、Alphabet/Google、Amazon、Meta、Tesla）或重点中概股（阿里、腾讯、百度、京东、拼多多、网易、携程、贝壳、B站、理想、蔚来、小鹏等）的最新财报/财报后股价大幅异动，或全市场级 AI/宏观/美股事件。
+- 85-94：强烈建议做。A股 当日高热度题材/概念板块异动、人气股榜个股、游资炒作、热门 IPO/重组；或 AI 巨头战略、AI 商业化拐点、重要模型/产品发布、重要监管/利率/汇率/通胀数据、美股/港股/中概股核心资产明显异动。
 - 75-84：可以做。有清晰事实、数字、冲突和搜索关键词，能讲成一个「为什么/是什么/意味着什么」。
 - 60-74：备选。信息有价值但热度或可讲性一般。
 - 0-59：不做。软文、重复、信息太薄、旧闻、标题党、缺少事实。
 
-高分加权：
-- 最新财报分析、earnings、results、guidance、revenue、profit、EPS、财报、业绩、指引、电话会：显著加分。
-- 七姐妹和重点中概股：显著加分。
-- 同时具备 AI + 财经/股价/财报属性：显著加分。
-- 财联社/华尔街见闻/Reuters/Yahoo Finance/Seeking Alpha 等可信财经源：加分，但 Seeking Alpha 的观点要标记 opinion_risk。
+★ A股「爆品」专项规则（极重要）：
+- 凡涉及 涨停/连板/妖股/游资/龙虎榜/人气股榜/题材爆炒/风口概念/业绩暴雷或暴增/突发利空利好/重磅 IPO 暴涨 的 A股 候选，只要事件真实且新鲜（当天或最近几天），就**给到最高档加分**，哪怕来源只是快讯/股吧热帖。
+- A股 爆点天然带「为什么大涨/为什么大跌/谁在炒/能不能追」这类强搜索问句，可讲性极高，应优先进入待生成队列。
+- 但仍要规避纯荐股、纯喊单、明显违规的「内幕消息」类内容；这类标记 opinion_risk=true 并降分。
+
+高分加权（从高到低）：
+- 【最高】A股 涨停潮/妖股/龙虎榜/人气榜/题材爆炒/重磅 IPO 暴涨/业绩暴雷暴增：爆品第一优先，权重高于下面所有项。
+- 七姐妹和重点中概股的最新财报分析、earnings、results、guidance、revenue、profit、EPS、业绩、指引、电话会：显著加分（但低于 A股 爆品）。
+- 同时具备 AI + 财经/股价/财报属性：加分。
+- 财联社/华尔街见闻/东方财富/同花顺/雪球/新浪财经/Reuters/Yahoo Finance/Seeking Alpha 等可信或高人气财经源：加分，但 Seeking Alpha 和个人观点要标记 opinion_risk。
 
 去重规则：
 - 如果与近期已做过标题是同一主角、同一事件、同一发布、同一财报，即使 URL 不同也应 marked duplicate=true，topic_score 不得超过 40。
@@ -481,7 +546,7 @@ SCORE_TOPICS_USER = """【当前真实日期】{today}（请用它作为新鲜�
       "reason": "25-60字，说明为什么这个分数",
       "duplicate": true/false,
       "duplicate_reason": "如重复，说明与哪个历史标题或候选重复；不重复则空串",
-      "category": "ai|finance|earnings|macro|stock|mixed",
+      "category": "ai|finance|earnings|macro|stock|astock|mixed",
       "opinion_risk": true/false
     }}
   ]
@@ -847,6 +912,7 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
 {
   "title": "6-18字中文问句标题",
   "keyword": "2-8字关键词",
+  "hashtags": ["3-5个与本条内容强相关的抖音搜索词"],
   "slides": [
     {
       "headline": "6-14字上屏标题",
@@ -858,6 +924,7 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
 }
 
 规则：
+- hashtags：写 3-5 个**与本条视频内容强相关**的中文搜索词，按内容自己判断，宁少勿多、不要凑数、不要写无关的泛词。可包含：核心主角（个股名/公司/产品）、所属市场（A股 / 美股 / 港股 / 中概股，按真实归属写，A股 个股就写 A股，别乱加美股）、所属板块或概念（如 半导体、算力、电力、机器人）、以及 AI / 财报 等本条确实涉及的标签。每个一般 2-8 字（英文公司名可稍长，如 Salesforce），不带 # 号。例如讲 A股 电力股涨停就写 ["A股","电力股","涨停"]，讲英伟达财报就写 ["英伟达","美股","财报"]。
 - slides 3-4 页（最多 4 页）；第 1 页是封面钩子，最后一页是结论/影响/警示。
 - 最后一页的 narration 收尾时，要**先根据这个话题自然抛出一个开放式问题**引导观众去评论区讨论（结合本期具体内容，不要套「你怎么看」这种空话，要有具体钩子，比如「你会押注哪一家」「这个价格你觉得贵不贵」之类与本期话题强相关的问题），**再**自然带一句让大家点赞收藏关注；不要生硬。
 - title 必须是问句，优先使用「什么是 X？」「X 为什么火了？」「X 到底意味着什么？」「X 财报到底好不好？」「X 为什么大涨/大跌？」这类搜索友好标题。
@@ -921,6 +988,17 @@ def soft_sanitize_script(data: dict) -> dict:
     title = str(data.get("title") or "").strip()
     if title:
         data["title"] = _compact_title(title)
+    # 规范化 hashtags：去 # / 去空 / 去重 / 每个 ≤8 字 / 最多 5 个
+    raw_tags = data.get("hashtags")
+    if isinstance(raw_tags, list):
+        clean_tags: list[str] = []
+        for t in raw_tags:
+            t = re.sub(r"^#+", "", str(t or "")).strip(" ，。、：；#,.!?！？")
+            if t and len(t) <= 14 and t not in clean_tags:
+                clean_tags.append(t)
+        data["hashtags"] = clean_tags[:5]
+    else:
+        data["hashtags"] = []
     slides = data.get("slides")
     if not isinstance(slides, list):
         return data
