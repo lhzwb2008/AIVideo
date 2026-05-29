@@ -122,8 +122,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="AI财知道：指定话题一键制作并发布")
     parser.add_argument("topics", nargs="*", help="一段含编号的话题文字；也可用 - 从 stdin 读")
     parser.add_argument("--file", help="从文件读取话题文字")
-    parser.add_argument("--days", type=int, default=int(os.environ.get("AIVIDEO_TOPIC_DAYS", "120")),
-                        help="搜话题文章的时间窗（天），默认 120")
+    parser.add_argument("--days", type=int, default=int(os.environ.get("AIVIDEO_TOPIC_DAYS", "7")),
+                        help="搜话题文章的时间窗（天），默认 7（指定话题默认是当日热点，窗口收窄以保证时效）")
     parser.add_argument("--check", action="store_true", help="发布前检查抖音登录态")
     parser.add_argument("--dry-run", action="store_true", help="只预演发布参数，不真正发布/归档")
     parser.add_argument("--no-publish", action="store_true", help="只生成视频，跳过发布步骤")

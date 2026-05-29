@@ -16,8 +16,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
+from datetime import datetime, timezone
 
 import research
 
@@ -100,6 +102,53 @@ def _looks_like_science(title_hint: str) -> bool:
     return bool(_SCIENCE_HINT_RE.search(title_hint or ""))
 
 
+# 通用财经/口语词：这些词不具区分度，不能用来判断候选文章是否"就是这个话题"
+_GENERIC_BIGRAMS = {
+    "涨疯", "疯了", "暴涨", "大涨", "上涨", "涨停", "连板", "飙升", "拉升", "新高",
+    "市值", "超过", "突破", "亿元", "万亿", "千亿", "百亿", "股价", "股票", "个股",
+    "营收", "净利", "利润", "财报", "业绩", "估值", "盘中", "收盘", "开盘", "成交",
+    "为何", "为什么", "原因", "分析", "深度", "最新", "今日", "今天", "消息", "新闻",
+}
+# 抽词时直接丢弃的通用单字噪声
+_GENERIC_CHARS = set("的了是和与及在为对从把被让向涨股亿元万千百多少高低大小")
+
+
+def _topic_keywords(title_hint: str) -> set[str]:
+    """从话题线索里抽取"有区分度"的实体关键词（CJK 2-gram + 英文词），
+    去掉编号、数字、通用财经/口语词，用于判断候选文章是否真的讲这个话题。"""
+    text = title_hint or ""
+    keys: set[str] = set()
+    # 英文/数字混合词（如 Anthropic、opus4、5G）：长度>=2 视为实体
+    for w in re.findall(r"[A-Za-z][A-Za-z0-9.]{1,}", text):
+        if len(w) >= 2:
+            keys.add(w.lower())
+    # CJK 连续片段 → 2-gram
+    for run in re.findall(r"[\u4e00-\u9fff]{2,}", text):
+        for i in range(len(run) - 1):
+            bg = run[i:i + 2]
+            if bg in _GENERIC_BIGRAMS:
+                continue
+            if bg[0] in _GENERIC_CHARS and bg[1] in _GENERIC_CHARS:
+                continue
+            keys.add(bg)
+    return keys
+
+
+def _relevance_score(cand: dict, keys: set[str]) -> int:
+    """候选文章与话题关键词的相关度：命中标题计 3 分，命中正文/摘要计 1 分。"""
+    if not keys:
+        return 0
+    title = str(cand.get("title") or "")
+    body = " ".join(str(cand.get(k) or "") for k in ("summary_zh", "summary", "text", "thesis"))
+    score = 0
+    for k in keys:
+        if k in title or k.lower() in title.lower():
+            score += 3
+        elif k in body or k.lower() in body.lower():
+            score += 1
+    return score
+
+
 def _exa_queries_for_topic(title_hint: str) -> list[str]:
     base = [title_hint]
     if _looks_like_science(title_hint):
@@ -126,13 +175,60 @@ def _search_candidates(title_hint: str, *, days: int) -> list[dict]:
         print(f"  ⚠️  Exa 搜索「{title_hint}」失败：{exc}", file=sys.stderr)
         return []
     cands = [research._exa_result_to_candidate(r) for r in pool]
-    # 新闻/财报型话题（如「小鹏财报」「opus4.8发布」）优先最新一篇，避免抓到几个月前的旧财报；
-    # 科普型话题（「是什么/原理」）保持相关性排序。
-    if not _looks_like_science(title_hint):
-        cands.sort(key=lambda c: str(c.get("published_at") or ""), reverse=True)
-        if cands:
-            print(f"  📅 按时间优先，最新候选：{cands[0].get('published_at')} {cands[0].get('title')}")
+    # 先按"是否真的讲这个话题"打相关度分，避免取到一篇只是日期最新、实质无关的文章。
+    keys = _topic_keywords(title_hint)
+    for c in cands:
+        c["_relevance"] = _relevance_score(c, keys)
+    if keys:
+        relevant = [c for c in cands if c.get("_relevance", 0) > 0]
+        if not relevant:
+            print(f"  ⚠️  搜到 {len(cands)} 条，但没有一篇与「{title_hint}」实体（{ '/'.join(sorted(keys)) }）相关")
+            return []
+        cands = relevant
+    science = _looks_like_science(title_hint)
+    if science:
+        # 科普型：相关度优先即可，时效不敏感。
+        cands.sort(key=lambda c: c.get("_relevance", 0), reverse=True)
+    else:
+        # 新闻/财报型：先保证"标题命中实体"，再尽量取最新——指定话题都是"今天的热点"。
+        cands.sort(
+            key=lambda c: (c.get("_relevance", 0) >= 3, str(c.get("published_at") or ""), c.get("_relevance", 0)),
+            reverse=True,
+        )
+    if cands:
+        top = cands[0]
+        print(f"  🎯 相关度+时效优先，命中候选：[{top.get('_relevance')}分] {top.get('published_at')} {top.get('title')}")
     return cands
+
+
+def _days_old(cand: dict) -> float:
+    """候选文章距今多少天；无法解析日期时返回一个很大的值（视为很旧）。"""
+    raw = str(cand.get("published_at") or "").strip()
+    if not raw:
+        return 1e9
+    # 统一取前 10 位的日期部分（YYYY-MM-DD / YYYY/MM/DD），足够判断时效。
+    m = re.match(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", raw)
+    if not m:
+        return 1e9
+    try:
+        dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=timezone.utc)
+    except ValueError:
+        return 1e9
+    return (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+
+
+def _materials_block(cands: list[dict], *, limit: int = 6) -> str:
+    """把若干相关候选拼成"参考材料"，供模型综合改写时使用。"""
+    lines: list[str] = []
+    for i, c in enumerate(cands[:limit], 1):
+        title = str(c.get("title") or "").strip()
+        date = str(c.get("published_at") or "").strip()
+        site = str(c.get("site") or "").strip()
+        body = str(c.get("summary_zh") or c.get("summary") or c.get("text") or "").strip()
+        body = re.sub(r"\s+", " ", body)[:400]
+        head = " | ".join(p for p in (date, site) if p)
+        lines.append(f"[材料{i}] {title}（{head}）\n{body}")
+    return "\n\n".join(lines)
 
 
 def _article_from_topic(topic: dict) -> dict:
@@ -181,8 +277,23 @@ def build_topic_research(
         return article, details
 
     # —— 路线 2：搜文章 ——
+    science = _looks_like_science(title_hint)
+    fresh_days = float(os.environ.get("AIVIDEO_TOPIC_FRESH_DAYS", "2"))
     print(f"  🔍 「{title_hint}」联网搜索热门文章…")
     candidates = _search_candidates(title_hint, days=days)
+
+    # 新闻/财报型：指定话题默认是"今天的热点"，必须足够新。
+    # 若搜到的最新一篇也偏旧（超过 fresh_days），不硬套旧数据，转为综合多篇材料 + 模型最新认知自写。
+    if candidates and not science:
+        freshest = min(_days_old(c) for c in candidates)
+        if freshest > fresh_days:
+            print(
+                f"  🕒 最新候选距今约 {freshest:.1f} 天（阈值 {fresh_days:.0f} 天），"
+                f"判定不够及时 → 综合 {min(len(candidates), 6)} 篇材料让模型按最新情况自写",
+                file=sys.stderr,
+            )
+            return _synthesize_from_materials(topic, candidates)
+
     for cand in candidates[:5]:
         url = str(cand.get("url") or "")
         if not url.startswith("http"):
@@ -195,8 +306,31 @@ def build_topic_research(
         cand.setdefault("question_title", "")
         return cand, details
 
-    # —— 路线 3：模型自写 ——
-    print(f"  ✍️  「{title_hint}」没搜到合适文章，改用模型自身知识写科普", file=sys.stderr)
+    # —— 路线 3：没有相关文章 → 综合材料 / 模型自身知识自写 ——
+    if candidates:
+        print(f"  ✍️  「{title_hint}」相关文章都无法深读，改用综合材料自写", file=sys.stderr)
+        return _synthesize_from_materials(topic, candidates)
+    print(f"  ✍️  「{title_hint}」没搜到相关文章，改用模型自身最新认知自写", file=sys.stderr)
     article = _article_from_topic(topic)
     details = research.author_details_from_knowledge(title_hint)
+    return article, details
+
+
+def _synthesize_from_materials(topic: dict, candidates: list[dict]) -> tuple[dict, dict]:
+    """把若干相关候选当"参考材料"，让模型结合自身最新认知综合改写。
+    用于"指定话题但没有足够及时的单篇文章"的场景。"""
+    title_hint = topic["title_hint"]
+    materials = _materials_block(candidates)
+    article = _article_from_topic(topic)
+    # 标注为综合材料来源，并把最相关一篇的来源信息带上，便于展示。
+    if candidates:
+        article["site"] = str(candidates[0].get("site") or "")
+    article["narrative_arc"] = "综合最新材料讲解"
+    try:
+        details = research.author_details_from_knowledge(
+            title_hint, provided_content=materials, reference_only=True
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠️  综合材料自写失败，转用纯模型知识：{exc}", file=sys.stderr)
+        details = research.author_details_from_knowledge(title_hint)
     return article, details

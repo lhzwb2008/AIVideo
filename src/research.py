@@ -862,14 +862,29 @@ def author_details_from_knowledge(
     title_hint: str,
     *,
     provided_content: str | None = None,
+    reference_only: bool = False,
 ) -> dict:
-    """没有合适文章时，让 Opus 基于自身知识产出科普向 details。"""
+    """没有合适文章时，让 Opus 基于自身知识产出科普向 details。
+
+    reference_only=True 时，provided_content 仅作"背景参考材料"：当材料与你
+    所知的最新情况冲突时，以最新、最准确的数字/事实为准（用于"指定话题但没有
+    足够及时的单篇文章、需综合材料 + 最新认知自写"的场景）。
+    """
     provided_block = ""
     if provided_content and provided_content.strip():
-        provided_block = (
-            "【用户已提供的内容（请作为主要依据，可在此基础上补充常识，但不要与之矛盾）】\n"
-            f"{provided_content.strip()}\n\n"
-        )
+        if reference_only:
+            provided_block = (
+                "【参考材料（多篇近期报道的摘要，可能时间不一/数字偏旧）】\n"
+                f"{provided_content.strip()}\n\n"
+                "使用要求：把上述材料当作背景参考，提炼其中的事实脉络；但当材料里的"
+                "数字、市值、排名等与你所掌握的最新、最准确情况不一致时，以最新情况为准，"
+                "并优先采用最新数据，不要被旧数字带偏。\n\n"
+            )
+        else:
+            provided_block = (
+                "【用户已提供的内容（请作为主要依据，可在此基础上补充常识，但不要与之矛盾）】\n"
+                f"{provided_content.strip()}\n\n"
+            )
     user_msg = SELF_AUTHOR_USER.format(
         title_hint=title_hint,
         provided_block=provided_block,
