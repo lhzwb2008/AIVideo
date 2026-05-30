@@ -192,7 +192,7 @@ async def _do_publish(args, platform: str, account_file: Path) -> int:
         desc=desc,
         thumbnail_path=str(thumbnail) if thumbnail else None,
         publish_strategy=immediate,
-        headless=not args.headed,
+        headless=bool(getattr(args, "headless", False)),
     )
     if platform == "tencent":
         kwargs["short_title"] = fields.get("short_title") or None
@@ -243,7 +243,8 @@ def main() -> int:
     p_pub.add_argument("--desc", help="覆盖简介")
     p_pub.add_argument("--tags", help="覆盖标签（逗号分隔）")
     p_pub.add_argument("--thumbnail", help="自定义封面图")
-    p_pub.add_argument("--headed", action="store_true", help="有头 Chrome（便于调试）")
+    p_pub.add_argument("--headed", action="store_true", help="（默认即有头，保留兼容）")
+    p_pub.add_argument("--headless", action="store_true", help="强制无头（默认有头，更不易被风控）")
     p_pub.add_argument("--dry-run", action="store_true", help="只打印参数不发布")
 
     args = parser.parse_args()

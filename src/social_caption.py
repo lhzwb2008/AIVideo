@@ -84,8 +84,7 @@ def build_social_fields(script: dict | None, platform: str) -> dict:
     for kw in _evergreen_tags(platform):
         if kw and kw not in tags:
             tags.append(kw)
-    if brand and brand not in tags:
-        tags.append(brand)
+    # 品牌名不进标签：新号自创话题没人搜，把坑位让给能蹭流量的热点大词。
     # 话题最多 5 个，超出后面的会被平台截断/糊成乱码。
     tags = tags[:5]
 

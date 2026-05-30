@@ -162,13 +162,12 @@ def build_sau_fields(script: dict | None) -> dict[str, str]:
 
     topic_kw = _topic_keywords(script)
 
-    # tags = 内容关键词优先，品牌/频道常青标签只在有空位时补；总量硬性 ≤5
+    # tags = 能蹭上的热点话题优先（script.hashtags 由大模型按内容挑大词），
+    # 常青泛标签只在凑不满 5 个时补位。品牌名不进标签：新号自创话题没人搜，纯浪费坑位。
     tag_parts: list[str] = []
     for kw in topic_kw:
         if kw not in tag_parts:
             tag_parts.append(kw)
-    if brand and brand not in tag_parts and len(tag_parts) < 5:
-        tag_parts.append(brand)
     for raw in _env("DOUYIN_HASHTAGS", "#AI #财经 #股市").split():
         if len(tag_parts) >= 5:
             break

@@ -250,14 +250,14 @@ def _http_post(url: str, body: dict[str, Any], *, timeout: float = 120) -> dict[
         raise RuntimeError(f"HTTP {exc.code}: {raw[:500]}") from exc
 
 
-def _doubao_post(body: dict[str, Any], *, timeout: float = 120) -> list[dict[str, Any]]:
+def _doubao_post(body: dict[str, Any], *, timeout: float = 120, resource_id: str | None = None) -> list[dict[str, Any]]:
     req = urllib.request.Request(
         doubao_endpoint(),
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
             "X-Api-Key": doubao_api_key(),
-            "X-Api-Resource-Id": doubao_resource_id(),
+            "X-Api-Resource-Id": resource_id or doubao_resource_id(),
             "X-Api-Request-Id": str(uuid.uuid4()),
         },
         method="POST",
@@ -396,6 +396,64 @@ def _doubao_synth_once(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(bytes(audio))
     return out_path
+
+
+def synthesize_doubao_voice(
+    text: str,
+    *,
+    out_path: Path,
+    speaker: str,
+    resource_id: str = "seed-tts-2.0",
+    req_model: str | None = None,
+    audio_format: str = "mp3",
+    sr: int = 24000,
+    speech_rate: int = 0,
+    loudness_rate: int = 0,
+    tempo: float = 1.0,
+    timeout: float = 120,
+) -> Path:
+    """用指定豆包音色合成（支持官方 2.0 音色 / 克隆音色）。
+
+    - 官方 2.0 音色（*_uranus_bigtts）：resource_id="seed-tts-2.0"，req_model 留空。
+    - 克隆音色（S_xxx）：resource_id="seed-icl-2.0"，req_model="seed-tts-2.0-standard"。
+    """
+    payload_text = preprocess_tts_text(text) if preprocess_enabled() else text
+    req_params: dict[str, Any] = {
+        "text": payload_text,
+        "speaker": speaker,
+        "audio_params": {
+            "format": audio_format,
+            "sample_rate": sr,
+            "speech_rate": speech_rate,
+            "loudness_rate": loudness_rate,
+        },
+    }
+    if req_model:
+        req_params["model"] = req_model
+    body = {"user": {"uid": doubao_uid()}, "namespace": "BidirectionalTTS", "req_params": req_params}
+
+    synth_out = out_path
+    tmp_ctx: tempfile.TemporaryDirectory[str] | None = None
+    if abs(tempo - 1.0) >= 0.001:
+        tmp_ctx = tempfile.TemporaryDirectory(prefix="tts_post_")
+        synth_out = Path(tmp_ctx.name) / out_path.name
+    try:
+        chunks = _doubao_post(body, timeout=timeout, resource_id=resource_id)
+        audio = bytearray()
+        for chunk in chunks:
+            code = chunk.get("code")
+            if code not in {0, 20000000, None}:
+                raise RuntimeError(f"豆包 TTS 失败: {json.dumps(chunk, ensure_ascii=False)[:300]}")
+            if chunk.get("data"):
+                audio.extend(b64decode(chunk["data"]))
+        if not audio:
+            raise RuntimeError(f"豆包 TTS 无音频: speaker={speaker}")
+        synth_out.parent.mkdir(parents=True, exist_ok=True)
+        synth_out.write_bytes(bytes(audio))
+        return _postprocess_audio(synth_out, out_path, tempo=tempo)
+    finally:
+        if tmp_ctx is not None:
+            tmp_ctx.cleanup()
 
 
 def _ffmpeg_concat(paths: list[Path], out_path: Path, *, pause_ms: int = 250, sr: int | None = None) -> Path:
