@@ -275,24 +275,160 @@ def patch(path: Path) -> None:
     print(f"已打补丁: {path}")
 
 
+# 小红书创作页 goto 容错：默认 wait_until="load" 在创作页常 30s 不触发被误判 cookie 失效，
+# 改成等 domcontentloaded + 放宽超时到 60s。
+XHS_GOTO_OLD = "await page.goto(XHS_PUBLISH_VIDEO_URL)"
+XHS_GOTO_NEW = 'await page.goto(XHS_PUBLISH_VIDEO_URL, wait_until="domcontentloaded", timeout=60000)'
+
+# 小红书设置封面容错标记 + try/except 包裹：封面弹窗 DOM 经常改版，
+# 设封面失败时跳过（改用视频首帧）而不是抛异常中断整条发布。
+XHS_THUMB_MARKER = "跳过自定义封面（改用视频首帧）"
+_XHS_THUMB_PATTERN = re.compile(
+    r'        xiaohongshu_logger\.info\(_msg\("🖼️", "小人准备设置封面"\)\)\n\n'
+    r'        cover_plugin_title = .*?'
+    r'        xiaohongshu_logger\.success\(_msg\("🥳", "封面已经设置完成"\)\)',
+    re.DOTALL,
+)
+XHS_THUMB_NEW = '''        xiaohongshu_logger.info(_msg("🖼️", "小人准备设置封面"))
+
+        # 封面是可选项：小红书封面弹窗 DOM 经常改版，任一步骤超时/找不到控件时
+        # 不再抛异常中断整条发布，而是跳过自定义封面（改用视频首帧），保证视频能发出去。
+        try:
+            cover_plugin_title = page.locator("div.cover-plugin-title").filter(has_text="设置封面")
+            cover_upload_dialog = cover_plugin_title.locator(
+                "xpath=ancestor::div[contains(@class, 'cover-plugin-preview')]"
+            ).locator("div.cover > div.default:visible")
+            await cover_upload_dialog.wait_for(state="visible", timeout=30000)
+
+            await cover_upload_dialog.click(force=True)
+
+            modal = page.locator("div.d-modal.cover-modal")
+            await modal.wait_for(state="visible", timeout=30000)
+
+            file_input = modal.locator('input[type="file"][accept*="image"]').first
+            await file_input.wait_for(state="attached", timeout=10000)
+            await file_input.set_input_files(thumbnail_path)
+            await page.wait_for_timeout(2000)
+
+            confirm_button = modal.locator("button.mojito-button").filter(has_text="确定").first
+            await confirm_button.wait_for(state="visible", timeout=10000)
+            await confirm_button.click()
+
+            await modal.wait_for(state="hidden", timeout=30000)
+            xiaohongshu_logger.success(_msg("🥳", "封面已经设置完成"))
+        except Exception as exc:
+            xiaohongshu_logger.warning(
+                _msg("😵", f"设置封面失败，跳过自定义封面（改用视频首帧），继续发布: {exc}")
+            )
+            # 关掉可能半开的封面弹窗，避免挡住后面的发布按钮
+            try:
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(500)
+            except Exception:
+                pass'''
+
+
+# 小红书发布确认循环加固：原版是 while True 无超时死循环，发布按钮点不中时会空转到崩溃。
+XHS_PUBLISH_MARKER = "AIVIDEO_PATCH: 发布确认最多尝试 90 秒"
+_XHS_PUBLISH_PATTERN = re.compile(
+    r'        while True:\n'
+    r'            try:\n'
+    r'                if self\.publish_strategy == XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED:\n'
+    r'                    await page\.locator\(\'button:has-text\("定时发布"\)\'\)\.click\(\)\n'
+    r'                else:\n'
+    r'                    await page\.locator\(\'button:has-text\("发布"\)\'\)\.click\(\)\n'
+    r'                await page\.wait_for_url\(\n'
+    r'                    "https://creator\.xiaohongshu\.com/publish/success\?\*\*",\n'
+    r'                    timeout=3000\n'
+    r'                \)\n'
+    r'                xiaohongshu_logger\.success\(_msg\("🥳", "视频发布成功，小人开心收工"\)\)\n'
+    r'                break\n'
+    r'            except Exception:\n'
+    r'                xiaohongshu_logger\.info\(_msg\("🏃", "小人正在冲刺发布视频"\)\)\n'
+    r'                if self\.debug:\n'
+    r'                    await page\.screenshot\(full_page=True\)\n'
+    r'                await asyncio\.sleep\(0\.5\)',
+    re.DOTALL,
+)
+XHS_PUBLISH_NEW = '''        # AIVIDEO_PATCH: 发布确认最多尝试 90 秒，避免 while True 死循环卡死/崩溃；
+        # 成功判定除了跳转 success 页，再兜底看页面是否出现“发布成功”提示。
+        publish_btn_text = (
+            "定时发布"
+            if self.publish_strategy == XIAOHONGSHU_PUBLISH_STRATEGY_SCHEDULED
+            else "发布"
+        )
+        deadline = asyncio.get_event_loop().time() + 90
+        published = False
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                await page.locator(f'button:has-text("{publish_btn_text}")').last.click(timeout=6000)
+            except Exception:
+                pass
+            try:
+                await page.wait_for_url(
+                    "https://creator.xiaohongshu.com/publish/success?**",
+                    timeout=3000,
+                )
+                published = True
+                break
+            except Exception:
+                pass
+            try:
+                for ok_text in ("发布成功", "发布完成"):
+                    if await page.get_by_text(ok_text).first.is_visible():
+                        published = True
+                        break
+                if published:
+                    break
+            except Exception:
+                pass
+            xiaohongshu_logger.info(_msg("🏃", "小人正在冲刺发布视频"))
+            await asyncio.sleep(1)
+        if published:
+            xiaohongshu_logger.success(_msg("🥳", "视频发布成功，小人开心收工"))
+        else:
+            raise RuntimeError("小红书发布按钮已点击但未确认成功（可能页面改版/网络问题），请人工核对小红书后台")'''
+
+
 def patch_xhs(path: Path) -> None:
     if not path.is_file():
         print(f"跳过小红书补丁：未找到 {path}", file=sys.stderr)
         return
     text = path.read_text(encoding="utf-8")
-    if "AIVIDEO_PATCH: 最多 5 个话题" in text:
-        print(f"小红书补丁已存在，跳过: {path}")
-        return
-    pattern = (
-        r"    async def fill_tags\(self, page: Page\) -> None:\n"
-        r".*?await first_item\.click\(\)\n"
-    )
-    if not re.search(pattern, text, re.DOTALL):
-        print("小红书补丁锚点缺失（upstream 可能已变更），跳过", file=sys.stderr)
-        return
-    text = re.sub(pattern, XHS_FILL_TAGS, text, count=1, flags=re.DOTALL)
+    applied: list[str] = []
+
+    # 1) fill_tags 容错（最多 5 个话题 + 弹不出官方话题时按普通文本提交）
+    if "AIVIDEO_PATCH: 最多 5 个话题" not in text:
+        pattern = (
+            r"    async def fill_tags\(self, page: Page\) -> None:\n"
+            r".*?await first_item\.click\(\)\n"
+        )
+        if re.search(pattern, text, re.DOTALL):
+            text = re.sub(pattern, XHS_FILL_TAGS, text, count=1, flags=re.DOTALL)
+            applied.append("fill_tags")
+        else:
+            print("小红书 fill_tags 补丁锚点缺失（upstream 可能已变更），跳过", file=sys.stderr)
+
+    # 2) 创作页 goto 容错（domcontentloaded + 60s 超时），覆盖 cookie 校验与上传两处
+    if XHS_GOTO_OLD in text:
+        text = text.replace(XHS_GOTO_OLD, XHS_GOTO_NEW)
+        applied.append("goto")
+
+    # 3) 设置封面失败时跳过而不崩溃
+    if XHS_THUMB_MARKER not in text and _XHS_THUMB_PATTERN.search(text):
+        text = _XHS_THUMB_PATTERN.sub(lambda _m: XHS_THUMB_NEW, text, count=1)
+        applied.append("set_thumbnail")
+
+    # 4) 发布确认循环加固：限时 90s + 兜底成功判定，避免 while True 死循环卡死/崩溃
+    if XHS_PUBLISH_MARKER not in text and _XHS_PUBLISH_PATTERN.search(text):
+        text = _XHS_PUBLISH_PATTERN.sub(lambda _m: XHS_PUBLISH_NEW, text, count=1)
+        applied.append("publish_loop")
+
     path.write_text(text, encoding="utf-8")
-    print(f"已打小红书补丁: {path}")
+    if applied:
+        print(f"已打小红书补丁({', '.join(applied)}): {path}")
+    else:
+        print(f"小红书补丁已是最新，跳过: {path}")
 
 
 if __name__ == "__main__":
