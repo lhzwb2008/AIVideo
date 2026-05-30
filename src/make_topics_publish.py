@@ -61,34 +61,20 @@ def read_topics_text(args: argparse.Namespace) -> str:
     return ""
 
 
-def process_topic(
-    index: int,
+def pipeline_after_script(
+    script_path: Path,
+    title: str,
     *,
+    index: int,
     target: int,
-    topic: dict,
-    article: dict,
-    details: dict,
     publish_check: bool,
     dry_run: bool,
     skip_publish: bool = False,
 ) -> dict:
-    logs_dir = ROOT / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    script_path = logs_dir / f"last_script_{stamp}_topic{index:02d}.json"
+    """脚本 JSON 落地后的统一流水线：生图 → 合成 → 发布抖音 → 归档 → 联动其它平台。
 
-    log(f"\n=== [{index}/{target}] 话题：{topic.get('title_hint')} ===")
-    script, _ = run_article_research(
-        output=script_path,
-        auto_pick=True,
-        source="exa",
-        preselected_article=article,
-        preselected_details=details,
-        category=topic.get("category"),
-    )
-    title = str(script.get("title") or read_script_title(script_path) or "").strip()
-    log(f"脚本标题：{title}")
-
+    指定话题模式与"直接喂文案"模式共用这一段，保证两条链路行为一致。
+    """
     run([str(ROOT / "scripts" / "run-enrich-images.sh"), str(script_path)], label="生图")
     run([str(ROOT / "scripts" / "run-compose.sh"), str(script_path)], label="合成")
     video = latest_video()
@@ -120,6 +106,45 @@ def process_topic(
     publish_social(archived, script_path)
 
     return {"title": title, "video": rel(archived), "script": rel(script_path), "published": True}
+
+
+def process_topic(
+    index: int,
+    *,
+    target: int,
+    topic: dict,
+    article: dict,
+    details: dict,
+    publish_check: bool,
+    dry_run: bool,
+    skip_publish: bool = False,
+) -> dict:
+    logs_dir = ROOT / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    script_path = logs_dir / f"last_script_{stamp}_topic{index:02d}.json"
+
+    log(f"\n=== [{index}/{target}] 话题：{topic.get('title_hint')} ===")
+    script, _ = run_article_research(
+        output=script_path,
+        auto_pick=True,
+        source="exa",
+        preselected_article=article,
+        preselected_details=details,
+        category=topic.get("category"),
+    )
+    title = str(script.get("title") or read_script_title(script_path) or "").strip()
+    log(f"脚本标题：{title}")
+
+    return pipeline_after_script(
+        script_path,
+        title,
+        index=index,
+        target=target,
+        publish_check=publish_check,
+        dry_run=dry_run,
+        skip_publish=skip_publish,
+    )
 
 
 def main() -> int:

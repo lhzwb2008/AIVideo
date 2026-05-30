@@ -137,16 +137,18 @@ def build_shot_audio(lines: list, workdir: Path, shot_id: str) -> tuple[Path, li
     """逐句按角色音色 TTS，拼接成镜头音轨，返回每句 (start,end,字幕文本)。"""
     norm = _norm_lines(lines)
     parts, windows, cursor = [], [], 0.0
+    sr = tts_client.sample_rate()
     for i, ln in enumerate(norm):
         speaker = ln["speaker"]
         text = ln["text"]
         v = voice_for(speaker)
         seg = workdir / f"{shot_id}_l{i}.mp3"
-        tts_client.synthesize_doubao_voice(
-            text, out_path=seg,
-            speaker=v["speaker"], resource_id=v.get("resource_id", "seed-tts-2.0"),
-            speech_rate=v.get("speech_rate", 0), tempo=v.get("tempo", 1.0),
-        )
+        if not seg.exists():
+            tts_client.synthesize_doubao_voice(
+                text, out_path=seg,
+                speaker=v["speaker"], resource_id=v.get("resource_id", "seed-tts-2.0"),
+                speech_rate=v.get("speech_rate", 0), tempo=v.get("tempo", 1.0),
+            )
         d = ffprobe_dur(seg)
         # 角色台词加「名字：」前缀，旁白不加
         sub = text if speaker == "narrator" else f"{SPEAKER_LABEL.get(speaker, '')}：{text}"
@@ -155,7 +157,6 @@ def build_shot_audio(lines: list, workdir: Path, shot_id: str) -> tuple[Path, li
         parts.append(seg)
 
     # 拼接音频（句间插静音）
-    sr = 24000
     silence = workdir / f"{shot_id}_sil.mp3"
     subprocess.run(
         ["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={sr}:cl=mono",
@@ -170,9 +171,11 @@ def build_shot_audio(lines: list, workdir: Path, shot_id: str) -> tuple[Path, li
             rows.append(f"file '{silence.resolve()}'")
     listfile.write_text("\n".join(rows) + "\n", encoding="utf-8")
     audio = workdir / f"{shot_id}_audio.mp3"
+    # 勿用 -c copy：MP3 帧边界会在拼接处累积延迟，导致多句镜头字幕早于/短于配音
     subprocess.run(
         ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listfile),
-         "-c", "copy", str(audio)],
+         "-c:a", "libmp3lame", "-b:a", "128k", "-ar", str(sr), "-ac", "1",
+         str(audio)],
         check=True, capture_output=True,
     )
     return audio, windows

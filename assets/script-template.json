@@ -1,0 +1,36 @@
+{
+  "title": "换手率高到底是好事还是坏事？",
+  "keyword": "换手率",
+  "hashtags": ["换手率", "A股", "炒股入门", "成交量"],
+  "category": "basic",
+  "slides": [
+    {
+      "headline": "换手率到底是啥",
+      "narration": "有的股票一天交易特别热闹，有的却冷冷清清，这背后有个词叫换手率。说人话就是今天这只股票里有百分之多少的筹码被换了手。打个比方，剧院有一千个座位，今天三百人进进出出换座，换手率就是百分之三十，它衡量的就是这只票今天有多热闹。",
+      "image_prompt": "a theater with 1000 seats, some people moving between seats, a percentage meter on the side",
+      "on_image_text": ["换手率=换了多少手", "剧院1000座位", "300人换座=30%", "衡量热闹程度"],
+      "subtitle": "换手率到底是啥"
+    },
+    {
+      "headline": "高低怎么看",
+      "narration": "大致有个经验范围：低于百分之三算清淡没什么人理，百分之三到七算正常活跃，到了百分之七到十就很热闹了，超过百分之十甚至十五那就是异常火爆。但要注意小盘股流通筹码少换手天然就高，大公司流通盘巨大常年换手率很低，不同体量不能直接拿数字硬比。",
+      "image_prompt": "a thermometer showing different levels with labels, a small shop and a big shop side by side",
+      "on_image_text": ["低于3%清淡", "3%-7%正常", "7%-10%活跃", "超10%异常火爆", "小盘天然高"],
+      "lead_in": "高低怎么看"
+    },
+    {
+      "headline": "热闹不等于方向",
+      "narration": "这是最关键的一句：换手率只告诉你热闹不告诉你方向。就像你看到一家餐厅门口排长队，可你不知道大家是来吃饭还是来退款的。同样是高换手，可能是很多人抢着买，也可能是很多人急着卖，甚至是少数资金自己跟自己买卖装出来的假热闹，所以千万别把人多就当成菜好吃。",
+      "image_prompt": "a long queue outside a restaurant with question marks, some people entering some leaving angry",
+      "on_image_text": ["只说热闹不说方向", "可能在抢着买", "也可能在急着卖", "排队≠菜好吃"],
+      "lead_in": "热闹不等于方向"
+    },
+    {
+      "headline": "要配着股价看",
+      "narration": "那怎么用？换手率得配合股价一起看。股价慢慢涨换手温和放大，说明上涨有人真金白银在支撑相对健康；可如果已经涨了一大截换手突然飙到极高，反而要小心是大资金在高位悄悄出货。说白了换手率就是温度计，只告诉你发不发烧不告诉你得了什么病，得结合量价一起看。你平时会先瞄一眼换手率吗？评论区聊聊。",
+      "image_prompt": "a thermometer next to a stock price chart going up with volume bars, a doctor figure thinking",
+      "on_image_text": ["换手率=温度计", "涨+温和放量健康", "高位暴增要警惕", "结合量价一起看"],
+      "lead_in": "要配着股价看"
+    }
+  ]
+}

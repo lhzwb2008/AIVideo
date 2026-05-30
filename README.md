@@ -5,15 +5,19 @@
 ```bash
 ./make-and-publish.sh    # 自动选题：生成并自动发布，成功后归档
 ./make-topics.sh "1 小鹏财报，2 韬定律是什么，3 opus4.8发布"   # 指定话题：逐个生成并发布
+./make-from-script.sh script.json   # 直接喂文案：跳过调研/改编，文案直接做视频
 ./schedule.sh            # 安装/重启每日定时任务
 ```
 
-## 两种选题模式
+## 三种工作模式
 
-| 模式 | 入口 | 选题来源 |
+| 模式 | 入口 | 文案来源 |
 |------|------|----------|
-| 自动选题 | `./make-and-publish.sh [N]` | Exa 联网搜热点 → Opus 打分挑高分话题 |
-| 指定话题 | `./make-topics.sh "<一段含编号的话>"` | 你直接给定今天要做的几个话题/内容 |
+| 自动选题 | `./make-and-publish.sh [N]` | Exa 联网搜热点 → Opus 打分挑高分话题 → 自动改编 |
+| 指定话题 | `./make-topics.sh "<一段含编号的话>"` | 你给定话题，程序联网搜文章/用自带内容 → 自动改编 |
+| 直接喂文案 | `./make-from-script.sh script.json` | 你（或模型）按生图要求写好分页文案，**跳过调研/改编** |
+
+前两种都会走「找/给材料 → Opus 改编成脚本」的链路；**直接喂文案模式**把后半段的「生图 + 合成视频 + 发布」单独抽出来，适合那些 `make-topics` 满足不了、需要你完全掌控逐页文案的特殊话题/场景。
 
 ### 指定话题模式
 
@@ -41,6 +45,48 @@ echo "1 小鹏财报 2 韬定律是什么" | ./make-topics.sh -        # 从 std
 ```
 
 可选环境变量：`AIVIDEO_TOPIC_DAYS`（搜话题文章的时间窗，默认 120 天）。
+
+### 直接喂文案模式
+
+当某些特殊话题/场景下 `make-topics` 的「搜文章 → 深读 → 改编」满足不了需求时，你（或模型）可以**自己按生图要求把逐页文案写好**，用这个模式直接生图 → 合成 → 发布，跳过整个调研/改编链路。
+
+文案是一个 JSON 文件，结构与改编后的脚本一致（模板见 `assets/script-template.json`）：
+
+```json
+{
+  "title": "换手率高到底是好事还是坏事？",
+  "keyword": "换手率",
+  "hashtags": ["换手率", "A股", "炒股入门"],
+  "category": "basic",
+  "slides": [
+    {
+      "headline": "换手率到底是啥",
+      "narration": "……口播文案……",
+      "image_prompt": "a theater with 1000 seats, a percentage meter ...",
+      "on_image_text": ["换手率=换了多少手", "剧院1000座位", "300人换座=30%"],
+      "subtitle": "换手率到底是啥"
+    }
+  ]
+}
+```
+
+字段约定（与自动改编后的脚本同一套校验，不合规会直接报错并指出哪一页哪个字段）：
+
+- `title` 4-30 字；`keyword`/`hashtags`/`category` 可选（缺省自动取/判定，`hashtags` 最多 5 个）。
+- `slides` 至少 3 页，最多 `AIVIDEO_MAX_SLIDES`（默认 4）页；**第 1 页自动当封面（cover），其余为正文（body）**。
+- 每页必填 `headline`（≤14 字）、`narration`（封面 40-120 字 / 正文 50-220 字）、`image_prompt`（英文画面描述）、`on_image_text`（3-12 条，每条 ≤16 字）。
+- 可选 `chapter_title`（2-6 字，缺省由 headline 推导）；封面页可填 `subtitle`（6-24 字），正文页可填 `lead_in`（≤14 字），缺省都会自动补。
+- 顶层若是数组 `[ {...}, {...} ]` 则视为多条脚本，逐条制作发布。
+- 同样遵守合规红线（禁股票代码/荐股/喊单等）。
+
+```bash
+./make-from-script.sh script.json                 # 制作并发布（推荐）
+./make-from-script.sh script.json --no-publish     # 只生成不发布
+./make-from-script.sh script.json --dry-run        # 预演发布参数不真发
+cat script.json | ./make-from-script.sh -          # 从 stdin 读文案
+```
+
+> 提示：你也可以直接让我（AI）按上面的字段约定把某个话题写成 `script.json` 再跑这条命令，这样能完全控制每一页的口播和画面。
 
 ## 内容策略
 
@@ -85,6 +131,8 @@ echo "1 小鹏财报 2 韬定律是什么" | ./make-topics.sh -        # 从 std
 | 步骤 | 命令 | 产出 |
 |------|------|------|
 | Make + publish | `./make-and-publish.sh` | Exa 找选题 + 深读 + 改编 + 生图 + 合成 + 发布抖音 + 联动小红书 + 归档 |
+| Make from topics | `./make-topics.sh` | 指定话题 + 改编 + 生图 + 合成 + 发布 + 归档 |
+| Make from script | `./make-from-script.sh script.json` | **跳过调研/改编**，现成文案 + 生图 + 合成 + 发布 + 归档 |
 | Schedule | `./schedule.sh` | 安装/重启每日定时任务，自动制作发布并归档 |
 | Debug image only | `./scripts/run-enrich-images.sh logs/last_script.json` | 写入 `slide.image_path` |
 | Debug compose only | `./scripts/run-compose.sh logs/last_script.json` | TTS + ffmpeg → `output/*.mp4` |
@@ -119,7 +167,8 @@ echo "1 小鹏财报 2 韬定律是什么" | ./make-topics.sh -        # 从 std
 src/
   research.py        # 核心管线：找文章 → 评审 → 深读 → 改编（含校验+修正轮）
   specified_topics.py# 指定话题模式：解析输入 + 按 自带内容/搜文章/模型自写 三路出 article+details
-  make_topics_publish.py # 指定话题一键制作发布编排
+  make_topics_publish.py # 指定话题一键制作发布编排（生图/合成/发布流水线 pipeline_after_script）
+  make_from_script.py    # 直接喂文案模式：现成分页文案归一化+校验后直接走生图/合成/发布流水线
   text_client.py     # AiHubMix chat（thinking 预算最低）
   image_client.py    # AiHubMix gpt-image-2 生图（含重试）
   enrich_images.py   # 逐页生图，断点续跑
