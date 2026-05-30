@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import sys
+import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -132,7 +133,8 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="只列出补发计划")
     parser.add_argument("--headed", action="store_true", help="有头 Chrome")
     parser.add_argument("--limit", type=int, default=0, help="本次最多补发条数（0=不限）")
-    parser.add_argument("--sleep", type=int, default=30, help="两条之间间隔秒数（默认 30，降低风控）")
+    parser.add_argument("--sleep", type=int, default=120,
+                        help="两条之间的基准间隔秒数（默认 120，会再叠加 ±50%% 随机抖动，降低风控）")
     parser.add_argument("--force", action="store_true", help="忽略已补发记录，重发")
     args = parser.parse_args()
 
@@ -205,7 +207,10 @@ def main() -> int:
             fail += 1
             print(f"  ✗ {video.name} 失败（rc={rc}），继续下一条…", flush=True)
         if args.sleep and i < len(pending) - 1:
-            time.sleep(args.sleep)
+            jitter = random.uniform(0.5, 1.5)  # 基准 ±50% 抖动，模拟真人节奏
+            wait_s = max(1, int(args.sleep * jitter))
+            print(f"  ⏳ 间隔 {wait_s}s 后发下一条…", flush=True)
+            time.sleep(wait_s)
 
     print(f"\n完成：成功 {ok}，失败 {fail}，跳过 {len(skipped)}。")
     return 0 if fail == 0 else 1

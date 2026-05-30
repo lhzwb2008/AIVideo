@@ -21,6 +21,7 @@ import re
 import sys
 from datetime import datetime, timezone
 
+import categories
 import research
 
 
@@ -80,6 +81,7 @@ def parse_topics_input(text: str) -> list[dict]:
                 segments.append(seg)
     topics: list[dict] = []
     for i, seg in enumerate(segments, 1):
+        category, seg = categories.extract_category_tag(seg)
         title_hint, provided = _split_title_and_content(seg)
         if not title_hint:
             continue
@@ -88,6 +90,7 @@ def parse_topics_input(text: str) -> list[dict]:
             "raw": seg,
             "title_hint": title_hint,
             "provided_content": provided,
+            "category": category,
         })
     return topics
 

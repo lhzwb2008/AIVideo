@@ -696,6 +696,7 @@ ARTICLE_END>>>
 - `companies_or_institutions`：所有公司、实验室、机构。
 - `key_terms`：原文出现的术语，每个用一句中文白话解释（≤25 字），适合给小白听。
 - `concrete_scenes`：原文里**具体的场景/事件画面**（"X 在 Y 时做了 Z"格式），3-8 条，越具体越好。
+- `everyday_analogies`：针对文中最难懂的概念/数字/逻辑，提出 3-6 个**生活化类比或例子**（用买菜、点外卖、租房、打车、开奶茶店、追剧等普通人熟悉的事来打比方），格式「X 就好比 Y」，帮零基础观众秒懂。可基于常识合理类比，但不得歪曲原文事实。
 - `actual_opening`：原文真实的开头第一段中文转写（≤80 字，原汁原味，不要总结）。
 - `actual_ending`：原文真实的最后一段或结论句中文转写（≤120 字）。
 - `narrative_beats`：作者真实的叙事节奏（5-10 拍：「先...，然后...，转折是...，最后...」），每拍一句。
@@ -802,6 +803,7 @@ def deep_read_article(
 - `companies_or_institutions`：所有公司、实验室、机构。
 - `key_terms`：原文出现的术语，每个用一句中文白话解释（≤25 字），适合给小白听。
 - `concrete_scenes`：原文里**具体的场景/事件画面**（"X 在 Y 时做了 Z"格式），3-8 条，越具体越好。
+- `everyday_analogies`：针对文中最难懂的概念/数字/逻辑，提出 3-6 个**生活化类比或例子**（用买菜、点外卖、租房、打车、开奶茶店、追剧等普通人熟悉的事来打比方），格式「X 就好比 Y」，帮零基础观众秒懂。可基于常识合理类比，但不得歪曲原文事实。
 - `actual_opening`：原文真实的开头第一段中文转写（≤80 字，原汁原味，不要总结）。
 - `actual_ending`：原文真实的最后一段或结论句中文转写（≤120 字）。
 - `narrative_beats`：作者真实的叙事节奏（5-10 拍：「先...，然后...，转折是...，最后...」），每拍一句。
@@ -850,6 +852,7 @@ SELF_AUTHOR_USER = """【话题】{title_hint}
 - `companies_or_institutions`：相关公司/机构（可空）。
 - `key_terms`：话题涉及的术语，每个一句中文白话解释（≤25 字）。
 - `concrete_scenes`：能帮助理解的具体例子/场景 3-6 条，越具体越好。
+- `everyday_analogies`：针对话题里最难懂的概念，提出 3-6 个**生活化类比或例子**（用买菜、点外卖、租房、打车、开奶茶店、追剧等普通人熟悉的事打比方），格式「X 就好比 Y」，帮零基础观众秒懂。
 - `actual_opening`：一个能抓住普通观众的开场（≤80 字）。
 - `actual_ending`：一个收尾/启示句（≤120 字）。
 - `narrative_beats`：科普讲解的节奏 5-8 拍（「先…然后…最后…」）。
@@ -921,7 +924,9 @@ def max_slides() -> int:
 
 ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财经为什么」的短视频编剧。
 
-任务：把用户给出的文章细节改成 3-4 页中文短视频问答脚本（页数宁少勿多，最多 4 页，信息密度高、节奏快）。只讲文章里有依据的事实，不虚构。
+任务：把用户给出的文章细节改成 3-4 页中文短视频问答脚本（页数宁少勿多，最多 4 页，节奏快）。只讲文章里有依据的事实，不虚构。
+
+**核心目标：降低观看门槛、提升完播率。** 观众大多是没什么基础的普通财经学习者，原文又往往是专业文章。你的工作不是把文章观点念一遍，而是当一个会讲故事的老师，把专业内容**翻译成大白话**，让一个完全不懂的人也能一听就懂、愿意看到最后。
 
 输出必须是单个 JSON 对象，且只需要这些字段：
 {
@@ -938,6 +943,14 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
   ]
 }
 
+【通俗生动·硬性要求，违反就是失败】：
+- **大白话优先**：能用日常说法就别用专业术语。一旦出现普通人不懂的概念（如市盈率、毛利率、算力、流动性、估值、护城河、降息等），必须**当场用一句生活化的比喻或熟悉的例子**讲清它是什么，再往下说。例：与其说「毛利率下滑」，不如说「卖一杯奶茶以前能赚 4 块，现在只能赚 2 块」。
+- **多打比方、多举例**：尽量把抽象数字和逻辑落到具体场景上——用买菜、点外卖、租房、打车、开奶茶店、追剧这类大家熟悉的事来类比公司经营、行情、技术原理。能举一个生活化例子说明的，就不要干巴巴讲道理。
+- **少念观点、多讲故事**：不要把文章里的判断和结论直接搬运过来念（「文章认为/数据显示……」式的复述）。要消化成自己的话，用「打个比方」「你想象一下」「这就好比」「说人话就是」这种口吻把道理讲活。
+- **开头钩子要抓人**：第 1 页封面口播用一个反差、悬念、或贴近观众的具体问题开场（比如「一杯奶茶的成本，居然能看出一家公司赚不赚钱？」），勾住人往下看，别一上来就抛术语或背景介绍。
+- **节奏轻快、有人味**：像跟朋友唠嗑，可以适度用口语化的小调侃、反问、感叹，但不浮夸、不标题党、不虚构。宁可信息密度低一点也要讲明白，别堆砌。
+- 注意：以上「生动口语」要求不能突破后面的合规红线（不荐股、不喊单、不出现股票代码等）。
+
 规则：
 - hashtags：写 3-5 个**与本条视频内容强相关**的中文搜索词，按内容自己判断，宁少勿多、不要凑数、不要写无关的泛词。可包含：核心主角（个股名/公司/产品）、所属市场（A股 / 美股 / 港股 / 中概股，按真实归属写，A股 个股就写 A股，别乱加美股）、所属板块或概念（如 半导体、算力、电力、机器人）、以及 AI / 财报 等本条确实涉及的标签。每个一般 2-8 字（英文公司名可稍长，如 Salesforce），不带 # 号。例如讲 A股 电力股涨停就写 ["A股","电力股","涨停"]，讲英伟达财报就写 ["英伟达","美股","财报"]。
 - slides 3-4 页（最多 4 页）；第 1 页是封面钩子，最后一页是结论/影响/警示。
@@ -949,6 +962,11 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
 - 如果需要交代不确定性，用「从这些数据看」「关键要看」「风险在于」这类表达，不要把判断外包给来源。
 - on_image_text 每页 3-8 条，每条不超过 12 字。
 - image_prompt 用英文描述白板手绘图内容，不要写风格词。
+- 【合规红线，必须遵守，否则账号会被封禁】：
+  - 严禁出现任何股票代码（如 600519、000001、00700、00700.HK、NVDA、09988 这类 A股6位 / 港股5位 / 美股字母代码），口播、标题、上屏文字、hashtags 里都不许带代码，只说公司或板块名字。
+  - 严禁荐股、喊单、带单、给目标价/买卖点/买入卖出评级/仓位建议，禁用「买入」「卖出」「满仓」「抄底」「加仓」「目标价」「稳赚」「包赚」「必涨」「必跌」「翻倍」「收益率」「跟我买」「带你赚」「内幕」「内部消息」「稳赢」这类字眼。
+  - 只做客观信息梳理和原理解释，可以分析逻辑与风险，但不要给出可执行的操作指令。
+  - on_image_text、hashtags 同样不许出现股票代码或荐股词。
 - 只输出 JSON，不要 markdown，不要解释。
 """
 
@@ -1000,15 +1018,16 @@ def soft_sanitize_script(data: dict) -> dict:
     """把模型的简单 JSON 规范化为合成管线需要的完整 schema。"""
     if not isinstance(data, dict):
         return data
-    title = str(data.get("title") or "").strip()
+    title = _strip_stock_codes(str(data.get("title") or "").strip())
     if title:
         data["title"] = _compact_title(title)
-    # 规范化 hashtags：去 # / 去空 / 去重 / 每个 ≤8 字 / 最多 5 个
+    # 规范化 hashtags：去 # / 去空 / 去重 / 去股票代码 / 每个 ≤8 字 / 最多 5 个
     raw_tags = data.get("hashtags")
     if isinstance(raw_tags, list):
         clean_tags: list[str] = []
         for t in raw_tags:
             t = re.sub(r"^#+", "", str(t or "")).strip(" ，。、：；#,.!?！？")
+            t = _strip_stock_codes(t)
             if t and len(t) <= 14 and t not in clean_tags:
                 clean_tags.append(t)
         data["hashtags"] = clean_tags[:5]
@@ -1026,6 +1045,9 @@ def soft_sanitize_script(data: dict) -> dict:
         if not isinstance(slide, dict):
             continue
         slide["layout"] = "cover" if i == 0 else "body"
+        for _f in ("headline", "narration", "subtitle", "lead_in", "concept"):
+            if isinstance(slide.get(_f), str):
+                slide[_f] = _strip_stock_codes(slide[_f])
         headline = str(slide.get("headline") or f"第{i + 1}页").strip()
         slide["headline"] = _trim_to(headline, 14)
         if not str(slide.get("chapter_title") or "").strip():
@@ -1037,7 +1059,7 @@ def soft_sanitize_script(data: dict) -> dict:
         labels = slide.get("on_image_text")
         if not isinstance(labels, list):
             labels = []
-        labels = [_trim_to(str(x), 12) for x in labels if str(x).strip()]
+        labels = [_trim_to(_strip_stock_codes(str(x)), 12) for x in labels if _strip_stock_codes(str(x)).strip()]
         while len(labels) < 3:
             labels.append(_trim_to(headline, 12) or "AI热点")
         slide["on_image_text"] = labels[:8]
@@ -1065,6 +1087,41 @@ _FORMAL_ATTRIBUTION = re.compile(
 )
 _COVER_BAD_START = re.compile(r"^(文章|报道|消息|援引|作者|文中|据.{1,6}报道)")
 
+# ============================================================
+# 合规：禁止股票代码 + 荐股/喊单类违规表达（容易被平台封禁）
+# ============================================================
+# 股票代码：A股 6 位（6/0/3/4/8 开头）、港股 4-5 位、美股放在括号/点号里的字母代码。
+_STOCK_CODE_PATTERNS = (
+    # A股 6 位数字（前后不接其它数字，避免误伤年份/金额）
+    re.compile(r"(?<![\d.])(?:6\d{5}|0\d{5}|3\d{5}|4\d{5}|8\d{5})(?![\d.])"),
+    # 港股代码：纯数字 4-5 位且带 .HK，或「港股 00700」这类
+    re.compile(r"(?<![\d.])\d{4,5}\.HK\b", re.IGNORECASE),
+    re.compile(r"(?<![\d.])0\d{3,4}(?![\d.])"),
+    # 美股 ticker：括号里的全大写字母（如 (NVDA)、（AAPL））
+    re.compile(r"[（(][A-Z]{1,5}[)）]"),
+    # 交易所前缀写法：NASDAQ: NVDA / 纽交所:BABA / SH600519 / SZ000001 / HK00700
+    re.compile(r"\b(?:NASDAQ|NYSE|SSE|SZSE|HKEX|SH|SZ|HK)[:：]?\s*[A-Z0-9]{2,6}\b", re.IGNORECASE),
+)
+
+# 荐股/喊单/收益承诺类违规词（口播、标题、上屏文字都不许出现）
+_RECO_BANNED = (
+    "荐股", "喊单", "带单", "跟我买", "带你赚", "目标价", "买入评级", "卖出评级",
+    "满仓", "加仓", "减仓", "抄底", "梭哈", "全仓", "买点", "卖点", "买入信号",
+    "稳赚", "包赚", "稳赢", "必涨", "必跌", "翻倍", "收益率", "内幕消息", "内部消息",
+)
+
+
+def _strip_stock_codes(text: str) -> str:
+    """从文本里去掉股票代码（合规软修复）。括号内代码连括号一起删。"""
+    if not text:
+        return text
+    for pat in _STOCK_CODE_PATTERNS:
+        text = pat.sub("", text)
+    # 清掉去掉代码后残留的空括号 / 多余分隔符
+    text = re.sub(r"[（(]\s*[)）]", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip(" ，、:：")
+
 
 def _slide_texts(slide: dict) -> list[str]:
     return [
@@ -1086,6 +1143,13 @@ def validate_article_script(data: dict, article: dict) -> dict:
         raise ValueError(f"title 过短，当前 {len(title)}: {title!r}")
     if len(title) > 30:
         data["title"] = title[:30].rstrip("，。！？,.!? ")
+    for p in _RECO_BANNED:
+        if p in title:
+            raise ValueError(f"title 含荐股/违规词「{p}」（合规红线）")
+    for pat in _STOCK_CODE_PATTERNS:
+        m = pat.search(title)
+        if m:
+            raise ValueError(f"title 含股票代码「{m.group(0)}」（合规红线）")
 
     src = data.get("source") or {}
     src_url = str(src.get("url") or "")
@@ -1149,10 +1213,19 @@ def validate_article_script(data: dict, article: dict) -> dict:
             if not isinstance(item, str) or not item.strip() or len(item) > 16:
                 raise ValueError(f"第 {page} 页 on_image_text[{j}] 须 1-16 字非空: {item!r}")
 
-        for txt in _slide_texts(slide):
+        check_texts = _slide_texts(slide) + [str(x) for x in (slide.get("on_image_text") or [])]
+        for txt in check_texts:
             for p in _BANNED_PHRASES:
                 if p in txt:
                     raise ValueError(f"第 {page} 页含禁用词「{p}」")
+            for p in _RECO_BANNED:
+                if p in txt:
+                    raise ValueError(f"第 {page} 页含荐股/违规词「{p}」（合规红线，不许出现）")
+            for pat in _STOCK_CODE_PATTERNS:
+                m = pat.search(txt)
+                if m:
+                    raise ValueError(f"第 {page} 页含股票代码「{m.group(0)}」（合规红线，只说公司/板块名）")
+        for txt in _slide_texts(slide):
             formal_count += len(_FORMAL_ATTRIBUTION.findall(txt))
 
     if formal_count > 0:
@@ -1186,6 +1259,8 @@ ADAPT_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重�
 - 每页有 chapter_title / concept / headline / narration / image_prompt / on_image_text
 - 必须忠实于已选定文章原文（URL: {url}），不虚构事实
 - 口播必须像「AI财知道」自己的财经解读，不要说「文章认为」「作者指出」「文中提到」「某某的观点」；来源只作内部依据。
+- 面向零基础观众，坚持大白话：遇到专业术语当场用生活化比喻/例子解释；多打比方、多举具体例子，少直接念文章观点；开头用钩子抓人，节奏轻快有人味（但不得违反下面的合规红线）。
+- 【合规红线】：标题/口播/上屏文字/hashtags 都严禁出现任何股票代码（A股6位、港股带.HK、美股字母代码等），也严禁荐股、喊单、目标价、买卖点、仓位建议、「稳赚/必涨/翻倍/收益率/内幕」等字眼，只做客观信息梳理与原理解释。
 """
 
 
@@ -1212,7 +1287,9 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
         "slides 每页只填 headline / narration / image_prompt / on_image_text。"
         "不要输出 source、article、layout、lead_in、chapter_title、concept。"
         "写法上要直接给出本栏目的判断和解释，禁止在口播里说「文章认为」「作者指出」「文中提到」「某某的观点」；"
-        "来源信息只用于事实依据，不对观众显性提及。\n\n"
+        "来源信息只用于事实依据，不对观众显性提及。\n"
+        "面向零基础观众：尽量用大白话，遇到专业术语就借助细节里的 key_terms 白话解释和 everyday_analogies 类比，"
+        "用买菜、点外卖、开奶茶店这种生活化例子把它讲活；多打比方、少照搬观点，开头用钩子抓人，节奏轻快。\n\n"
         "请输出严格 JSON 对象（不要 markdown，不要解释）。"
     )
 
@@ -1307,6 +1384,7 @@ def run_article_research(
     fresh_hours: int = 24,
     preselected_article: dict | None = None,
     preselected_details: dict | None = None,
+    category: str | None = None,
 ) -> tuple[dict, str]:
     logs_dir = logs_dir or (ROOT / "logs")
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -1436,6 +1514,17 @@ def run_article_research(
 
     if script is None:
         raise RuntimeError(f"全部候选改编失败（共 {len(fallback_queue)} 篇）: {last_exc}") from last_exc
+
+    try:
+        import categories as _categories
+
+        cat = category or os.environ.get("AIVIDEO_CATEGORY") or None
+        resolved = _categories.resolve_category(script, cat)
+        if resolved:
+            script["category"] = resolved
+            print(f"  🏷  子栏目：{_categories.label_of(resolved)}（{resolved}）")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠️  子栏目判定失败，用默认主题：{exc}", file=sys.stderr)
 
     out_path = Path(output)
     out_path.parent.mkdir(parents=True, exist_ok=True)

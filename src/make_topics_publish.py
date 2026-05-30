@@ -84,6 +84,7 @@ def process_topic(
         source="exa",
         preselected_article=article,
         preselected_details=details,
+        category=topic.get("category"),
     )
     title = str(script.get("title") or read_script_title(script_path) or "").strip()
     log(f"脚本标题：{title}")
@@ -147,7 +148,9 @@ def main() -> int:
     log(f"解析出 {len(topics)} 个话题：")
     for t in topics:
         kind = "自带内容" if t.get("provided_content") else "搜索/自写"
-        log(f"  {t['index']}. {t['title_hint']}  [{kind}]")
+        cat = t.get("category")
+        cat_tag = f"  栏目：{cat}" if cat else ""
+        log(f"  {t['index']}. {t['title_hint']}  [{kind}]{cat_tag}")
 
     target = len(topics)
     run_start = time.time()

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -197,19 +198,40 @@ def _social_enabled(platform: str) -> bool:
     return value.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _social_gap_seconds() -> int:
+    """平台之间的随机间隔（秒），模拟真人发布节奏、降低风控误杀。
+    用 AIVIDEO_SOCIAL_GAP_MIN / AIVIDEO_SOCIAL_GAP_MAX 调整（默认 45–120 秒）。"""
+    try:
+        lo = int(os.environ.get("AIVIDEO_SOCIAL_GAP_MIN", "45"))
+        hi = int(os.environ.get("AIVIDEO_SOCIAL_GAP_MAX", "120"))
+    except ValueError:
+        lo, hi = 45, 120
+    lo = max(0, lo)
+    hi = max(lo, hi)
+    return random.randint(lo, hi)
+
+
 def publish_social(video: Path, script_path: Path) -> None:
-    """把已发抖音的同一条视频顺手发到启用的其它平台。任一平台失败只告警，不影响主流程。"""
+    """把已发抖音的同一条视频顺手发到启用的其它平台。任一平台失败只告警，不影响主流程。
+
+    平台之间加入随机间隔（拟人化），避免无间隔连发被风控误判为脚本批量操作。"""
     from backfill_social import load_platform_published, save_platform_published
 
+    attempted = 0
     for platform in SOCIAL_PLATFORMS:
         if not _social_enabled(platform):
             continue
         label = SOCIAL_LABEL[platform]
+        done = load_platform_published(platform)
+        if video.name in done:
+            log(f"  [{label}] 已发过，跳过")
+            continue
+        if attempted > 0:
+            gap = _social_gap_seconds()
+            log(f"  ⏳ 拟人化间隔 {gap}s 后再发{label}…")
+            time.sleep(gap)
+        attempted += 1
         try:
-            done = load_platform_published(platform)
-            if video.name in done:
-                log(f"  [{label}] 已发过，跳过")
-                continue
             cmd = [
                 str(ROOT / "scripts" / "publish-social.sh"),
                 platform,

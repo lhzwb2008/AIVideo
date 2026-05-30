@@ -22,6 +22,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+import categories
 from paths import ROOT
 from research import load_env
 from tts_client import synthesize as tts_synthesize
@@ -94,6 +95,30 @@ else:
     ]
 
 
+# ============================================================
+# 子栏目主题色：同一主账号下 A股 / 港美股 / AI资讯 / 量化 用不同高亮色 + 角标后缀
+# ============================================================
+_THEME_ACCENT: tuple[int, int, int] = categories.DEFAULT_ACCENT
+_THEME_LABEL: str = ""
+
+
+def set_theme(category: str | None) -> None:
+    """根据子栏目设置当前合成用的高亮色与角标后缀。"""
+    global _THEME_ACCENT, _THEME_LABEL
+    _THEME_ACCENT = categories.accent_color(category)
+    _THEME_LABEL = categories.label_of(category)
+    if category:
+        print(f"[theme] 子栏目主题：{_THEME_LABEL or category} accent={_THEME_ACCENT}", file=sys.stderr)
+
+
+def _accent() -> tuple[int, int, int]:
+    return _THEME_ACCENT
+
+
+def _brand_badge_text() -> str:
+    return f"{BRAND_NAME} · {_THEME_LABEL}" if (BRAND_NAME and _THEME_LABEL) else BRAND_NAME
+
+
 def font_path() -> str:
     p = os.environ.get("AIVIDEO_FONT", "assets/HiraginoSansGB.ttc").strip()
     fp = Path(p) if Path(p).is_absolute() else ROOT / p
@@ -124,13 +149,14 @@ def _draw_brand_badge(
     y: int | None = None,
     font_size: int = 46,
 ) -> None:
-    """左上角小徽标：黄色 highlight + 黑字品牌名。栏目品牌透出。"""
-    if not BRAND_NAME:
+    """左上角小徽标：栏目主题色 highlight + 黑字品牌名（含子栏目后缀）。"""
+    brand_text = _brand_badge_text()
+    if not brand_text:
         return
     x = _env_int("AIVIDEO_BRAND_BADGE_X", 86) if x is None else x
     y = _env_int("AIVIDEO_BRAND_BADGE_Y", 150) if y is None else y
     font = load_font(font_size)
-    bbox = font.getbbox(BRAND_NAME)
+    bbox = font.getbbox(brand_text)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
     pad_x, pad_y = 22, 12
@@ -144,9 +170,9 @@ def _draw_brand_badge(
     )
     draw.rounded_rectangle(
         [(box_x1, box_y1), (box_x2, box_y2)],
-        radius=16, fill=(254, 224, 71), outline=(40, 40, 40), width=3,
+        radius=16, fill=_accent(), outline=(40, 40, 40), width=3,
     )
-    draw.text((box_x1 + pad_x, box_y1 + pad_y - bbox[1]), BRAND_NAME, font=font, fill=(40, 40, 40))
+    draw.text((box_x1 + pad_x, box_y1 + pad_y - bbox[1]), brand_text, font=font, fill=(40, 40, 40))
 
 
 def render_base_canvas(
@@ -302,7 +328,7 @@ def render_title_cover(
     draw.rounded_rectangle(
         [(box_x1, box_y1), (box_x2, box_y2)],
         radius=44,
-        fill=(254, 224, 71),
+        fill=_accent(),
         outline=(40, 40, 40),
         width=6,
     )
@@ -370,10 +396,10 @@ def render_outro_page(out_path: Path) -> Path:
     bx = (CANVAS_W - bw) // 2
     by = 360
     bh = brand_font.getbbox(BRAND_NAME)[3] - brand_font.getbbox(BRAND_NAME)[1]
-    # 黄色高亮
+    # 主题色高亮
     draw.rectangle(
         [(bx - 24, by + int(bh * 0.55)), (bx + bw + 24, by + bh + 30)],
-        fill=(254, 224, 71),
+        fill=_accent(),
     )
     draw.text((bx, by), BRAND_NAME, font=brand_font, fill=(40, 40, 40))
 
@@ -383,7 +409,7 @@ def render_outro_page(out_path: Path) -> Path:
         tw = tag_font.getbbox(BRAND_TAGLINE)[2] - tag_font.getbbox(BRAND_TAGLINE)[0]
         draw.text(((CANVAS_W - tw) // 2, by + bh + 80), BRAND_TAGLINE, font=tag_font, fill=(70, 50, 30))
 
-    # CTA 黄色卡片
+    # CTA 主题色卡片
     box_x1, box_x2 = 80, CANVAS_W - 80
     box_y1, box_y2 = 1180, 1680
     shadow = 14
@@ -393,7 +419,7 @@ def render_outro_page(out_path: Path) -> Path:
     )
     draw.rounded_rectangle(
         [(box_x1, box_y1), (box_x2, box_y2)],
-        radius=44, fill=(254, 224, 71), outline=(40, 40, 40), width=6,
+        radius=44, fill=_accent(), outline=(40, 40, 40), width=6,
     )
 
     head_size = _fit_font_size(OUTRO_HEADLINE, CANVAS_W - 260, base_size=110, min_size=72)
@@ -475,6 +501,7 @@ def ensure_outro_clip(*, script_stem: str = "") -> Path:
                 "brand": BRAND_NAME, "tagline": BRAND_TAGLINE,
                 "headline": OUTRO_HEADLINE, "subline": OUTRO_SUBLINE,
                 "narration": narration, "date": today, "stem": script_stem,
+                "theme": _THEME_LABEL, "accent": list(_THEME_ACCENT),
             },
             ensure_ascii=False, sort_keys=True,
         ).encode("utf-8")
@@ -864,6 +891,8 @@ def compose_video(
     slides = script.get("slides") or []
     if not slides:
         raise ValueError("脚本无 slides")
+
+    set_theme(categories.resolve_category(script, os.environ.get("AIVIDEO_CATEGORY")))
 
     work_dir = (work_dir or ROOT / "logs" / "compose" / script_file.stem)
     work_dir.mkdir(parents=True, exist_ok=True)
