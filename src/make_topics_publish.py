@@ -38,10 +38,8 @@ from publish_all_douyin import load_published, save_published
 from research import load_env, run_article_research
 
 
-_PROMPT = (
-    "\n请输入今天要做的话题（一行，用 1 2 3 编号分隔；不编号也行，会自动按你写的拆）：\n"
-    "例如：1 小鹏财报 2 韬定律是什么 3 opus4.8发布\n> "
-)
+# 默认话题清单：项目根目录下的 topics.txt（每行一个话题，行首可写栏目名）
+DEFAULT_TOPICS_FILE = ROOT / "topics.txt"
 
 
 def read_topics_text(args: argparse.Namespace) -> str:
@@ -52,13 +50,15 @@ def read_topics_text(args: argparse.Namespace) -> str:
         return sys.stdin.read()
     if parts:
         return " ".join(parts)
-    # 没有任何参数：交互式从命令行读一行；非交互（管道）则读 stdin
+    # 非交互（管道）优先读 stdin
     if not sys.stdin.isatty():
         return sys.stdin.read()
-    try:
-        return input(_PROMPT).strip()
-    except EOFError:
-        return ""
+    # 默认：直接读取项目根目录下的 topics.txt
+    if DEFAULT_TOPICS_FILE.is_file():
+        log(f"读取话题清单：{DEFAULT_TOPICS_FILE}")
+        return DEFAULT_TOPICS_FILE.read_text(encoding="utf-8")
+    log(f"未找到默认话题清单 {DEFAULT_TOPICS_FILE}，请创建该文件（每行一个话题）。")
+    return ""
 
 
 def process_topic(

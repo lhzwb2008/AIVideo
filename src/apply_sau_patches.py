@@ -280,7 +280,7 @@ def patch_xhs(path: Path) -> None:
         print(f"跳过小红书补丁：未找到 {path}", file=sys.stderr)
         return
     text = path.read_text(encoding="utf-8")
-    if "AIVIDEO_PATCH: 容错处理所有 tags" in text:
+    if "AIVIDEO_PATCH: 最多 5 个话题" in text:
         print(f"小红书补丁已存在，跳过: {path}")
         return
     pattern = (

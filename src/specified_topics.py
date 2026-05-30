@@ -32,6 +32,10 @@ import research
 # 以免把 "opus4.8"、"4.279亿" 这类版本号/小数误判为编号。
 _MARKER_RE = re.compile(r"(?:^|(?<=[，,。；;、\s]))(\d{1,2})[ \t　、]+")
 
+# 行首可选编号（如「1 」「1.」「1、」「1)」），数字后必须跟分隔符才算编号，
+# 避免把 "5G"、"4090显卡" 这类开头误删。用于「每行一个话题」模式。
+_LEADING_MARKER_RE = re.compile(r"^\s*\d{1,2}[ \t　.、)）]+\s*")
+
 # 自带内容的判定阈值（话题文字超过该长度，或「：」后内容超过该长度，视为自带内容）
 _CONTENT_MIN_CHARS = 40
 
@@ -66,8 +70,27 @@ def parse_topics_input(text: str) -> list[dict]:
     text = (text or "").strip()
     if not text:
         return []
+    # 「每行一个话题」模式（最稳）：多行输入时，每个非空行就是一个话题，
+    # 行内空格不影响拆分；行首可选编号会被剥掉。这样彻底规避输入法夹带空格导致的错拆。
+    raw_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if len(raw_lines) > 1:
+        segments = [_LEADING_MARKER_RE.sub("", ln).strip() or ln for ln in raw_lines]
+        topics: list[dict] = []
+        for i, seg in enumerate(segments, 1):
+            category, seg = categories.extract_category_tag(seg)
+            title_hint, provided = _split_title_and_content(seg)
+            if not title_hint:
+                continue
+            topics.append({
+                "index": i,
+                "raw": seg,
+                "title_hint": title_hint,
+                "provided_content": provided,
+                "category": category,
+            })
+        return topics
     matches = list(_MARKER_RE.finditer(text))
-    segments: list[str] = []
+    segments = []
     if not matches:
         # 没写编号：按顿号/分号/换行兜底拆分；拆不出多个就当成单个话题
         parts = [p.strip() for p in re.split(r"[、；;\n]+", text) if p.strip()]

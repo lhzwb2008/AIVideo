@@ -149,17 +149,26 @@ def label_of(category: str | None) -> str:
 # 从话题文字里解析栏目标签，如 "[量化] 多因子选股是什么"
 # ============================================================
 _TAG_RE = re.compile(r"^\s*[【\[]([^】\]]{1,8})[】\]]\s*")
+# 裸前缀：行首一个词（到第一个空白为止）后跟空白再跟正文，
+# 用于支持 topics.txt 里「基础 如何给企业估值」这种不带方括号的栏目前缀。
+_BARE_PREFIX_RE = re.compile(r"^\s*(\S{1,6})\s+(\S.*)$", re.S)
 
 
 def extract_category_tag(segment: str) -> tuple[str | None, str]:
-    """从一段话题文字开头解析 [栏目] 标签，返回 (category_key, 去掉标签后的文字)。
+    """从一段话题文字开头解析栏目标签，返回 (category_key, 去掉标签后的文字)。
 
-    只在标签能映射到已知栏目时才剥离；否则原样返回。
+    支持两种写法（只在能映射到已知栏目时才剥离，否则原样返回）：
+    - 方括号：`[基础] 如何给企业估值` / `【港美股】...`
+    - 裸前缀：`基础 如何给企业估值`（行首第一个词正好是栏目名时）
     """
-    m = _TAG_RE.match(segment or "")
-    if not m:
-        return None, segment
-    cat = normalize_category(m.group(1))
-    if not cat:
-        return None, segment
-    return cat, segment[m.end():].strip()
+    seg = segment or ""
+    m = _TAG_RE.match(seg)
+    if m:
+        cat = normalize_category(m.group(1))
+        return (cat, seg[m.end():].strip()) if cat else (None, segment)
+    bm = _BARE_PREFIX_RE.match(seg)
+    if bm:
+        cat = normalize_category(bm.group(1))
+        if cat:
+            return cat, bm.group(2).strip()
+    return None, segment
