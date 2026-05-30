@@ -86,7 +86,8 @@ def build_social_fields(script: dict | None, platform: str) -> dict:
             tags.append(kw)
     if brand and brand not in tags:
         tags.append(brand)
-    tags = tags[:10]
+    # 话题最多 5 个，超出后面的会被平台截断/糊成乱码。
+    tags = tags[:5]
 
     # 正文：钩子标题 + 关键词 + CTA + 行内话题（小红书/视频号习惯把 #话题 写进正文）
     if platform == "xiaohongshu":

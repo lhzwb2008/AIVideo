@@ -162,14 +162,16 @@ def build_sau_fields(script: dict | None) -> dict[str, str]:
 
     topic_kw = _topic_keywords(script)
 
-    # tags = 品牌 + 内容关键词 + 少量频道级常青标签，去重后控制总量
+    # tags = 内容关键词优先，品牌/频道常青标签只在有空位时补；总量硬性 ≤5
     tag_parts: list[str] = []
-    if brand:
-        tag_parts.append(brand)
     for kw in topic_kw:
         if kw not in tag_parts:
             tag_parts.append(kw)
+    if brand and brand not in tag_parts and len(tag_parts) < 5:
+        tag_parts.append(brand)
     for raw in _env("DOUYIN_HASHTAGS", "#AI #财经 #股市").split():
+        if len(tag_parts) >= 5:
+            break
         t = _strip_hashtag(raw)
         if t and t not in tag_parts:
             tag_parts.append(t)
@@ -188,5 +190,6 @@ def build_sau_fields(script: dict | None) -> dict[str, str]:
     return {
         "title": title[:100],
         "desc": _strip_urls(" ".join(desc_bits))[:1000],
-        "tags": ",".join(tag_parts[:8]),
+        # 抖音话题最多 5 个，超出会被截断/糊成乱码，这里硬性封顶 5 个。
+        "tags": ",".join(tag_parts[:5]),
     }

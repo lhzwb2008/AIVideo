@@ -165,9 +165,9 @@ async def _do_publish(args, platform: str, account_file: Path) -> int:
     title = args.title or fields["title"]
     desc = args.desc if args.desc is not None else fields["desc"]
     tags = (
-        [t.strip().lstrip("#") for t in args.tags.split(",") if t.strip()]
+        [t.strip().lstrip("#") for t in args.tags.split(",") if t.strip()][:5]
         if args.tags is not None
-        else fields["tags"]
+        else fields["tags"][:5]
     )
     thumbnail = Path(args.thumbnail).resolve() if args.thumbnail else _resolve_cover(script_path)
 

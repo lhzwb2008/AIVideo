@@ -233,10 +233,13 @@ async def _fill_form(page, title: str, desc: str, tags: list[str]) -> None:
         await page.keyboard.press("Enter")
     if desc and desc != title:
         await page.keyboard.type(desc[:500])
-    for tag in tags:
+    # 抖音话题最多 5 个，超出后面的会糊成乱码；逐个输入并停顿，等联想框把 # 识别成话题。
+    for tag in tags[:5]:
         await page.keyboard.type(f" #{tag.lstrip('#')}")
+        await page.wait_for_timeout(600)
         await page.keyboard.press("Space")
-    print("  已填写标题/简介/话题", flush=True)
+        await page.wait_for_timeout(300)
+    print(f"  已填写标题/简介/话题（{min(len(tags), 5)} 个）", flush=True)
 
 
 async def _wait_upload_done(page, timeout_s: int = 300) -> None:
@@ -467,7 +470,7 @@ async def publish_video(
     if assist:
         headed = True
 
-    tag_list = [t.strip().lstrip("#") for t in tags.split(",") if t.strip()]
+    tag_list = [t.strip().lstrip("#") for t in tags.split(",") if t.strip()][:5]
     cookie = cookie_path(root)
 
     launch = {

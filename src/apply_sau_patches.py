@@ -21,7 +21,7 @@ XHS_FILL_TAGS = '''    async def fill_tags(self, page: Page) -> None:
             desc = page.locator('p[data-placeholder*="输入正文描述"]')
             await desc.click()
 
-        for tag in self.tags:  # AIVIDEO_PATCH: 容错处理所有 tags
+        for tag in self.tags[:5]:  # AIVIDEO_PATCH: 最多 5 个话题，超出会被平台截断/乱码
             await page.keyboard.type("#" + tag, delay=30)
             try:
                 await page.locator('#creator-editor-topic-container').wait_for(
