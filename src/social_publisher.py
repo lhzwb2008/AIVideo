@@ -202,7 +202,13 @@ async def _do_publish(args, platform: str, account_file: Path) -> int:
 
     app = Video(**kwargs)
     print("开始发布（约需 2–5 分钟）…", flush=True)
-    await app.main()
+    # 入口已跑过 setup/cookie_auth；上传器内默认会再开一次浏览器校验，易因超时误判失效
+    if platform == "xiaohongshu":
+        os.environ["AIVIDEO_SKIP_XHS_COOKIE_RECHECK"] = "1"
+    try:
+        await app.main()
+    finally:
+        os.environ.pop("AIVIDEO_SKIP_XHS_COOKIE_RECHECK", None)
 
     log_path = Path(__file__).resolve().parents[1] / "logs" / f"last_{platform}_publish.json"
     log_path.parent.mkdir(parents=True, exist_ok=True)

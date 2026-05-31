@@ -280,6 +280,81 @@ def patch(path: Path) -> None:
 XHS_GOTO_OLD = "await page.goto(XHS_PUBLISH_VIDEO_URL)"
 XHS_GOTO_NEW = 'await page.goto(XHS_PUBLISH_VIDEO_URL, wait_until="domcontentloaded", timeout=60000)'
 
+# cookie 校验：超时重试 + 放宽 goto，避免网络慢被误判「cookie 失效」
+XHS_COOKIE_AUTH_MARKER = "AIVIDEO_PATCH: xhs cookie_auth retry"
+_XHS_COOKIE_AUTH_PATTERN = re.compile(
+    r"async def cookie_auth\(account_file\):.*?^async def xiaohongshu_setup\(",
+    re.DOTALL | re.MULTILINE,
+)
+XHS_COOKIE_AUTH_BLOCK = '''async def cookie_auth(account_file):
+    # AIVIDEO_PATCH: xhs cookie_auth retry
+    for attempt in range(3):
+        if await _xhs_cookie_auth_once(account_file):
+            return True
+        if attempt < 2:
+            await asyncio.sleep(3)
+    return False
+
+
+async def _xhs_cookie_auth_once(account_file):
+    timeout_ms = int(os.environ.get("AIVIDEO_XHS_GOTO_TIMEOUT_MS", "90000"))
+    if not os.path.exists(account_file):
+        return False
+
+    async with async_playwright() as playwright:
+        if LOCAL_CHROME_PATH:
+            browser = await playwright.chromium.launch(headless=True, executable_path=LOCAL_CHROME_PATH)
+        else:
+            browser = await playwright.chromium.launch(headless=True, channel="chrome")
+        try:
+            context = await browser.new_context(storage_state=account_file)
+            context = await set_init_script(context)
+            page = await context.new_page()
+            await page.goto(
+                XHS_PUBLISH_VIDEO_URL,
+                wait_until="domcontentloaded",
+                timeout=timeout_ms,
+            )
+            await page.wait_for_timeout(3000)
+
+            if page.url.startswith(XHS_LOGIN_URL):
+                xiaohongshu_logger.info(_msg("🥹", "cookie 已失效，得重新登录一下"))
+                return False
+
+            login_box = page.locator(XHS_LOGIN_BOX_SELECTOR).first
+            if await login_box.count():
+                try:
+                    if await login_box.is_visible():
+                        xiaohongshu_logger.info(_msg("🥹", "页面仍然停留在登录二维码页，按 cookie 失效处理"))
+                        return False
+                except Exception:
+                    return False
+
+            xiaohongshu_logger.success(_msg("🥳", "cookie 有效"))
+            return True
+        except Exception as exc:
+            xiaohongshu_logger.warning(_msg("😵", f"cookie 校验时出错（将重试）: {exc}"))
+            return False
+        finally:
+            await browser.close()
+
+
+async def xiaohongshu_setup('''
+
+XHS_VALIDATE_BASE_OLD = """    async def validate_base_args(self):
+        if not os.path.exists(self.account_file):
+            raise RuntimeError(f"cookie文件不存在，请先完成小红书登录: {self.account_file}")
+        if not await cookie_auth(self.account_file):
+            raise RuntimeError(f"cookie文件已失效，请先完成小红书登录: {self.account_file}")"""
+
+XHS_VALIDATE_BASE_NEW = """    async def validate_base_args(self):
+        if not os.path.exists(self.account_file):
+            raise RuntimeError(f"cookie文件不存在，请先完成小红书登录: {self.account_file}")
+        # AIVIDEO_PATCH: 发布入口已校验过 cookie 时跳过二次打开创作页（避免连开浏览器超时误判失效）
+        if os.environ.get("AIVIDEO_SKIP_XHS_COOKIE_RECHECK") != "1":
+            if not await cookie_auth(self.account_file):
+                raise RuntimeError(f"cookie文件已失效，请先完成小红书登录: {self.account_file}")"""
+
 # 小红书设置封面容错标记 + try/except 包裹：封面弹窗 DOM 经常改版，
 # 设封面失败时跳过（改用视频首帧）而不是抛异常中断整条发布。
 XHS_THUMB_MARKER = "跳过自定义封面（改用视频首帧）"
@@ -423,6 +498,16 @@ def patch_xhs(path: Path) -> None:
     if XHS_PUBLISH_MARKER not in text and _XHS_PUBLISH_PATTERN.search(text):
         text = _XHS_PUBLISH_PATTERN.sub(lambda _m: XHS_PUBLISH_NEW, text, count=1)
         applied.append("publish_loop")
+
+    # 5) cookie 校验重试 + 90s 超时（默认）
+    if XHS_COOKIE_AUTH_MARKER not in text and _XHS_COOKIE_AUTH_PATTERN.search(text):
+        text = _XHS_COOKIE_AUTH_PATTERN.sub(XHS_COOKIE_AUTH_BLOCK, text, count=1)
+        applied.append("cookie_auth_retry")
+
+    # 6) 发布前已校验 cookie 时跳过二次校验
+    if "AIVIDEO_PATCH: 发布入口已校验过 cookie" not in text and XHS_VALIDATE_BASE_OLD in text:
+        text = text.replace(XHS_VALIDATE_BASE_OLD, XHS_VALIDATE_BASE_NEW)
+        applied.append("skip_recheck")
 
     path.write_text(text, encoding="utf-8")
     if applied:
