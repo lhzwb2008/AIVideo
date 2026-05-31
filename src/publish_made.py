@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from batch_aivideo import append_history_from_script
-from make_publish import archive_video, log, rel, run
+from publish_pipeline import archive_video, log, rel, run
 from paths import ROOT
 from publish_all_douyin import load_published, save_published
 from research import load_env

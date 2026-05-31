@@ -137,26 +137,49 @@ async def _require_logged_in(page) -> None:
                 pass
 
 
-async def _wait_file_input(page, timeout_s: int = 120, root: Path | None = None):
+async def _wait_file_input(page, timeout_s: int = 180, root: Path | None = None):
+    """等待上传页 file input。抖音 SPA 常需 10–20s 才渲染控件，且 cookie 半失效时会更慢。"""
     selectors = (
         "input.semi-upload-hidden-input",
         "input[type='file'][accept*='video']",
+        "div[class^='container'] input[type='file']",
+        "div[class^='upload-content'] input[class='upload-input']",
+        "div[class^='upload-content'] input",
         "input[type='file']",
     )
     for i in range(timeout_s // 2):
         await _require_logged_in(page)
         await _dismiss_overlays(page)
-        if i in (0, 5, 15, 30):
+        if i in (0, 3, 8, 15, 25):
             await _try_click_upload_entry(page)
         for sel in selectors:
             loc = page.locator(sel).first
             if not await loc.count():
                 continue
             try:
-                await loc.wait_for(state="attached", timeout=2000)
+                await loc.wait_for(state="attached", timeout=3000)
                 return loc
             except Exception:
                 continue
+        # 兜底：点「点击上传」触发 filechooser（新版页面可能无稳定 input 选择器）
+        if i >= 5:
+            try:
+                trigger = page.get_by_text("点击上传", exact=False).first
+                if await trigger.count() and await trigger.is_visible():
+                    async with page.expect_file_chooser(timeout=5000) as fc_info:
+                        await trigger.click(timeout=4000)
+                    chooser = await fc_info.value
+                    # 返回一个可 set_input_files 的占位 locator（调用方会用 set_input_files）
+                    class _ChooserProxy:
+                        def __init__(self, ch):
+                            self._ch = ch
+
+                        async def set_input_files(self, path):
+                            await self._ch.set_files(path)
+
+                    return _ChooserProxy(chooser)
+            except Exception:
+                pass
         if i and i % 15 == 0:
             print(f"  等待上传控件… ({i * 2}s) url={page.url}", flush=True)
         await asyncio.sleep(2)
@@ -499,6 +522,15 @@ async def publish_video(
             timezone_id="Asia/Shanghai",
             viewport={"width": 1440, "height": 900},
         )
+        try:
+            home = str(sau_home(root))
+            if home not in sys.path:
+                sys.path.insert(0, home)
+            from utils.base_social_media import set_init_script
+
+            context = await set_init_script(context)
+        except Exception:
+            pass
         page = await context.new_page()
         try:
             print("  打开上传页…", flush=True)

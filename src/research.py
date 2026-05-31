@@ -558,7 +558,7 @@ def score_articles(
     *,
     recent_topics: list[str] | None = None,
 ) -> tuple[list[dict], dict]:
-    """用 Opus 4.7 给候选逐条打分，返回按 topic_score 降序的候选队列。"""
+    """用 Opus 给候选逐条打分（遗留 API；主流程已改用 daily_topics 问句话题选题）。"""
     max_candidates = int(os.environ.get("AIVIDEO_SCORE_MAX_CANDIDATES", "40"))
     cand_view = []
     for i, c in enumerate(candidates, 1):

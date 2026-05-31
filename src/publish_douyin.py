@@ -144,7 +144,14 @@ def main() -> int:
         if args.check:
             print("检查登录态…", flush=True)
             check_douyin_session(root=ROOT)
-            print("登录态有效", flush=True)
+            from douyin_session import verify_upload_page
+
+            if not asyncio.run(verify_upload_page(root=ROOT)):
+                raise SauError(
+                    "Cookie 能过基础校验，但上传页未就绪（常见于半失效）。"
+                    "请运行: ./douyin-login.sh --force"
+                )
+            print("登录态有效（已验证上传页）", flush=True)
 
         print("开始发布（约需 3–5 分钟）…", flush=True)
         asyncio.run(

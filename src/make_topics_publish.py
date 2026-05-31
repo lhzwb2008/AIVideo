@@ -16,29 +16,18 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import time
-
 import cost_tracker
 import specified_topics
-from make_publish import (
-    archive_video,
-    latest_video,
-    log,
-    publish_social,
-    read_script_title,
-    rel,
-    run,
-)
 from batch_aivideo import append_history_from_script
 from paths import ROOT
-from publish_all_douyin import load_published, save_published
-from research import load_env, run_article_research
+from publish_pipeline import log, process_topic
+from research import load_env
 
 
-# 默认话题清单：项目根目录下的 topics.txt（每行一个话题，行首可写栏目名）
 DEFAULT_TOPICS_FILE = ROOT / "topics.txt"
 
 
@@ -50,101 +39,13 @@ def read_topics_text(args: argparse.Namespace) -> str:
         return sys.stdin.read()
     if parts:
         return " ".join(parts)
-    # 非交互（管道）优先读 stdin
     if not sys.stdin.isatty():
         return sys.stdin.read()
-    # 默认：直接读取项目根目录下的 topics.txt
     if DEFAULT_TOPICS_FILE.is_file():
         log(f"读取话题清单：{DEFAULT_TOPICS_FILE}")
         return DEFAULT_TOPICS_FILE.read_text(encoding="utf-8")
     log(f"未找到默认话题清单 {DEFAULT_TOPICS_FILE}，请创建该文件（每行一个话题）。")
     return ""
-
-
-def pipeline_after_script(
-    script_path: Path,
-    title: str,
-    *,
-    index: int,
-    target: int,
-    publish_check: bool,
-    dry_run: bool,
-    skip_publish: bool = False,
-) -> dict:
-    """脚本 JSON 落地后的统一流水线：生图 → 合成 → 发布抖音 → 归档 → 联动其它平台。
-
-    指定话题模式与"直接喂文案"模式共用这一段，保证两条链路行为一致。
-    """
-    run([str(ROOT / "scripts" / "run-enrich-images.sh"), str(script_path)], label="生图")
-    run([str(ROOT / "scripts" / "run-compose.sh"), str(script_path)], label="合成")
-    video = latest_video()
-
-    if skip_publish:
-        log(f"\n=== [{index}/{target}] 跳过发布（--no-publish）===")
-        return {"title": title, "video": rel(video), "script": rel(script_path), "published": False}
-
-    log(f"\n=== [{index}/{target}] 发布抖音 ===")
-    publish_cmd = [str(ROOT / "scripts" / "publish-douyin.sh"), rel(video), "--script", rel(script_path)]
-    if publish_check:
-        publish_cmd.append("--check")
-    if dry_run:
-        publish_cmd.append("--dry-run")
-    run(publish_cmd, label="发布")
-
-    if dry_run:
-        return {"title": title, "video": rel(video), "script": rel(script_path), "published": False}
-
-    published = load_published()
-    video_rel = rel(video)
-    published.add(video_rel)
-    save_published(published)
-    append_history_from_script(script_path)
-    archived = archive_video(video, date_tag=datetime.now().strftime("%Y%m%d"))
-    log(f"发布成功，已归档：{rel(archived)}")
-
-    log(f"\n=== [{index}/{target}] 联动发布其它平台 ===")
-    publish_social(archived, script_path)
-
-    return {"title": title, "video": rel(archived), "script": rel(script_path), "published": True}
-
-
-def process_topic(
-    index: int,
-    *,
-    target: int,
-    topic: dict,
-    article: dict,
-    details: dict,
-    publish_check: bool,
-    dry_run: bool,
-    skip_publish: bool = False,
-) -> dict:
-    logs_dir = ROOT / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    script_path = logs_dir / f"last_script_{stamp}_topic{index:02d}.json"
-
-    log(f"\n=== [{index}/{target}] 话题：{topic.get('title_hint')} ===")
-    script, _ = run_article_research(
-        output=script_path,
-        auto_pick=True,
-        source="exa",
-        preselected_article=article,
-        preselected_details=details,
-        category=topic.get("category"),
-    )
-    title = str(script.get("title") or read_script_title(script_path) or "").strip()
-    log(f"脚本标题：{title}")
-
-    return pipeline_after_script(
-        script_path,
-        title,
-        index=index,
-        target=target,
-        publish_check=publish_check,
-        dry_run=dry_run,
-        skip_publish=skip_publish,
-    )
 
 
 def main() -> int:
@@ -153,8 +54,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="AI财知道：指定话题一键制作并发布")
     parser.add_argument("topics", nargs="*", help="一段含编号的话题文字；也可用 - 从 stdin 读")
     parser.add_argument("--file", help="从文件读取话题文字")
-    parser.add_argument("--days", type=int, default=int(os.environ.get("AIVIDEO_TOPIC_DAYS", "7")),
-                        help="搜话题文章的时间窗（天），默认 7（指定话题默认是当日热点，窗口收窄以保证时效）")
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=int(os.environ.get("AIVIDEO_TOPIC_DAYS", "7")),
+        help="搜话题文章的时间窗（天），默认 7",
+    )
     parser.add_argument("--check", action="store_true", help="发布前检查抖音登录态")
     parser.add_argument("--dry-run", action="store_true", help="只预演发布参数，不真正发布/归档")
     parser.add_argument("--no-publish", action="store_true", help="只生成视频，跳过发布步骤")
@@ -196,6 +101,7 @@ def main() -> int:
                     publish_check=args.check,
                     dry_run=args.dry_run,
                     skip_publish=args.no_publish,
+                    append_history_fn=append_history_from_script,
                 )
             )
         except Exception as exc:  # noqa: BLE001

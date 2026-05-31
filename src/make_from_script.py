@@ -51,8 +51,8 @@ from pathlib import Path
 import categories
 import cost_tracker
 import research
-from make_publish import log, read_script_title
-from make_topics_publish import pipeline_after_script
+from batch_aivideo import append_history_from_script
+from publish_pipeline import log, pipeline_after_script, read_script_title
 from paths import ROOT
 from research import load_env
 
@@ -169,6 +169,7 @@ def process_one(
         publish_check=publish_check,
         dry_run=dry_run,
         skip_publish=skip_publish,
+        append_history_fn=append_history_from_script,
     )
 
 

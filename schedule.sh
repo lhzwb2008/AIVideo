@@ -19,7 +19,7 @@ PLIST_SRC="$ROOT/launchd/$LABEL.plist"
 
 HOUR="${DAILY_RUN_HOUR:-10}"
 MINUTE="${DAILY_RUN_MINUTE:-0}"
-COUNT="${DAILY_RUN_COUNT:-1}"
+COUNT="${DAILY_RUN_COUNT:-${AIVIDEO_MAX_VIDEOS_PER_RUN:-3}}"
 
 case "${1:-restart}" in
   --status)

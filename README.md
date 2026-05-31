@@ -13,7 +13,7 @@
 
 | 模式 | 入口 | 文案来源 |
 |------|------|----------|
-| 自动选题 | `./make-and-publish.sh [N]` | Exa 联网搜热点 → Opus 打分挑高分话题 → 自动改编 |
+| 自动选题 | `./make-and-publish.sh [N]` | 热点→问句话题（默认 3 条）→ 搜文深读 → 改编 |
 | 指定话题 | `./make-topics.sh "<一段含编号的话>"` | 你给定话题，程序联网搜文章/用自带内容 → 自动改编 |
 | 直接喂文案 | `./make-from-script.sh script.json` | 你（或模型）按生图要求写好分页文案，**跳过调研/改编** |
 
@@ -90,12 +90,14 @@ cat script.json | ./make-from-script.sh -          # 从 stdin 读文案
 
 ## 内容策略
 
-1. **找文章**（Exa / 固定信息源）：按 AI、财经、美股和中概股真实热度（HN/X/媒体/Reddit/newsletter/知乎/微博/即刻/公众号 10w+）拉**中英文各 3 篇**热点长文
-2. **挑最佳**（Claude Opus 4.7 / low thinking）：自动评审 6 篇候选，输出选中理由 + 候选排名（批量模式下逐次挑 1 篇并 exclude 已选）
-3. **深读原文**（Cursor Cloud Agent）：再次打开文章，抽出段落 outline / 所有数字 / 所有引语 / 人物 / 场景 / 真实开头结尾 / 作者立场
-4. **改编脚本**（Claude Opus 4.7 / low thinking）：基于深读细节按文章自身节奏拆 **3-4 页正文**（控成本，可用 `AIVIDEO_MAX_SLIDES` 调；再加 1 张全屏封面海报 = 每条 ≤5 张图）中文问答短视频脚本，标题统一为「什么是/为什么/意味着什么/财报好不好」这类搜索友好问句；结尾先抛一个与本期话题相关的开放问题引导评论，再带点赞关注
-5. 风格校验：禁用词、客观引述次数、cover 钩子、narration 字数等；失败自动让 Opus 修正
-6. **合规红线（防封禁）**：标题/口播/上屏文字/hashtags 一律禁止出现股票代码（A股6位、港股 `.HK`、美股字母代码等），也禁止荐股/喊单/目标价/买卖点/仓位建议/「稳赚·必涨·翻倍·收益率·内幕」等字眼。生成阶段会软清洗掉代码，校验阶段命中违规词会打回让 Opus 重写（逻辑见 `research.py` 的 `_strip_stock_codes` / `_RECO_BANNED`）
+**每日自动（`./make-and-publish.sh`）与指定话题（`./make-topics.sh`）共用同一套制作形态**（A/B 实验已并入主流程）：
+
+1. **定话题**：自动模式从近 7 天热点里提炼 6–8 条「为什么/意味着什么」问句线索，按 **A股 / AI / 港美股 各 1 条** 配额选出 **3 条**（可用 `AIVIDEO_DIR_QUOTA` 调整）；手动模式见 `topics.txt` 每行一个话题。
+2. **搜文 + 深读**：按话题线索 Exa 搜最相关且够新的文章（默认 7 天窗口；新闻类超过 `AIVIDEO_TOPIC_FRESH_DAYS` 会综合多篇材料自写）。
+3. **改编脚本**（Claude Opus）：拆 **3-4 页正文** + 封面海报；问句标题；结尾引导评论。
+4. **风格校验 + 合规红线**（禁股票代码/荐股等，见 `research.py`）。
+
+旧流程「先给几十篇文章逐条打 0–100 分再挑一篇」已移除，改为 **话题优先**，时效与可讲性在「提炼问句」阶段一次完成。
 
 ## 子栏目（同一主账号下的频道）
 
@@ -130,7 +132,7 @@ cat script.json | ./make-from-script.sh -          # 从 stdin 读文案
 
 | 步骤 | 命令 | 产出 |
 |------|------|------|
-| Make + publish | `./make-and-publish.sh` | Exa 找选题 + 深读 + 改编 + 生图 + 合成 + 发布抖音 + 联动小红书 + 归档 |
+| Make + publish | `./make-and-publish.sh` | 热点→问句话题（默认 3 条）+ 搜文深读 + 改编 + 生图 + 合成 + 发布 + 归档 |
 | Make from topics | `./make-topics.sh` | 指定话题 + 改编 + 生图 + 合成 + 发布 + 归档 |
 | Make from script | `./make-from-script.sh script.json` | **跳过调研/改编**，现成文案 + 生图 + 合成 + 发布 + 归档 |
 | Schedule | `./schedule.sh` | 安装/重启每日定时任务，自动制作发布并归档 |
@@ -278,7 +280,7 @@ AI财知道。每天梳理一个 AI 与财经热点，拆解财报与基本面�
 
 ## 每日定时（macOS launchd）
 
-每天定时跑一遍「搜近 24h 中英文 AI/财经热点 → 制作 2 条 → 发布 → 归档」：
+每天定时跑一遍「搜近 7 天热点 → 提炼 3 条问句话题 → 制作发布 → 归档」：
 
 ```bash
 ./schedule.sh            # 安装/重启守护（改完代码也是这条）
@@ -295,8 +297,11 @@ tail -f logs/schedule_stdout.log
 |------|------|------|
 | `DAILY_RUN_HOUR` | `10` | 每天几点跑（0-23） |
 | `DAILY_RUN_MINUTE` | `0` | 几分 |
-| `DAILY_RUN_COUNT` | `1` | 单次执行生成几条视频（仅在跑定时任务时生效；手动跑用 `./make-and-publish.sh [N]` 或 `AIVIDEO_MAX_VIDEOS_PER_RUN` 覆盖，手动入口默认 3） |
-| `DAILY_RUN_DAYS` | `1` | 搜索时间窗（天） |
+| `DAILY_RUN_COUNT` | `3` | 定时任务每次生成几条（同 `AIVIDEO_MAX_VIDEOS_PER_RUN`） |
+| `DAILY_RUN_DAYS` / `AIVIDEO_DAYS` | `7` | 发现热点候选的时间窗（天） |
+| `AIVIDEO_TOPIC_DAYS` | `7` | 每条话题搜文的时间窗（天） |
+| `AIVIDEO_DIR_QUOTA` | `1,1,1` | 三方向配额 `astock,ai,hkus` |
+| `AIVIDEO_TOPIC_FRESH_DAYS` | `2` | 新闻类：候选超过该天数则改综合材料自写 |
 
 发布成功的视频会被移到 `archive/published/YYYYMMDD/`，第二天 `output/` 又是干净的等待新一批。
 

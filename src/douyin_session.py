@@ -60,9 +60,11 @@ async def verify_upload_page(*, root: Path | None = None, account: str | None = 
             selectors = (
                 "input.semi-upload-hidden-input",
                 "input[type='file'][accept*='video']",
+                "div[class^='container'] input[type='file']",
+                "div[class^='upload-content'] input",
                 "input[type='file']",
             )
-            for _ in range(20):
+            for _ in range(45):
                 for sel in selectors:
                     loc = page.locator(sel).first
                     if await loc.count():
