@@ -8,9 +8,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from datetime import datetime, timezone
+
+import sys
 
 import categories
 from batch_aivideo import duplicate_topic_reason, filter_duplicate_topics, history_recent_topics
@@ -32,7 +35,9 @@ _HKUS_KW = re.compile(
     re.I,
 )
 
-DIRECTION_BASE_QUOTA = {"astock": 1, "ai": 1, "hkus": 1}
+# 默认方向占比（可被 AIVIDEO_DIR_RATIO 覆盖，三项之和不必为 1，会归一化）
+DEFAULT_DIR_RATIO = {"astock": 0.55, "ai": 0.25, "hkus": 0.20}
+DEFAULT_ASTOCK_MIN_RATIO = 0.5  # A股条数须满足 count/target > 此值（默认 >50%）
 
 PROPOSE_SYSTEM = """你是抖音栏目「AI财知道」的每日选题编辑。输入是近几天 AI/财经/A股 热点候选（标题+摘要），你的任务是提炼「话题线索」title_hint，而不是挑选哪篇文章。
 
@@ -42,7 +47,7 @@ PROPOSE_SYSTEM = """你是抖音栏目「AI财知道」的每日选题编辑。�
 1. title_hint 用中文，8-28 字，适合做成搜索友好问句（为什么/是什么/意味着什么/到底…）。
 2. 优先 48 小时内真实热点；A股 爆点（涨停潮/题材/龙虎榜/业绩/IPO）可大胆写，但禁止荐股、喊单、股票代码。
 3. 与【近期已做标题】避免同一公司、同一事件、同一财报重复。
-4. 输出 6-8 条，尽量覆盖 astock / ai / hkus 三个方向（每方向至少 1 条）。
+4. 输出 6-8 条；其中 direction=astock（A股/国内股市）不少于【A股最少条数】条，其余覆盖 ai / hkus。
 5. direction 只能是 astock、ai、hkus；category 与 direction 一致（astock→astock, ai→ai, hkus→hkus）。
 
 只输出 JSON，不要 markdown。"""
@@ -96,51 +101,99 @@ def _interleave_by_direction(cands: list[dict]) -> list[dict]:
     return out
 
 
-def _base_quota() -> dict[str, int]:
-    raw = os.environ.get("AIVIDEO_DIR_QUOTA", "").strip()
+def _parse_dir_ratio() -> dict[str, float]:
+    """读取 AIVIDEO_DIR_RATIO=0.55,0.25,0.20（astock,ai,hkus），归一化为占比。"""
+    raw = os.environ.get("AIVIDEO_DIR_RATIO", "").strip()
     if not raw:
-        return dict(DIRECTION_BASE_QUOTA)
-    base = {d: 0 for d in DIRECTION_ORDER}
-    for part in raw.split(","):
-        if ":" not in part:
-            continue
-        k, _, v = part.partition(":")
-        k = k.strip()
-        if k in base:
-            try:
-                base[k] = max(0, int(v.strip()))
-            except ValueError:
-                pass
-    return base if any(base.values()) else dict(DIRECTION_BASE_QUOTA)
+        return dict(DEFAULT_DIR_RATIO)
+    parts = [p.strip() for p in re.split(r"[,，\s]+", raw) if p.strip()]
+    if len(parts) != 3:
+        return dict(DEFAULT_DIR_RATIO)
+    weights: dict[str, float] = {}
+    for key, part in zip(DIRECTION_ORDER, parts):
+        try:
+            weights[key] = max(0.0, float(part))
+        except ValueError:
+            return dict(DEFAULT_DIR_RATIO)
+    total = sum(weights.values())
+    if total <= 0:
+        return dict(DEFAULT_DIR_RATIO)
+    return {k: weights[k] / total for k in DIRECTION_ORDER}
 
 
-def direction_quotas(target: int, present: list[str]) -> dict[str, int]:
-    order = [d for d in DIRECTION_ORDER if d in present]
+def _astock_min_ratio() -> float:
+    try:
+        return max(0.0, min(1.0, float(os.environ.get("AIVIDEO_ASTOCK_MIN_RATIO", str(DEFAULT_ASTOCK_MIN_RATIO)))))
+    except ValueError:
+        return DEFAULT_ASTOCK_MIN_RATIO
+
+
+def min_astock_slots(target: int, min_ratio: float | None = None) -> int:
+    """满足 count/target > min_ratio 所需的最少 A股 条数（默认 >50% → 3 条里至少 2 条）。"""
+    if target <= 0:
+        return 0
+    r = DEFAULT_ASTOCK_MIN_RATIO if min_ratio is None else min_ratio
+    if r <= 0:
+        return 0
+    # 最小整数 n 使得 n/target > r
+    n = math.floor(target * r) + 1
+    if n / target <= r:
+        n += 1
+    return min(target, max(1, n))
+
+
+def direction_quotas(target: int, present: list[str] | None = None) -> dict[str, int]:
+    """按 AIVIDEO_DIR_RATIO 分配条数，并强制 A股条数 > AIVIDEO_ASTOCK_MIN_RATIO × target。"""
+    _ = present  # 计划配额不随「本次 Opus 是否提到某方向」缩水，选题阶段再兜底
     quotas = {d: 0 for d in DIRECTION_ORDER}
-    if not order or target <= 0:
+    if target <= 0:
         return quotas
-    n = len(order)
-    base = _base_quota()
-    remaining = target
-    if target >= n:
-        for d in order:
-            quotas[d] = 1
-        remaining -= n
-    while remaining > 0:
-        progressed = False
-        for d in order:
-            if remaining <= 0:
+
+    ratios = _parse_dir_ratio()
+    min_astock = min_astock_slots(target, _astock_min_ratio())
+
+    # 最大余数法：先按占比取整，再把余数分给小数部分最大的方向
+    raw = {d: target * ratios[d] for d in DIRECTION_ORDER}
+    quotas = {d: int(math.floor(raw[d])) for d in DIRECTION_ORDER}
+    remainder = target - sum(quotas.values())
+    order_by_frac = sorted(DIRECTION_ORDER, key=lambda d: raw[d] - quotas[d], reverse=True)
+    for i in range(remainder):
+        quotas[order_by_frac[i % len(DIRECTION_ORDER)]] += 1
+
+    # 强制 A股 > min_ratio
+    if quotas["astock"] < min_astock:
+        need = min_astock - quotas["astock"]
+        quotas["astock"] = min_astock
+        for d in ("hkus", "ai"):
+            take = min(quotas[d], need)
+            quotas[d] -= take
+            need -= take
+            if need <= 0:
                 break
-            if quotas[d] < base.get(d, 0):
-                quotas[d] += 1
-                remaining -= 1
-                progressed = True
-        if not progressed:
-            break
-    while remaining > 0:
-        quotas[order[0]] += 1
-        remaining -= 1
+
+    # 总数必须等于 target
+    total = sum(quotas.values())
+    while total > target:
+        for d in ("hkus", "ai"):
+            if quotas[d] > 0 and quotas["astock"] >= min_astock:
+                quotas[d] -= 1
+                total -= 1
+                if total == target:
+                    break
+    while total < target:
+        quotas["astock"] += 1
+        total += 1
+
     return quotas
+
+
+def _quota_brief(target: int, quotas: dict[str, int]) -> str:
+    min_r = _astock_min_ratio()
+    pct = quotas["astock"] / target * 100 if target else 0
+    parts = [f"{DIRECTION_LABEL[d]} {quotas[d]}" for d in DIRECTION_ORDER if quotas.get(d)]
+    return (
+        f"{'，'.join(parts)}（A股占比 {pct:.0f}%，要求 >{min_r:.0%}）"
+    )
 
 
 def _candidate_view(candidates: list[dict], *, limit: int) -> list[dict]:
@@ -164,15 +217,21 @@ def propose_topic_hints(
     candidates: list[dict],
     *,
     recent_topics: list[str],
+    target: int = 3,
 ) -> list[dict]:
     """用一次 Opus 调用，从热点候选提炼问句话题线索。"""
     limit = int(os.environ.get("AIVIDEO_PROPOSE_MAX_CANDIDATES", "28"))
     pool = _interleave_by_direction(candidates)[:limit]
     if not pool:
         return []
-    print(f"  🤖 让 {text_model()} 从 {len(pool)} 条热点提炼问句话题线索…")
+    min_astock = min_astock_slots(target)
+    system = PROPOSE_SYSTEM.replace("【A股最少条数】", str(min_astock))
+    print(
+        f"  🤖 让 {text_model()} 从 {len(pool)} 条热点提炼问句话题线索"
+        f"（目标 {target} 条，至少 {min_astock} 条 A股）…"
+    )
     raw = chat_complete(
-        system=PROPOSE_SYSTEM,
+        system=system,
         user=PROPOSE_USER.format(
             today=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             recent_topics_json=json.dumps(recent_topics or [], ensure_ascii=False, indent=2),
@@ -222,11 +281,15 @@ def select_daily_topics(
 
     recent_items = recent_history()
     target = max(1, target)
-    present = [d for d in DIRECTION_ORDER if any(p.get("direction") == d for p in proposed)]
-    quotas = direction_quotas(target, present or list(DIRECTION_ORDER))
+    quotas = direction_quotas(target)
     selected: list[dict] = []
     picked_dirs: dict[str, int] = {d: 0 for d in DIRECTION_ORDER}
     used_hints: set[str] = set()
+    dir_rank = {"astock": 0, "ai": 1, "hkus": 2}
+    proposed_sorted = sorted(
+        proposed,
+        key=lambda p: (dir_rank.get(str(p.get("direction") or "ai"), 9),),
+    )
 
     def _try_pick(row: dict, *, respect_quota: bool) -> bool:
         if len(selected) >= target:
@@ -258,12 +321,13 @@ def select_daily_topics(
         })
         return True
 
-    for row in proposed:
+    # 阶段1：先按配额选（A股 排在前，优先占满 A股 席位）
+    for row in proposed_sorted:
         if len(selected) >= target:
             break
         _try_pick(row, respect_quota=True)
     if len(selected) < target:
-        for row in proposed:
+        for row in proposed_sorted:
             if len(selected) >= target:
                 break
             _try_pick(row, respect_quota=False)
@@ -309,7 +373,16 @@ def discover_daily_topics(*, days: int, target: int) -> list[dict]:
         pre[direction_bucket(c)] += 1
     print(f"  候选方向分布：A股 {pre['astock']}，AI {pre['ai']}，港美股 {pre['hkus']}")
 
-    proposed = propose_topic_hints(candidates, recent_topics=recent_topics)
+    if os.environ.get("AIVIDEO_DIR_QUOTA", "").strip():
+        print(
+            "  ⚠️  已弃用 AIVIDEO_DIR_QUOTA，请改用 AIVIDEO_DIR_RATIO + AIVIDEO_ASTOCK_MIN_RATIO",
+            file=sys.stderr,
+        )
+
+    plan = direction_quotas(target)
+    print(f"  本轮计划配额：{_quota_brief(target, plan)}")
+
+    proposed = propose_topic_hints(candidates, recent_topics=recent_topics, target=target)
     if not proposed:
         print("未能提炼出话题线索。")
         return []
@@ -320,11 +393,11 @@ def discover_daily_topics(*, days: int, target: int) -> list[dict]:
         print(f"  {i}. [{tag}] {p.get('title_hint')} — {p.get('reason', '')}")
 
     selected = select_daily_topics(proposed, target=target, recent_topics=recent_topics)
-    quotas = direction_quotas(target, [d for d in DIRECTION_ORDER if any(s.get("direction") == d for s in selected)])
-    quota_brief = "，".join(
-        f"{DIRECTION_LABEL[d]} {quotas[d]}" for d in DIRECTION_ORDER if quotas.get(d)
-    )
-    print(f"\n选定 {len(selected)}/{target} 条（配额 {quota_brief}）：")
+    made = {d: 0 for d in DIRECTION_ORDER}
+    for s in selected:
+        made[s.get("direction", "ai")] = made.get(s.get("direction", "ai"), 0) + 1
+    actual_n = len(selected) or 1
+    print(f"\n选定 {len(selected)}/{target} 条（实际 {_quota_brief(actual_n, made)}）：")
     for t in selected:
         tag = DIRECTION_LABEL.get(t.get("direction", ""), "?")
         print(f"  ✓ [{tag}] {t.get('title_hint')}")

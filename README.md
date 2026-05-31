@@ -92,7 +92,7 @@ cat script.json | ./make-from-script.sh -          # 从 stdin 读文案
 
 **每日自动（`./make-and-publish.sh`）与指定话题（`./make-topics.sh`）共用同一套制作形态**（A/B 实验已并入主流程）：
 
-1. **定话题**：自动模式从近 7 天热点里提炼 6–8 条「为什么/意味着什么」问句线索，按 **A股 / AI / 港美股 各 1 条** 配额选出 **3 条**（可用 `AIVIDEO_DIR_QUOTA` 调整）；手动模式见 `topics.txt` 每行一个话题。
+1. **定话题**：自动模式从近 7 天热点里提炼 6–8 条问句线索，再按 **`AIVIDEO_DIR_RATIO` 比例 + `AIVIDEO_ASTOCK_MIN_RATIO`（默认 A股>50%）** 从 `AIVIDEO_MAX_VIDEOS_PER_RUN` 条里选出；手动模式见 `topics.txt`。
 2. **搜文 + 深读**：按话题线索 Exa 搜最相关且够新的文章（默认 7 天窗口；新闻类超过 `AIVIDEO_TOPIC_FRESH_DAYS` 会综合多篇材料自写）。
 3. **改编脚本**（Claude Opus）：拆 **3-4 页正文** + 封面海报；问句标题；结尾引导评论。
 4. **风格校验 + 合规红线**（禁股票代码/荐股等，见 `research.py`）。
@@ -300,7 +300,8 @@ tail -f logs/schedule_stdout.log
 | `DAILY_RUN_COUNT` | `3` | 定时任务每次生成几条（同 `AIVIDEO_MAX_VIDEOS_PER_RUN`） |
 | `DAILY_RUN_DAYS` / `AIVIDEO_DAYS` | `7` | 发现热点候选的时间窗（天） |
 | `AIVIDEO_TOPIC_DAYS` | `7` | 每条话题搜文的时间窗（天） |
-| `AIVIDEO_DIR_QUOTA` | `1,1,1` | 三方向配额 `astock,ai,hkus` |
+| `AIVIDEO_DIR_RATIO` | `0.55,0.25,0.20` | 三方向目标占比 `astock,ai,hkus`（归一化后分配条数） |
+| `AIVIDEO_ASTOCK_MIN_RATIO` | `0.5` | A股条数须 **严格大于** 该占比（3 条→至少 2 条 A股） |
 | `AIVIDEO_TOPIC_FRESH_DAYS` | `2` | 新闻类：候选超过该天数则改综合材料自写 |
 
 发布成功的视频会被移到 `archive/published/YYYYMMDD/`，第二天 `output/` 又是干净的等待新一批。
