@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 把抖音已发布的存量视频批量补发到 小红书/快手/视频号
+# 把抖音已发布的存量视频批量补发到 小红书/视频号
 # 用法:
-#   scripts/backfill-social.sh [xiaohongshu|kuaishou|shipinhao] [--dry-run] [--headed] [--limit N] [--sleep S]
+#   scripts/backfill-social.sh [xiaohongshu|shipinhao] [--dry-run] [--headed] [--limit N] [--sleep S]
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

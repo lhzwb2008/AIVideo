@@ -131,6 +131,15 @@ def main() -> int:
         )
         if result["url"]:
             print(f"✅ 上传成功: {result['url']}", flush=True)
+        elif result.get("mode") == "inbox":
+            print(
+                f"✅ 已上传到 TikTok 收件箱 publish_id={result['publish_id']}",
+                flush=True,
+            )
+            print("   请打开 TikTok App → Inbox/收件箱，粘贴下方文案后发布。", flush=True)
+            print("\n── TikTok 发布文案（复制粘贴）──", flush=True)
+            print(title, flush=True)
+            print("────────────────────────────", flush=True)
         else:
             print(
                 f"✅ 发布完成 publish_id={result['publish_id']} privacy={result['privacy']}",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""统一的多平台发布器：小红书 / 快手 / 视频号（复用 vendor 的 social-auto-upload）。
+"""统一的多平台发布器：小红书 / 视频号（复用 vendor 的 social-auto-upload）。
 
 本脚本需在 social-auto-upload 的 venv 解释器下运行（由 scripts/publish-social.sh
 和 social-login.sh 负责选解释器并注入 PYTHONPATH），因为它直接 import 该项目的
@@ -10,7 +10,7 @@ uploader 模块与 conf。
   check    校验 cookie 是否有效
   publish  发布单条视频
 
-平台 key：xiaohongshu | kuaishou | tencent(视频号)
+平台 key：xiaohongshu | tencent(视频号)
 """
 
 from __future__ import annotations
@@ -28,8 +28,6 @@ PLATFORM_ALIASES = {
     "xiaohongshu": "xiaohongshu",
     "xhs": "xiaohongshu",
     "redbook": "xiaohongshu",
-    "kuaishou": "kuaishou",
-    "ks": "kuaishou",
     "tencent": "tencent",
     "shipinhao": "tencent",
     "weixin": "tencent",
@@ -38,7 +36,6 @@ PLATFORM_ALIASES = {
 
 PLATFORM_LABEL = {
     "xiaohongshu": "小红书",
-    "kuaishou": "快手",
     "tencent": "视频号",
 }
 
@@ -46,7 +43,7 @@ PLATFORM_LABEL = {
 def _norm_platform(value: str) -> str:
     key = PLATFORM_ALIASES.get(value.strip().lower())
     if not key:
-        raise SystemExit(f"未知平台: {value}（可选: xiaohongshu/kuaishou/shipinhao）")
+        raise SystemExit(f"未知平台: {value}（可选: xiaohongshu/shipinhao）")
     return key
 
 
@@ -61,7 +58,6 @@ def _sau_home() -> Path:
 def _account(platform: str) -> str:
     env_key = {
         "xiaohongshu": "SAU_XHS_ACCOUNT",
-        "kuaishou": "SAU_KUAISHOU_ACCOUNT",
         "tencent": "SAU_SHIPINHAO_ACCOUNT",
     }[platform]
     return os.environ.get(env_key, "").strip() or "main"
@@ -97,13 +93,6 @@ def _load_platform(platform: str):
             XIAOHONGSHU_PUBLISH_STRATEGY_IMMEDIATE as IMM,
             XiaoHongShuVideo as Video,
             xiaohongshu_setup as setup,
-        )
-        return Video, setup, IMM
-    if platform == "kuaishou":
-        from uploader.ks_uploader.main import (
-            KUAISHOU_PUBLISH_STRATEGY_IMMEDIATE as IMM,
-            KSVideo as Video,
-            ks_setup as setup,
         )
         return Video, setup, IMM
     if platform == "tencent":
@@ -233,8 +222,8 @@ async def _do_publish(args, platform: str, account_file: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="多平台发布器（小红书/快手/视频号）")
-    parser.add_argument("platform", help="xiaohongshu | kuaishou | shipinhao")
+    parser = argparse.ArgumentParser(description="多平台发布器（小红书/视频号）")
+    parser.add_argument("platform", help="xiaohongshu | shipinhao")
     sub = parser.add_subparsers(dest="action", required=True)
 
     p_login = sub.add_parser("login", help="扫码登录/续期 cookie")

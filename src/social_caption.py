@@ -1,8 +1,7 @@
-"""为小红书 / 快手 / 视频号生成发布文案（标题/简介/标签）。
+"""为小红书 / 视频号生成发布文案（标题/简介/标签）。
 
 复用 douyin_caption 里已沉淀的选题关键词逻辑，但按各平台习惯做风格适配：
 - 小红书：标题短（≤20 字）带情绪钩子，正文 emoji + 行内 #话题，无外链导流。
-- 快手：标题口语化，正文偏简短。
 - 视频号：需要一个 6–16 字的短标题（short_title）。
 """
 
@@ -20,7 +19,6 @@ from douyin_caption import (
 # 各平台标题硬上限（留点余量，避免平台侧再截断把话说半截）
 TITLE_LIMIT = {
     "xiaohongshu": 20,
-    "kuaishou": 28,
     "tencent": 22,
 }
 
@@ -45,7 +43,6 @@ def _truncate(text: str, limit: int) -> str:
 def _evergreen_tags(platform: str) -> list[str]:
     env_key = {
         "xiaohongshu": "XHS_HASHTAGS",
-        "kuaishou": "KUAISHOU_HASHTAGS",
         "tencent": "SHIPINHAO_HASHTAGS",
     }.get(platform, "")
     raw = _env(env_key, "#财经 #股市 #投资 #AI")
@@ -55,7 +52,6 @@ def _evergreen_tags(platform: str) -> list[str]:
 def _desc_suffix(platform: str) -> str:
     env_key = {
         "xiaohongshu": "XHS_DESC_SUFFIX",
-        "kuaishou": "KUAISHOU_DESC_SUFFIX",
         "tencent": "SHIPINHAO_DESC_SUFFIX",
     }.get(platform, "")
     return _strip_urls(_env(env_key))
@@ -64,7 +60,7 @@ def _desc_suffix(platform: str) -> str:
 def build_social_fields(script: dict | None, platform: str) -> dict:
     """返回 {title, desc, tags(list[str]), short_title}。
 
-    platform ∈ {xiaohongshu, kuaishou, tencent}
+    platform ∈ {xiaohongshu, tencent}
     """
     platform = platform.lower()
     brand = _env("AIVIDEO_BRAND_NAME", "AI财知道").replace(" ", "")

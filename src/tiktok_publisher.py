@@ -62,11 +62,12 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _chunk_plan(size: int) -> tuple[int, int]:
-    max_chunk = 10 * 1024 * 1024
-    if size <= max_chunk:
+    """按 TikTok Media Transfer Guide 计算分片。"""
+    max_single = 64 * 1024 * 1024
+    if size <= max_single:
         return size, 1
-    chunk_size = max_chunk
-    total = (size + chunk_size - 1) // chunk_size
+    chunk_size = 10 * 1024 * 1024
+    total = max(1, size // chunk_size)
     return chunk_size, total
 
 
@@ -93,9 +94,12 @@ def _upload_file(upload_url: str, video_path: Path, *, chunk_size: int, total_ch
             print(f"  上传分片 {index + 1}/{total_chunks}", flush=True)
 
 
-def _poll_status(token: str, publish_id: str) -> dict:
+def _poll_status(token: str, publish_id: str, *, mode: str = "direct") -> dict:
     session = _http_session()
     deadline = time.time() + max(120, int(_env("TIKTOK_PUBLISH_TIMEOUT", "900") or "900"))
+    success_statuses = {"PUBLISH_COMPLETE"}
+    if mode == "inbox":
+        success_statuses.add("SEND_TO_USER_INBOX")
     last = {}
     while time.time() < deadline:
         resp = session.post(
@@ -109,13 +113,20 @@ def _poll_status(token: str, publish_id: str) -> dict:
         last = body.get("data") or {}
         status = str(last.get("status") or "")
         print(f"  TikTok 状态: {status}", flush=True)
-        if status == "PUBLISH_COMPLETE":
+        if status in success_statuses:
             return last
         if status == "FAILED":
             reason = last.get("fail_reason") or "unknown"
             raise TikTokPublishError(f"TikTok 发布失败: {reason}")
         time.sleep(5)
     raise TikTokPublishError(f"TikTok 发布超时，最后状态: {last.get('status')}")
+
+
+def _post_mode() -> str:
+    mode = (_env("TIKTOK_POST_MODE", "direct") or "direct").strip().lower()
+    if mode in ("inbox", "draft", "upload"):
+        return "inbox"
+    return "direct"
 
 
 def upload_video(
@@ -128,37 +139,44 @@ def upload_video(
         raise TikTokPublishError(f"视频不存在: {video_path}")
 
     token = get_access_token()
-    creator = query_creator_info(token)
-    privacy = privacy_level or _resolve_privacy(creator)
-    username = str(creator.get("creator_username") or "").strip()
-
+    mode = _post_mode()
     size = video_path.stat().st_size
     chunk_size, total_chunks = _chunk_plan(size)
-    post_info = {
-        "title": title[:2200],
-        "privacy_level": privacy,
-        "disable_duet": _env_bool("TIKTOK_DISABLE_DUET", False),
-        "disable_stitch": _env_bool("TIKTOK_DISABLE_STITCH", False),
-        "disable_comment": _env_bool("TIKTOK_DISABLE_COMMENT", False),
-        "brand_content_toggle": _env_bool("TIKTOK_BRAND_CONTENT", False),
-        "brand_organic_toggle": _env_bool("TIKTOK_BRAND_ORGANIC", False),
+    source_info = {
+        "source": "FILE_UPLOAD",
+        "video_size": size,
+        "chunk_size": chunk_size,
+        "total_chunk_count": total_chunks,
     }
-    if _env_bool("TIKTOK_DECLARE_AIGC", False):
-        post_info["is_aigc"] = True
 
     session = _http_session()
+    if mode == "inbox":
+        init_url = "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/"
+        payload = {"source_info": source_info}
+        privacy = ""
+        username = ""
+    else:
+        creator = query_creator_info(token)
+        privacy = privacy_level or _resolve_privacy(creator)
+        username = str(creator.get("creator_username") or "").strip()
+        post_info = {
+            "title": title[:2200],
+            "privacy_level": privacy,
+            "disable_duet": _env_bool("TIKTOK_DISABLE_DUET", False),
+            "disable_stitch": _env_bool("TIKTOK_DISABLE_STITCH", False),
+            "disable_comment": _env_bool("TIKTOK_DISABLE_COMMENT", False),
+            "brand_content_toggle": _env_bool("TIKTOK_BRAND_CONTENT", False),
+            "brand_organic_toggle": _env_bool("TIKTOK_BRAND_ORGANIC", False),
+        }
+        if _env_bool("TIKTOK_DECLARE_AIGC", False):
+            post_info["is_aigc"] = True
+        init_url = "https://open.tiktokapis.com/v2/post/publish/video/init/"
+        payload = {"post_info": post_info, "source_info": source_info}
+
     resp = session.post(
-        "https://open.tiktokapis.com/v2/post/publish/video/init/",
+        init_url,
         headers=_headers(token),
-        json={
-            "post_info": post_info,
-            "source_info": {
-                "source": "FILE_UPLOAD",
-                "video_size": size,
-                "chunk_size": chunk_size,
-                "total_chunk_count": total_chunks,
-            },
-        },
+        json=payload,
         timeout=_http_timeout(),
     )
     body = resp.json()
@@ -169,18 +187,22 @@ def upload_video(
     if not publish_id or not upload_url:
         raise TikTokPublishError(f"init 未返回 publish_id/upload_url: {body}")
 
-    print("  正在上传视频到 TikTok…", flush=True)
+    label = "草稿到收件箱" if mode == "inbox" else "Direct Post"
+    print(f"  正在上传视频到 TikTok（{label}）…", flush=True)
     _upload_file(upload_url, video_path, chunk_size=chunk_size, total_chunks=total_chunks)
 
-    status = _poll_status(token, publish_id)
+    status = _poll_status(token, publish_id, mode=mode)
     post_ids = status.get("publicaly_available_post_id") or []
     post_id = str(post_ids[0]) if post_ids else ""
     url = f"https://www.tiktok.com/@{username}/video/{post_id}" if username and post_id else ""
+    if mode == "inbox" and not url:
+        url = "inbox:open TikTok app → Inbox to finish posting"
     return {
         "publish_id": publish_id,
         "post_id": post_id,
         "url": url,
         "privacy": privacy,
         "username": username,
+        "mode": mode,
         "status": status,
     }

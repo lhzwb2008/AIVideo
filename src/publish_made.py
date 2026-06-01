@@ -10,7 +10,8 @@ from pathlib import Path
 
 from batch_aivideo import append_history_from_script
 from publish_pipeline import (
-    archive_video,
+    archive_publish_bundle,
+    generate_forum_pack,
     log,
     publish_tiktok,
     publish_youtube,
@@ -47,6 +48,7 @@ def main() -> int:
             log(f"✗ 视频不存在，跳过：{m['video']}")
             continue
         log(f"\n=== [{i}/{len(made)}] 发布：{m.get('title')} ===")
+        generate_forum_pack(script, video)
 
         youtube_url = publish_youtube(video, script, dry_run=args.dry_run)
         tiktok_url = publish_tiktok(video, script, dry_run=args.dry_run)
@@ -62,12 +64,14 @@ def main() -> int:
             continue
 
         append_history_from_script(script)
-        archived = archive_video(video, date_tag=datetime.now().strftime("%Y%m%d"))
+        archived = archive_publish_bundle(video, date_tag=datetime.now().strftime("%Y%m%d"))
         m["published"] = True
-        m["video"] = rel(archived)
+        m["video"] = rel(archived["video"])
         m["youtube_url"] = youtube_url
         m["tiktok_url"] = tiktok_url
-        log(f"已归档：{rel(archived)}")
+        log(f"已归档：{rel(archived['video'])}")
+        if archived.get("forum"):
+            log(f"  论坛图文：{rel(archived['forum'])}/")
         ok += 1
 
     summary_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

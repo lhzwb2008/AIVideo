@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把「抖音已发布」的存量视频批量补发到 小红书 / 快手 / 视频号。
+"""把「抖音已发布」的存量视频批量补发到 小红书 / 视频号。
 
 数据来源：
 - logs/published_videos.json  抖音已发布清单（发布时的 output/ 相对路径）
@@ -27,7 +27,7 @@ from paths import ROOT
 PUBLISHED_DOUYIN = ROOT / "logs" / "published_videos.json"
 MANIFEST = ROOT / "logs" / "video_manifest.jsonl"
 
-PLATFORM_LABEL = {"xiaohongshu": "小红书", "kuaishou": "快手", "shipinhao": "视频号"}
+PLATFORM_LABEL = {"xiaohongshu": "小红书", "shipinhao": "视频号"}
 
 
 def load_env() -> None:
@@ -129,7 +129,7 @@ def main() -> int:
     load_env()
     parser = argparse.ArgumentParser(description="抖音存量视频批量补发到其它平台")
     parser.add_argument("platform", nargs="?", default="xiaohongshu",
-                        help="xiaohongshu | kuaishou | shipinhao（默认小红书）")
+                        help="xiaohongshu | shipinhao（默认小红书）")
     parser.add_argument("--dry-run", action="store_true", help="只列出补发计划")
     parser.add_argument("--headed", action="store_true", help="有头 Chrome")
     parser.add_argument("--limit", type=int, default=0, help="本次最多补发条数（0=不限）")

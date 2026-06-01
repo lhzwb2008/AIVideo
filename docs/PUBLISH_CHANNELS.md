@@ -9,7 +9,7 @@
 2. **YouTube**：若 `AIVIDEO_PUBLISH_YOUTUBE=1`（默认），走 YouTube Data API 自动上传  
 3. **TikTok**：若 `AIVIDEO_PUBLISH_TIKTOK=1`，走 TikTok Content Posting API Direct Post  
 4. **终端打印**：一份通用标题/简介/话题 + 各平台创作者后台链接  
-5. 归档到 `archive/published/YYYYMMDD/`（`--no-publish` 时不发布、不归档）
+5. 归档到 `archive/published/YYYYMMDD/`：`视频.mp4` + 同名文件夹（`post.md` / `cover.jpg` / `cover_landscape.jpg` / `images/`）；`--no-publish` 时不发布、不归档
 
 ---
 
@@ -39,8 +39,9 @@
 |------|----------------------|--------------|------|
 | **抖音** | https://creator.douyin.com/creator-micro/content/upload | ❌ 无个人开放 API | 企业/机构有内容分发合作，不对普通创作者开放 |
 | **小红书** | https://creator.xiaohongshu.com/publish/publish?from=homepage | ❌ 无 | 开放平台偏电商/服务商；**严禁脚本模拟发帖** |
-| **快手** | https://cp.kuaishou.com/article/publish/video | ⚠️ 仅合作伙伴 | 普通创作者需手动或官方 App |
 | **视频号** | https://channels.weixin.qq.com/platform/post/create | ❌ 无 | 微信生态内手动发布 |
+| **雪球（图文）** | https://xueqiu.com/ | ❌ 无 | 用论坛图文包手动发；首页推荐用横封面 |
+| **东方财富（股吧/财富号）** | https://mpservice.eastmoney.com/ | ❌ 无 | 用论坛图文包手动发 |
 | **B 站** | https://member.bilibili.com/platform/upload/video/frame | ⚠️ 非公开 OAuth | 开放平台主要面向小程序/直播等；视频投稿多为 Cookie 级非官方接口，有封号风险 |
 | **微博** | https://weibo.com/ | ❌ 无短视频专用 API | 视频随博文手动发 |
 | **TikTok（未接 API 时）** | https://www.tiktok.com/upload | 见上「自动发布」 | 可手动；接 API 后改自动 |
@@ -71,7 +72,7 @@
 2. **Instagram Reels** — 需 Meta 商业账号，流程重  
 3. **B 站** — 受众匹配，但缺乏稳定的官方 OAuth 投稿 API，暂不建议自动化  
 
-国内抖音 / 小红书 / 快手 / 视频号：**短期只做「生成文案 + 手动发布」**，不要再用浏览器脚本顶风作案。
+国内抖音 / 小红书 / 视频号（及雪球 / 东方财富图文）：**短期只做「生成文案 + 手动发布」**，不要再用浏览器脚本顶风作案。
 
 ---
 

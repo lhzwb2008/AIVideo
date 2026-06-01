@@ -184,7 +184,7 @@ src/
   publish_youtube.py / youtube_*.py  # YouTube Data API 发布
   publish_tiktok.py / tiktok_*.py    # TikTok Content Posting API 发布
   douyin_*.py / publish_douyin.py    # 抖音（独立调试，不进主流程）
-  social_publisher.py # 小红书/快手/视频号（独立调试，不进主流程）
+  social_publisher.py # 小红书/视频号（独立调试，不进主流程）
   backfill_social.py # 把存量视频批量补发到其它平台（慎用）
   apply_sau_patches.py # 给 vendor 打兼容补丁（抖音登录 + 小红书话题容错）
 ```
@@ -199,7 +199,7 @@ src/
 4. 终端打印**一份**通用文案 + 创作者后台链接
 5. 归档（`--no-publish` 时不发布、不归档）
 
-国内平台（抖音/小红书/快手/视频号）**仅手动发布**，勿用浏览器脚本自动发帖。
+国内平台（抖音/小红书/视频号，及雪球/东方财富图文）**仅手动发布**，勿用浏览器脚本自动发帖。
 
 完整渠道对照见 **[docs/PUBLISH_CHANNELS.md](docs/PUBLISH_CHANNELS.md)**。
 
@@ -232,8 +232,9 @@ src/
 |------|------------|
 | 抖音 | https://creator.douyin.com/creator-micro/content/upload |
 | 小红书 | https://creator.xiaohongshu.com/publish/publish?from=homepage |
-| 快手 | https://cp.kuaishou.com/article/publish/video |
 | 视频号 | https://channels.weixin.qq.com/platform/post/create |
+| 雪球（图文） | https://xueqiu.com/ |
+| 东方财富（股吧/财富号·图文） | https://mpservice.eastmoney.com/ |
 
 独立调试（不进主流程，有封号风险）：`./scripts/publish-douyin.sh`、`./scripts/publish-xiaohongshu.sh` 等。
 
@@ -257,12 +258,6 @@ src/
 
 ```
 每天用大白话讲清一个 AI 和财经热点，A股·美股·港股都聊。看懂趋势，不追涨杀跌。内容仅为分享，不构成投资建议。
-```
-
-**快手（个人简介 ≤60 字）**
-
-```
-每天一个 AI 和财经的为什么，A股·美股·港股都聊，用大白话讲清。内容仅供参考，不构成投资建议。
 ```
 
 **小红书（个人简介，支持换行/emoji；资料审核敏感，避免荐股/收益/带单等字眼）**
@@ -314,7 +309,17 @@ AI财知道。每天梳理一个 AI 与财经热点，拆解财报与基本面�
 | `AIVIDEO_ASTOCK_MIN_RATIO` | `0.5` | A股条数须 **严格大于** 该占比（3 条→至少 2 条 A股） |
 | `AIVIDEO_TOPIC_FRESH_DAYS` | `2` | 新闻类：候选超过该天数则改综合材料自写 |
 
-发布成功的视频会被移到 `archive/published/YYYYMMDD/`，第二天 `output/` 又是干净的等待新一批。
+发布成功后，`output/` 里的每条成片会连同**同名图文文件夹**一起移到 `archive/published/YYYYMMDD/`：
+
+```
+archive/published/20260531/
+  20260531_193024.mp4
+  20260531_193024/          ← 论坛手动发文：post.md、cover.jpg、cover_landscape.jpg、images/
+  20260531_192557.mp4
+  20260531_192557/
+```
+
+合成后自动生成图文包（`AIVIDEO_FORUM_POST=0` 可关闭）。YouTube/TikTok 走 API；抖音/小红书/视频号及雪球/东财等请从归档目录手动发布。
 
 ## 环境变量
 

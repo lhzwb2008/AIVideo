@@ -108,24 +108,73 @@ def resolve_script_for_video(video_path: Path, script_arg: str | None) -> Path |
     return by_mtime
 
 
+def _render_cover_like_video(script_path: Path, script: dict) -> Path | None:
+    """按 video_compose 规则生成开场 cover.png（含品牌角标 / 标题兜底）。"""
+    from video_compose import render_full_cover, render_title_cover
+
+    stem = script_path.stem
+    cache = ROOT / "logs" / "youtube_thumbs" / f"{stem}_composed_cover.png"
+    rel = script.get("cover_image")
+    if rel:
+        ai = Path(rel)
+        if not ai.is_absolute():
+            ai = ROOT / ai
+    else:
+        ai = ROOT / "logs" / "images" / stem / "cover.png"
+    if ai.is_file():
+        render_full_cover(ai, out_path=cache)
+        return cache if cache.is_file() else None
+
+    slides = script.get("slides") or []
+    cover_slide = slides[0] if slides else {}
+    title_text = str(script.get("title") or "").strip()
+    if not title_text:
+        return None
+    hero_rel = cover_slide.get("image_path")
+    if hero_rel:
+        hero = Path(hero_rel)
+        if not hero.is_absolute():
+            hero = ROOT / hero
+    else:
+        hero = ROOT / "logs" / "images" / stem / "slide_01.png"
+    render_title_cover(
+        title=title_text,
+        subtitle=str(cover_slide.get("subtitle") or "").strip(),
+        out_path=cache,
+        hero_image=hero if hero.is_file() else None,
+    )
+    return cache if cache.is_file() else None
+
+
 def resolve_cover_image(script_path: Path | None, video_path: Path) -> Path | None:
-    """封面图：脚本 cover.png / cover_image → 视频首帧（首页）。"""
+    """封面图：与成片开场一致（compose/cover.png → 同款渲染 → 成片首帧 → 标题兜底）。"""
     if script_path and script_path.is_file():
+        composed = ROOT / "logs" / "compose" / script_path.stem / "cover.png"
+        if composed.is_file():
+            return composed
         script = load_script(script_path)
         if script:
             rel = script.get("cover_image")
             if rel:
-                p = Path(rel)
-                if not p.is_absolute():
-                    p = ROOT / p
-                if p.is_file():
-                    return p
-        img_dir = ROOT / "logs" / "images" / script_path.stem
-        for name in ("cover.png", "slide_00.png", "slide_01.png"):
-            p = img_dir / name
-            if p.is_file():
-                return p
+                ai = Path(rel)
+                if not ai.is_absolute():
+                    ai = ROOT / ai
+            else:
+                ai = ROOT / "logs" / "images" / script_path.stem / "cover.png"
+            if ai.is_file():
+                from video_compose import render_full_cover
 
+                cache = ROOT / "logs" / "youtube_thumbs" / f"{script_path.stem}_composed_cover.png"
+                render_full_cover(ai, out_path=cache)
+                if cache.is_file():
+                    return cache
+            frame = extract_first_frame(video_path)
+            if frame:
+                return frame
+            rendered = _render_cover_like_video(script_path, script)
+            if rendered:
+                return rendered
+            return None
     return extract_first_frame(video_path)
 
 

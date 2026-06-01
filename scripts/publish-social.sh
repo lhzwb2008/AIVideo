@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 发布单条 MP4 到 小红书 / 快手 / 视频号（复用 vendor/social-auto-upload）
+# 发布单条 MP4 到 小红书 / 视频号（复用 vendor/social-auto-upload）
 # 用法:
 #   scripts/publish-social.sh <platform> <video.mp4> [--script logs/xxx.json] [--dry-run] [--headed]
-#   platform: xiaohongshu | kuaishou | shipinhao
+#   platform: xiaohongshu | shipinhao
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -16,7 +16,7 @@ if [[ ! -x "$SAU_PY" ]]; then
   exit 1
 fi
 if [[ $# -lt 1 ]]; then
-  echo "用法: scripts/publish-social.sh <xiaohongshu|kuaishou|shipinhao> <video.mp4> [opts]" >&2
+  echo "用法: scripts/publish-social.sh <xiaohongshu|shipinhao> <video.mp4> [opts]" >&2
   exit 2
 fi
 

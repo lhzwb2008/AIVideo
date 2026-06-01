@@ -9,14 +9,32 @@ from pathlib import Path
 from douyin_caption import build_sau_fields
 from paths import ROOT
 from publish_resolve import load_script
+from tiktok_caption import build_tiktok_fields
+from youtube_caption import build_youtube_fields
 
-UPLOAD_URLS: list[tuple[str, str]] = [
-    ("抖音", "https://creator.douyin.com/creator-micro/content/upload"),
-    ("小红书", "https://creator.xiaohongshu.com/publish/publish?from=homepage"),
-    ("快手", "https://cp.kuaishou.com/article/publish/video"),
-    ("视频号", "https://channels.weixin.qq.com/platform/post/create"),
-    ("TikTok", "https://www.tiktok.com/upload"),
-    ("YouTube", "https://studio.youtube.com/"),
+# 需要手动上传「视频」的国内平台：(名称, 后台地址, 一句话操作提示)
+VIDEO_MANUAL_PLATFORMS: list[tuple[str, str, str]] = [
+    (
+        "抖音",
+        "https://creator.douyin.com/creator-micro/content/upload",
+        "标题用上面「标题」，简介贴「简介」，话题加上「话题」（≤5 个）",
+    ),
+    (
+        "小红书",
+        "https://creator.xiaohongshu.com/publish/publish?from=homepage",
+        "标题≤20 字带钩子，正文贴「简介」，行内加「话题」",
+    ),
+    (
+        "视频号",
+        "https://channels.weixin.qq.com/platform/post/create",
+        "短标题（6–16 字），描述贴「简介」，加「话题」",
+    ),
+]
+
+# 需要手动发「图文」的财经论坛：(名称, 发布地址)
+FORUM_MANUAL_PLATFORMS: list[tuple[str, str]] = [
+    ("雪球", "https://xueqiu.com/"),
+    ("东方财富(股吧/财富号)", "https://mpservice.eastmoney.com/"),
 ]
 
 
@@ -45,38 +63,110 @@ def print_manual_publish_pack(
 ) -> None:
     script = _load_script_dict(script_path) or load_script(script_path)
     fields = build_publish_fields(script)
+    yt_fields = build_youtube_fields(script)
+    tk_fields = build_tiktok_fields(script)
     tags = fields.get("tags") or ""
     hashtags = " ".join(f"#{t.strip()}" for t in tags.split(",") if t.strip())
+    yt_hashtags = " ".join(f"#{t}" for t in yt_fields.get("tags") or [])
+
+    video_rel = ""
+    forum_rel = ""
+    has_forum = False
+    if video_path:
+        try:
+            video_rel = str(video_path.resolve().relative_to(ROOT.resolve()))
+        except ValueError:
+            video_rel = str(video_path)
+        forum_dir = video_path.parent / video_path.stem
+        has_forum = forum_dir.is_dir() and (forum_dir / "post.md").is_file()
+        if has_forum:
+            try:
+                forum_rel = str(forum_dir.resolve().relative_to(ROOT.resolve()))
+            except ValueError:
+                forum_rel = str(forum_dir)
 
     print("\n" + "═" * 58, flush=True)
     print("📋 发布文案（各平台通用，复制后按需微调）", flush=True)
-    if video_path:
-        try:
-            rel = video_path.resolve().relative_to(ROOT.resolve())
-            print(f"视频: {rel}", flush=True)
-        except ValueError:
-            print(f"视频: {video_path}", flush=True)
-    if youtube_url:
-        print(f"YouTube 已自动发布: {youtube_url}", flush=True)
-    if tiktok_url:
-        print(f"TikTok 已自动发布: {tiktok_url}", flush=True)
-    if skip_auto_note and not youtube_url and not tiktok_url:
-        print("（本次未自动发布 API 平台）", flush=True)
+    if video_rel:
+        print(f"视频: {video_rel}", flush=True)
+    if forum_rel:
+        print(f"论坛图文: {forum_rel}/  （post.md + cover.jpg + cover_landscape.jpg）", flush=True)
     print("═" * 58, flush=True)
 
     print(f"\n标题: {fields['title']}", flush=True)
     print(f"\n简介:\n{fields['desc']}", flush=True)
     if tags:
-        print(f"\n标签: {tags}", flush=True)
+        print(f"\n标签（抖音/小红书等）: {tags}", flush=True)
     if hashtags:
         print(f"话题: {hashtags}", flush=True)
 
-    print("\n创作者后台（收藏）:", flush=True)
-    for name, url in UPLOAD_URLS:
-        print(f"  {name}: {url}", flush=True)
+    print("\n【YouTube 自动发布】", flush=True)
+    print(f"标题: {yt_fields['title']}", flush=True)
+    print(f"标签: {', '.join(yt_fields.get('tags') or [])}", flush=True)
+    if yt_hashtags:
+        print(f"话题: {yt_hashtags}", flush=True)
+
+    print("\n【TikTok · 复制到 App 发布页】", flush=True)
+    print("（收件箱草稿不会自动带文案，请整段复制粘贴）", flush=True)
+    print(tk_fields["title"], flush=True)
+
+    _print_todo_checklist(
+        video_rel=video_rel,
+        forum_rel=forum_rel,
+        has_forum=has_forum,
+        youtube_url=youtube_url,
+        tiktok_url=tiktok_url,
+        skip_auto_note=skip_auto_note,
+    )
+
+
+def _print_todo_checklist(
+    *,
+    video_rel: str,
+    forum_rel: str,
+    has_forum: bool,
+    youtube_url: str,
+    tiktok_url: str,
+    skip_auto_note: bool,
+) -> None:
+    """流程结束后的「待办清单」，提醒哪些需要手动发，免得忘。"""
+    print("\n" + "═" * 58, flush=True)
+    print("✅ 发布 TODO 清单（按顺序操作；国内平台务必真人上传，勿用脚本）", flush=True)
+    print("═" * 58, flush=True)
+
+    # 1) 自动发布平台状态
+    print("\n— 自动发布（API，无需手动）—", flush=True)
+    if skip_auto_note and not youtube_url and not tiktok_url:
+        print("  · 本次跳过自动发布（--no-publish / 预演）", flush=True)
+    else:
+        if youtube_url:
+            print(f"  [✓] YouTube 已发布: {youtube_url}", flush=True)
+        else:
+            print("  [!] YouTube 未发布或失败，必要时手动补发: https://studio.youtube.com/", flush=True)
+        if tiktok_url:
+            print(f"  [✓] TikTok 已发布: {tiktok_url}", flush=True)
+        else:
+            print("  [→] TikTok 已上传到收件箱草稿 —— 打开 App，", flush=True)
+            print("      粘贴上面【TikTok】整段文案后点发布", flush=True)
+
+    # 2) 手动发布视频（抖音/小红书/视频号）
+    src_hint = f"（上传成片 {video_rel}）" if video_rel else ""
+    print(f"\n— 手动发布·视频 {src_hint}—", flush=True)
+    print("  复制上面「标题 / 简介 / 话题」，按各平台习惯微调：", flush=True)
+    for name, url, tip in VIDEO_MANUAL_PLATFORMS:
+        print(f"  [ ] {name}: {url}", flush=True)
+        print(f"        {tip}", flush=True)
+
+    # 3) 手动发布图文（雪球/东方财富）
+    if has_forum:
+        print(f"\n— 手动发布·图文（用 {forum_rel}/post.md + cover.jpg）—", flush=True)
+        print("  post.md 第一行做标题，正文整段贴入，按【插入配图 N】上传 images/0N.jpg：", flush=True)
+        for name, url in FORUM_MANUAL_PLATFORMS:
+            print(f"  [ ] {name}: {url}", flush=True)
+        print("        雪球首页推荐位可改用 cover_landscape.jpg（16:9 横图）", flush=True)
 
     print("\n" + "─" * 58, flush=True)
-    print("提示: 国内平台请真人手动上传与互动，勿用脚本模拟浏览器。", flush=True)
+    print("提示: 财经平台风控严，简介勿出现「荐股/收益/带单」等字眼。", flush=True)
     print("─" * 58 + "\n", flush=True)
 
 

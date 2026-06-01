@@ -122,7 +122,7 @@ def publish_tiktok(video: Path, script_path: Path, *, dry_run: bool) -> str:
         if url:
             log(f"  [TikTok] {url}")
         elif not dry_run:
-            log("  [TikTok] 发布完成（暂无公开链接，可能仍在审核或未过 App Review）")
+            log("  [TikTok] 已上传到收件箱，请在 App 内粘贴终端文案后发布")
         return url
     except Exception as exc:  # noqa: BLE001
         log(f"  ⚠️ [TikTok] 发布失败（不影响成片/手动发布）：{exc}")
@@ -130,13 +130,47 @@ def publish_tiktok(video: Path, script_path: Path, *, dry_run: bool) -> str:
 
 
 def archive_video(video: Path, *, date_tag: str) -> Path:
+    """仅归档 mp4（兼容旧调用）；主流程请用 archive_publish_bundle。"""
+    return archive_publish_bundle(video, date_tag=date_tag)["video"]
+
+
+def archive_publish_bundle(video: Path, *, date_tag: str) -> dict[str, Path | None]:
+    """归档 mp4 + 同名图文文件夹到 archive/published/YYYYMMDD/。"""
+    from forum_manual_pack import forum_dir_for_video
+
     dest_dir = ROOT / "archive" / "published" / date_tag
     dest_dir.mkdir(parents=True, exist_ok=True)
-    target = dest_dir / video.name
-    if target.exists():
-        target = dest_dir / f"{video.stem}_{datetime.now().strftime('%H%M%S')}{video.suffix}"
-    shutil.move(str(video), str(target))
-    return target
+    stem = video.stem
+
+    video_target = dest_dir / video.name
+    if video_target.exists():
+        video_target = dest_dir / f"{stem}_{datetime.now().strftime('%H%M%S')}{video.suffix}"
+    shutil.move(str(video), str(video_target))
+
+    forum_target: Path | None = None
+    forum_src = forum_dir_for_video(video)
+    if forum_src.is_dir() and forum_src.resolve() != dest_dir.resolve():
+        forum_target = dest_dir / stem
+        if forum_target.exists():
+            forum_target = dest_dir / f"{stem}_forum_{datetime.now().strftime('%H%M%S')}"
+        shutil.move(str(forum_src), str(forum_target))
+
+    return {"video": video_target, "forum": forum_target}
+
+
+def generate_forum_pack(script_path: Path, video: Path) -> Path | None:
+    if os.environ.get("AIVIDEO_FORUM_POST", "1").strip().lower() in ("0", "false", "no"):
+        return None
+    try:
+        from forum_manual_pack import build_forum_pack, forum_dir_for_video
+
+        forum_dir = forum_dir_for_video(video)
+        build_forum_pack(script_path, video, forum_dir)
+        log(f"论坛图文：{rel(forum_dir)}/（post.md + cover.jpg + cover_landscape.jpg + images/）")
+        return forum_dir
+    except Exception as exc:  # noqa: BLE001
+        log(f"论坛图文生成跳过: {exc}")
+        return None
 
 
 def pipeline_after_script(
@@ -155,6 +189,7 @@ def pipeline_after_script(
     run([str(ROOT / "scripts" / "run-enrich-images.sh"), str(script_path)], label="生图")
     run([str(ROOT / "scripts" / "run-compose.sh"), str(script_path)], label="合成")
     video = latest_video()
+    generate_forum_pack(script_path, video)
 
     if skip_publish:
         log(f"\n=== [{index}/{target}] 跳过自动发布（--no-publish）===")
@@ -198,12 +233,16 @@ def pipeline_after_script(
     )
 
     append_history_fn(script_path)
-    archived = archive_video(video, date_tag=datetime.now().strftime("%Y%m%d"))
-    log(f"已归档：{rel(archived)}")
+    date_tag = datetime.now().strftime("%Y%m%d")
+    archived = archive_publish_bundle(video, date_tag=date_tag)
+    log(f"已归档：{rel(archived['video'])}")
+    if archived.get("forum"):
+        log(f"  论坛图文：{rel(archived['forum'])}/")
 
     return {
         "title": title,
-        "video": rel(archived),
+        "video": rel(archived["video"]),
+        "forum": rel(archived["forum"]) if archived.get("forum") else "",
         "script": rel(script_path),
         "published": bool(youtube_url or tiktok_url),
         "youtube_url": youtube_url,

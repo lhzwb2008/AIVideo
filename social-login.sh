@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 扫码登录 / 续期 小红书 / 快手 / 视频号 cookie（复用 vendor/social-auto-upload）
+# 扫码登录 / 续期 小红书 / 视频号 cookie（复用 vendor/social-auto-upload）
 # 用法:
 #   ./social-login.sh <platform> [--check] [--headless]
-#   platform: xiaohongshu | kuaishou | shipinhao
+#   platform: xiaohongshu | shipinhao
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
@@ -16,7 +16,7 @@ if [[ ! -x "$SAU_PY" ]]; then
   exit 1
 fi
 if [[ $# -lt 1 ]]; then
-  echo "用法: ./social-login.sh <xiaohongshu|kuaishou|shipinhao> [--check] [--headless]" >&2
+  echo "用法: ./social-login.sh <xiaohongshu|shipinhao> [--check] [--headless]" >&2
   exit 2
 fi
 

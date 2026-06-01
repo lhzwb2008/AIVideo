@@ -14,7 +14,8 @@ from pathlib import Path
 
 from paths import ROOT
 
-SCOPES = ["user.info.basic", "video.publish"]
+# Sandbox 默认只有 video.upload；Direct Post 需 App Review 通过后才有 video.publish
+SCOPES = ["user.info.basic", "video.upload"]
 AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
 TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
 
@@ -271,8 +272,19 @@ def run_login(*, force: bool = False) -> int:
 
 
 def run_check() -> int:
+    token_data = _load_token_file()
+    if not token_data:
+        raise TikTokAuthError(f"未找到 token: {token_path()}\n请先运行: ./tiktok-login.sh")
+    scopes = str(token_data.get("scope") or "")
+    mode = (_env("TIKTOK_POST_MODE", "direct") or "direct").strip().lower()
+    if mode in ("inbox", "draft", "upload"):
+        if "video.upload" not in scopes:
+            raise TikTokAuthError(f"token 缺少 video.upload scope: {scopes}")
+        print(f"✅ TikTok token 有效 — scope: {scopes}（inbox 模式）", flush=True)
+        print("   上传成功后请在 TikTok App → 收件箱/Inbox 完成发布。", flush=True)
+        return 0
+
     token = get_access_token()
-    cfg = _load_client_config()
     import requests
 
     session = _http_session()

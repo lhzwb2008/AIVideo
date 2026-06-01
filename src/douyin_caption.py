@@ -158,7 +158,12 @@ def build_sau_fields(script: dict | None) -> dict[str, str]:
     brand = _env("AIVIDEO_BRAND_NAME", "AI财知道").replace(" ", "")
     keyword = (script or {}).get("keyword", "").strip()
     raw_title = ((script or {}).get("title") or keyword or "AI财经热点").strip()
-    title = raw_title if brand and brand in raw_title else (f"【{brand}】{raw_title}" if brand else raw_title)
+    # 标题默认只用脚本问句（与成片一致）；品牌放简介区即可，标题带品牌易触发平台限流/封禁
+    prefix = _env("DOUYIN_TITLE_PREFIX", "0").lower()
+    if prefix in ("1", "true", "yes", "on") and brand and brand not in raw_title:
+        title = f"【{brand}】{raw_title}"
+    else:
+        title = raw_title
 
     topic_kw = _topic_keywords(script)
 
