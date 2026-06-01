@@ -31,8 +31,8 @@ def main() -> int:
     parser.add_argument(
         "--days",
         type=int,
-        default=int(os.environ.get("AIVIDEO_DAYS", os.environ.get("DAILY_RUN_DAYS", "7"))),
-        help="发现热点候选的时间窗（天）；单条搜文用 AIVIDEO_TOPIC_DAYS（默认 7）",
+        default=int(os.environ.get("AIVIDEO_DAYS", os.environ.get("DAILY_RUN_DAYS", "3"))),
+        help="发现热点候选的时间窗（天）；单条搜文用 AIVIDEO_TOPIC_DAYS（默认 3）",
     )
     parser.add_argument("--check", action="store_true", help="（已废弃，保留兼容）")
     parser.add_argument("--dry-run", action="store_true", help="只预演发布参数，不真正发布/归档")
@@ -40,7 +40,7 @@ def main() -> int:
     args = parser.parse_args()
 
     target = max(1, args.count)
-    topic_days = int(os.environ.get("AIVIDEO_TOPIC_DAYS", "7"))
+    topic_days = int(os.environ.get("AIVIDEO_TOPIC_DAYS", "3"))
 
     topics = discover_daily_topics(days=args.days, target=target)
     if not topics:

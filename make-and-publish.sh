@@ -9,7 +9,8 @@ cd "$ROOT"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 COUNT="${1:-${AIVIDEO_MAX_VIDEOS_PER_RUN:-3}}"
-# 发现热点候选的时间窗；单条话题搜文用 AIVIDEO_TOPIC_DAYS（默认 7）
-DAYS="${AIVIDEO_DAYS:-${DAILY_RUN_DAYS:-7}}"
+# 发现热点候选的时间窗；单条话题搜文用 AIVIDEO_TOPIC_DAYS（默认 3）
+# 每天跑一次，窗口收紧到近 3 天（兼顾新鲜度与 Exa published_at 的索引误差）
+DAYS="${AIVIDEO_DAYS:-${DAILY_RUN_DAYS:-3}}"
 
 python3 "$ROOT/src/make_publish.py" --count "$COUNT" --days "$DAYS"

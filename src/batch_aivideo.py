@@ -19,7 +19,14 @@ from research import load_env, run_article_research
 PROGRESS_FILE = ROOT / "logs" / "batch_progress.json"
 BATCH_LOG = ROOT / "logs" / "batch_run.log"
 HISTORY_FILE = ROOT / "logs" / "article_history.json"
-HISTORY_WINDOW_DAYS = int(os.environ.get("BATCH_HISTORY_DAYS", "7"))
+# 去重窗口默认跟随搜索窗口（AIVIDEO_DAYS/DAILY_RUN_DAYS，默认 3 天），
+# 这样「搜索近 N 天」与「去重保留 N 天」始终一致；需要时用 BATCH_HISTORY_DAYS 单独覆盖。
+HISTORY_WINDOW_DAYS = int(
+    os.environ.get(
+        "BATCH_HISTORY_DAYS",
+        os.environ.get("AIVIDEO_DAYS", os.environ.get("DAILY_RUN_DAYS", "3")),
+    )
+)
 
 _COMPANY_ALIASES = {
     "pdd": ("pdd", "pdd holdings", "pinduoduo", "拼多多"),

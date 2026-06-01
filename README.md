@@ -238,7 +238,7 @@ src/
 
 独立调试（不进主流程，有封号风险）：`./scripts/publish-douyin.sh`、`./scripts/publish-xiaohongshu.sh` 等。
 
-记录：`logs/article_history.json`（选题去重，默认近 7 天）；`BATCH_HISTORY_DAYS` 可调。
+记录：`logs/article_history.json`（选题去重，默认跟随搜索窗口 `AIVIDEO_DAYS`，即近 3 天）；`BATCH_HISTORY_DAYS` 可单独覆盖。
 
 ## 各平台账号简介（复制用）
 
