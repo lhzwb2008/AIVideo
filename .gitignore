@@ -2,6 +2,10 @@
 .env
 .env.local
 .env.*.local
+credentials/youtube/client_secret.json
+credentials/youtube/*_token.json
+logs/youtube_thumbs/
+experiments/runs/
 
 # 产物
 output/

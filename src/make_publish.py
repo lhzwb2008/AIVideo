@@ -34,7 +34,7 @@ def main() -> int:
         default=int(os.environ.get("AIVIDEO_DAYS", os.environ.get("DAILY_RUN_DAYS", "7"))),
         help="发现热点候选的时间窗（天）；单条搜文用 AIVIDEO_TOPIC_DAYS（默认 7）",
     )
-    parser.add_argument("--check", action="store_true", help="发布前检查抖音登录态")
+    parser.add_argument("--check", action="store_true", help="（已废弃，保留兼容）")
     parser.add_argument("--dry-run", action="store_true", help="只预演发布参数，不真正发布/归档")
     parser.add_argument("--no-publish", action="store_true", help="只生成视频，跳过发布")
     args = parser.parse_args()

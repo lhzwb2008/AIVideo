@@ -1,12 +1,11 @@
 # AI财知道
 
-**每天一个 AI 财经为什么**。从 AI、财经、美股和中概股热点里挑最值得解释的一件事，改编成问句标题的中文短视频。Cursor Cloud Agent 联网搜索 + 深读，Claude Opus 评审与改编，AiHubMix 生图，本地 TTS + ffmpeg 合成竖屏视频，自动发布抖音并联动发布小红书（可选快手 / 视频号），成功后归档。
+**每天一个 AI 财经为什么**。从 AI、财经、美股和中概股热点里挑最值得解释的一件事，改编成问句标题的中文短视频。Cursor Cloud Agent 联网搜索 + 深读，Claude Opus 评审与改编，AiHubMix 生图，本地 TTS + ffmpeg 合成竖屏视频，自动发布抖音并联动 YouTube / 小红书（可选），成功后归档。
 
 ```bash
 ./make-and-publish.sh    # 自动选题：生成并自动发布，成功后归档
-./make-topics.sh "1 小鹏财报，2 韬定律是什么，3 opus4.8发布"   # 指定话题：逐个生成并发布
+./make-topics.sh "1 小鹏财报，2 韬定律是什么，3 opus4.8发布"   # 指定话题：逐个生成
 ./make-from-script.sh script.json   # 直接喂文案：跳过调研/改编，文案直接做视频
-./schedule.sh            # 安装/重启每日定时任务
 ```
 
 ## 三种工作模式
@@ -132,13 +131,12 @@ cat script.json | ./make-from-script.sh -          # 从 stdin 读文案
 
 | 步骤 | 命令 | 产出 |
 |------|------|------|
-| Make + publish | `./make-and-publish.sh` | 热点→问句话题（默认 3 条）+ 搜文深读 + 改编 + 生图 + 合成 + 发布 + 归档 |
-| Make from topics | `./make-topics.sh` | 指定话题 + 改编 + 生图 + 合成 + 发布 + 归档 |
-| Make from script | `./make-from-script.sh script.json` | **跳过调研/改编**，现成文案 + 生图 + 合成 + 发布 + 归档 |
-| Schedule | `./schedule.sh` | 安装/重启每日定时任务，自动制作发布并归档 |
+| Make + publish | `./make-and-publish.sh` | 热点→问句话题（默认 3 条）+ 搜文深读 + 改编 + 生图 + 合成 + 抖音 + 联动 YouTube/小红书 + 归档 |
+| Make from topics | `./make-topics.sh` | 指定话题 + 改编 + 生图 + 合成 + 抖音 + 联动 YouTube/小红书 + 归档 |
+| Make from script | `./make-from-script.sh script.json` | **跳过调研/改编**，现成文案 + 生图 + 合成 + 抖音 + 联动 YouTube/小红书 + 归档 |
 | Debug image only | `./scripts/run-enrich-images.sh logs/last_script.json` | 写入 `slide.image_path` |
 | Debug compose only | `./scripts/run-compose.sh logs/last_script.json` | TTS + ffmpeg → `output/*.mp4` |
-| Debug publish only | `./scripts/publish-douyin.sh output/xxx.mp4 --script logs/xxx.json` | 调试用，正常不用手动执行 |
+| Debug YouTube | `./scripts/publish-youtube.sh output/xxx.mp4 --script logs/xxx.json` | 单条 YouTube 调试 |
 
 调研中间产物（都在 `logs/`）：
 
@@ -179,40 +177,71 @@ src/
   video_compose.py   # PIL 底图 + ffmpeg 合成 + 字幕
   cursor_client.py   # Cursor Cloud Agents REST + SSE
   batch_aivideo.py   # 批量编排（近 7 天 URL + 标题/主题去重）
-  make_publish.py    # 自动选题一键制作发布编排（含抖音成功后联动多平台 publish_social）
-  douyin_*.py / sau_client.py / publish_douyin.py  # 抖音发布（独立 patchright）
+  make_publish.py    # 自动选题一键制作发布编排
+  publish_pipeline.py # 生图→合成→抖音→归档→联动 YouTube/小红书
+  publish_resolve.py # 按视频匹配脚本与封面（YouTube 等共用）
+  publish_youtube.py / youtube_*.py  # YouTube Data API 发布
+  douyin_*.py / sau_client.py / publish_douyin.py  # 抖音发布（主流程 + 单条调试）
   douyin_caption.py  # 抖音标题/简介/话题生成
   social_caption.py  # 小红书/快手/视频号风格文案生成（复用 douyin_caption）
-  social_publisher.py# 统一多平台发布器（直连 vendor/social-auto-upload 的 uploader）
-  backfill_social.py # 把抖音存量视频批量补发到其它平台
+  social_publisher.py # 小红书/快手/视频号（主流程联动 + 单条调试）
+  backfill_social.py # 把存量视频批量补发到其它平台（慎用）
   apply_sau_patches.py # 给 vendor 打兼容补丁（抖音登录 + 小红书话题容错）
 ```
 
-## 抖音发布（与制作分离）
+## 发布策略
 
-抖音无开放 API，需 Playwright + 扫码 cookie。
+**主流程**（`make-and-publish.sh` / `make-topics.sh` / `make-from-script.sh` 共用 `publish_pipeline.py`）：
+
+1. **抖音**（必成功，否则整条失败）
+2. **归档**到 `archive/published/YYYYMMDD/`
+3. **联动**（best-effort，失败不阻断）：小红书 / 快手 / 视频号（`AIVIDEO_PUBLISH_XHS` 等）→ **YouTube Shorts**（`AIVIDEO_PUBLISH_YOUTUBE`，官方 API）
+
+### 抖音发布（主流程）
 
 ```bash
-./setup-sau.sh                       # 一次性
-./douyin-login.sh                    # 扫码登录
-./make-and-publish.sh                # 正常入口：制作完成后自动发布
-./scripts/publish-douyin.sh output/xxx.mp4   # 单条调试
+./douyin-login.sh
+./make-and-publish.sh
+```
+
+### YouTube Shorts（主流程联动，默认开）
+
+```bash
+./setup-youtube.sh
+./youtube-login.sh
+# .env: YOUTUBE_HTTP_PROXY=http://127.0.0.1:7897  YOUTUBE_PRIVACY=public
+./make-and-publish.sh    # 抖音成功后自动上传 YouTube
+./scripts/publish-youtube.sh output/xxx.mp4 --script logs/xxx.json   # 单条调试
+```
+
+开关：`AIVIDEO_PUBLISH_YOUTUBE=1`。记录：`logs/last_youtube_publish.json`。
+
+### 小红书 / 快手 / 视频号（主流程联动）
+
+```bash
+./social-login.sh xiaohongshu
+```
+
+开关：`AIVIDEO_PUBLISH_XHS`（默认 1）、`AIVIDEO_PUBLISH_KS`、`AIVIDEO_PUBLISH_SHIPINHAO`。
+
+独立调试脚本：
+
+```bash
+./scripts/publish-xiaohongshu.sh output/xxx.mp4 --script logs/xxx.json
+./scripts/backfill-social.sh xiaohongshu --dry-run   # 存量补发，慎用
+```
+
+### 抖音（独立调试，不进主流程）
+
+抖音无开放个人 API，原 Playwright 脚本仍保留供调试。
+
+```bash
+./setup-sau.sh
+./douyin-login.sh
+./scripts/publish-douyin.sh output/xxx.mp4 --script logs/xxx.json
 ```
 
 记录：`logs/published_videos.json`、`logs/video_manifest.jsonl`、`logs/article_history.json`。其中 `article_history.json` 会保留近期已做标题，默认近 7 天用于选题去重；可用 `BATCH_HISTORY_DAYS` 调整。
-
-## 多平台发布（小红书 / 快手 / 视频号）
-
-复用 `vendor/social-auto-upload`，与抖音一套工具。主流程会在抖音发布成功后，按 `.env` 开关顺手联动发布（best-effort，失败不阻断抖音）。
-
-```bash
-./social-login.sh xiaohongshu          # 扫码登录（kuaishou / shipinhao 同理）
-./social-login.sh xiaohongshu --check  # 校验登录态
-./scripts/publish-xiaohongshu.sh output/xxx.mp4 --script logs/xxx.json   # 单条调试
-./scripts/backfill-social.sh xiaohongshu --dry-run   # 把抖音存量批量补发到小红书
-```
-
-开关：`AIVIDEO_PUBLISH_XHS`（默认 1）、`AIVIDEO_PUBLISH_KS`、`AIVIDEO_PUBLISH_SHIPINHAO`。各平台已发记录：`logs/published_<platform>.json`。
 
 ## 各平台账号简介（复制用）
 
@@ -278,28 +307,13 @@ AI财知道。聚焦 AI 与财经交叉地带：财报拆解、行业趋势、�
 AI财知道。每天梳理一个 AI 与财经热点，拆解财报与基本面，A股·美股·港股都聊，用大白话讲清逻辑。内容仅为信息分享与个人观点，不构成投资建议，市场有风险，决策请独立判断。
 ```
 
-## 每日定时（macOS launchd）
-
-每天定时跑一遍「搜近 7 天热点 → 提炼 3 条问句话题 → 制作发布 → 归档」：
-
-```bash
-./schedule.sh            # 安装/重启守护（改完代码也是这条）
-./schedule.sh --now      # 重启并立刻试跑一次
-./schedule.sh --status   # 看当前调度
-./schedule.sh --stop     # 卸载守护
-
-tail -f logs/schedule_stdout.log
-```
-
-`.env` 配置（缺省即取默认值）：
+## 常用环境变量
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `DAILY_RUN_HOUR` | `10` | 每天几点跑（0-23） |
-| `DAILY_RUN_MINUTE` | `0` | 几分 |
-| `DAILY_RUN_COUNT` | `3` | 定时任务每次生成几条（同 `AIVIDEO_MAX_VIDEOS_PER_RUN`） |
-| `DAILY_RUN_DAYS` / `AIVIDEO_DAYS` | `7` | 发现热点候选的时间窗（天） |
+| `AIVIDEO_DAYS` / `DAILY_RUN_DAYS` | `7` | 发现热点候选的时间窗（天） |
 | `AIVIDEO_TOPIC_DAYS` | `7` | 每条话题搜文的时间窗（天） |
+| `AIVIDEO_MAX_VIDEOS_PER_RUN` | `3` | 每次生成几条 |
 | `AIVIDEO_DIR_RATIO` | `0.55,0.25,0.20` | 三方向目标占比 `astock,ai,hkus`（归一化后分配条数） |
 | `AIVIDEO_ASTOCK_MIN_RATIO` | `0.5` | A股条数须 **严格大于** 该占比（3 条→至少 2 条 A股） |
 | `AIVIDEO_TOPIC_FRESH_DAYS` | `2` | 新闻类：候选超过该天数则改综合材料自写 |

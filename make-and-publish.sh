@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AI财知道：每日热点 → 问句话题 → 搜文深读改编 → 生成视频 → 发布 → 归档
+# AI财知道：每日热点 → 问句话题 → 搜文深读改编 → 生成视频 → 抖音 → 归档 → YouTube / 小红书等
 # 默认每天 3 条（A股 / AI / 港美股 各 1），与 make-topics 实验模式一致
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"

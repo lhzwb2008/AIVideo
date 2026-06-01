@@ -2,9 +2,9 @@
 """发布一次「只生成未发布」批次里的视频（读 logs/make_topics_last.json）。
 
 用于先 --no-publish 生成、确认无误后再统一发布的场景：
-  python3 src/publish_made.py            # 发布 make_topics_last.json 里 published=false 的条目
-  python3 src/publish_made.py --check    # 每条发布前校验抖音登录态
-发布成功后：记录已发布、写入历史去重、把视频归档到 archive/published/YYYYMMDD/。
+  python3 src/publish_made.py
+  python3 src/publish_made.py --check
+发布成功后：抖音记录、归档、联动 YouTube / 小红书等。
 """
 
 from __future__ import annotations
@@ -15,9 +15,16 @@ from datetime import datetime
 from pathlib import Path
 
 from batch_aivideo import append_history_from_script
-from publish_pipeline import archive_video, log, rel, run
-from paths import ROOT
 from publish_all_douyin import load_published, save_published
+from publish_pipeline import (
+    archive_video,
+    log,
+    publish_social,
+    publish_youtube,
+    rel,
+    run,
+)
+from paths import ROOT
 from research import load_env
 
 
@@ -54,21 +61,31 @@ def main() -> int:
         if args.dry_run:
             cmd.append("--dry-run")
         try:
-            run(cmd, label="发布")
+            run(cmd, label="发布抖音")
         except Exception as exc:  # noqa: BLE001
-            log(f"✗ 发布失败：{exc}")
+            log(f"✗ 抖音发布失败：{exc}")
             continue
+
+        youtube_url = ""
         if args.dry_run:
+            youtube_url = publish_youtube(video, script, dry_run=True)
             ok += 1
             continue
+
         published = load_published()
         published.add(rel(video))
         save_published(published)
         append_history_from_script(script)
         archived = archive_video(video, date_tag=datetime.now().strftime("%Y%m%d"))
+        log(f"抖音发布成功，已归档：{rel(archived)}")
+
+        log("联动发布其它平台…")
+        publish_social(archived, script)
+        youtube_url = publish_youtube(archived, script, dry_run=False)
+
         m["published"] = True
         m["video"] = rel(archived)
-        log(f"发布成功，已归档：{rel(archived)}")
+        m["youtube_url"] = youtube_url
         ok += 1
 
     summary_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

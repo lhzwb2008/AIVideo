@@ -177,7 +177,7 @@ def main() -> int:
     load_env()
     parser = argparse.ArgumentParser(description="AI财知道：直接喂文案一键生图/合成/发布")
     parser.add_argument("file", nargs="?", help="文案 JSON 文件；用 - 从 stdin 读")
-    parser.add_argument("--check", action="store_true", help="发布前检查抖音登录态")
+    parser.add_argument("--check", action="store_true", help="（已废弃，保留兼容）")
     parser.add_argument("--dry-run", action="store_true", help="只预演发布参数，不真正发布/归档")
     parser.add_argument("--no-publish", action="store_true", help="只生成视频，跳过发布步骤")
     args = parser.parse_args()

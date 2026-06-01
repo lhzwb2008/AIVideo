@@ -2,7 +2,7 @@
 """指定话题模式一键制作并发布：
 
 把命令行里给的一段话拆成多个话题 → 每个话题搜文章/用自带内容/模型自写
-→ 改编脚本 → 生图 → 合成 → 抖音发布 → 归档。
+→ 改编脚本 → 生图 → 合成 → 抖音 → 归档 → 联动 YouTube/小红书。
 
 用法：
   python3 src/make_topics_publish.py "1 小鹏财报，2 韬定律是什么，3 opus4.8发布"
@@ -60,7 +60,7 @@ def main() -> int:
         default=int(os.environ.get("AIVIDEO_TOPIC_DAYS", "7")),
         help="搜话题文章的时间窗（天），默认 7",
     )
-    parser.add_argument("--check", action="store_true", help="发布前检查抖音登录态")
+    parser.add_argument("--check", action="store_true", help="（已废弃，保留兼容）")
     parser.add_argument("--dry-run", action="store_true", help="只预演发布参数，不真正发布/归档")
     parser.add_argument("--no-publish", action="store_true", help="只生成视频，跳过发布步骤")
     args = parser.parse_args()

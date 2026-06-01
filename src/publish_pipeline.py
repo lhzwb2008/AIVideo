@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""制作发布共用流水线：脚本落地 → 生图 → 合成 → 抖音 → 归档 → 其它平台。"""
+"""制作发布共用流水线：脚本落地 → 生图 → 合成 → 抖音 → 归档 → YouTube / 其它平台。"""
 
 from __future__ import annotations
 
@@ -15,6 +15,13 @@ from pathlib import Path
 from paths import ROOT
 from publish_all_douyin import load_published, save_published
 from research import run_article_research
+
+
+def youtube_enabled() -> bool:
+    value = os.environ.get("AIVIDEO_PUBLISH_YOUTUBE")
+    if value is None or value.strip() == "":
+        return True
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 SOCIAL_PLATFORMS = {
     "xiaohongshu": ("AIVIDEO_PUBLISH_XHS", True),
@@ -80,6 +87,33 @@ def _social_gap_seconds() -> int:
     return random.randint(lo, hi)
 
 
+def _read_last_youtube_url() -> str:
+    log_path = ROOT / "logs" / "last_youtube_publish.json"
+    if not log_path.is_file():
+        return ""
+    try:
+        data = json.loads(log_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return str(data.get("shorts_url") or data.get("url") or "").strip()
+
+
+def publish_youtube_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    """YouTube Data API 发布（best-effort）。返回发布 URL（若有）。"""
+    cmd = [
+        str(ROOT / "scripts" / "publish-youtube.sh"),
+        rel(video),
+        "--script",
+        rel(script_path),
+    ]
+    if dry_run:
+        cmd.append("--dry-run")
+    run(cmd, label="发布YouTube")
+    if dry_run:
+        return ""
+    return _read_last_youtube_url()
+
+
 def publish_social(video: Path, script_path: Path) -> None:
     from backfill_social import load_platform_published, save_platform_published
 
@@ -111,6 +145,19 @@ def publish_social(video: Path, script_path: Path) -> None:
             log(f"  [{label}] 发布成功")
         except Exception as exc:  # noqa: BLE001
             log(f"  ⚠️ [{label}] 发布失败（不影响抖音/主流程）：{exc}")
+
+
+def publish_youtube(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    if not youtube_enabled():
+        return ""
+    try:
+        url = publish_youtube_api(video, script_path, dry_run=dry_run)
+        if url:
+            log(f"  [YouTube] 发布成功: {url}")
+        return url
+    except Exception as exc:  # noqa: BLE001
+        log(f"  ⚠️ [YouTube] 发布失败（不影响抖音/主流程）：{exc}")
+        return ""
 
 
 def archive_video(video: Path, *, date_tag: str) -> Path:
@@ -150,8 +197,17 @@ def pipeline_after_script(
         publish_cmd.append("--dry-run")
     run(publish_cmd, label="发布")
 
+    youtube_url = ""
     if dry_run:
-        return {"title": title, "video": rel(video), "script": rel(script_path), "published": False}
+        log(f"\n=== [{index}/{target}] 预演 YouTube ===")
+        youtube_url = publish_youtube(video, script_path, dry_run=True)
+        return {
+            "title": title,
+            "video": rel(video),
+            "script": rel(script_path),
+            "published": False,
+            "youtube_url": youtube_url,
+        }
 
     published = load_published()
     video_rel = rel(video)
@@ -159,12 +215,19 @@ def pipeline_after_script(
     save_published(published)
     append_history_fn(script_path)
     archived = archive_video(video, date_tag=datetime.now().strftime("%Y%m%d"))
-    log(f"发布成功，已归档：{rel(archived)}")
+    log(f"抖音发布成功，已归档：{rel(archived)}")
 
     log(f"\n=== [{index}/{target}] 联动发布其它平台 ===")
     publish_social(archived, script_path)
+    youtube_url = publish_youtube(archived, script_path, dry_run=False)
 
-    return {"title": title, "video": rel(archived), "script": rel(script_path), "published": True}
+    return {
+        "title": title,
+        "video": rel(archived),
+        "script": rel(script_path),
+        "published": True,
+        "youtube_url": youtube_url,
+    }
 
 
 def process_topic(

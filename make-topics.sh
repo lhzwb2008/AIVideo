@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AI财知道·指定话题模式：逐个生成视频 → 发布抖音 → 联动其它平台 → 归档
+# AI财知道·指定话题模式：逐个生成视频 → 抖音 → 归档 → YouTube / 小红书等
 #
 # 默认直接读取项目根目录的 topics.txt（每行一个话题，行首可写栏目名，如「基础 如何给企业估值」）
 #
@@ -15,5 +15,5 @@ cd "$ROOT"
 [[ -f .env ]] && set -a && source .env && set +a
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
-# 默认发布前检查抖音登录态；可在参数里追加 --no-publish / --dry-run
+# 默认发布前检查抖音登录态；可追加 --no-publish / --dry-run
 python3 "$ROOT/src/make_topics_publish.py" --check "$@"
