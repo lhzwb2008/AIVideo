@@ -57,6 +57,84 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def _creds_token() -> str:
+    from google.auth.transport.requests import Request
+
+    from youtube_auth import _load_credentials
+
+    creds = _load_credentials()
+    if not creds.valid:
+        creds.refresh(Request())
+    return creds.token
+
+
+def _video_processing_status(video_id: str, *, proxy: str, youtube) -> str:
+    """返回 uploadStatus（uploaded/processed/failed/...），取不到返回空串。"""
+    try:
+        if proxy:
+            import requests
+
+            url = (
+                "https://youtube.googleapis.com/youtube/v3/videos"
+                f"?part=status&id={video_id}"
+            )
+            resp = requests.get(
+                url,
+                headers={"Authorization": f"Bearer {_creds_token()}"},
+                proxies={"http": proxy, "https": proxy},
+                timeout=60,
+            )
+            items = (resp.json() or {}).get("items") or []
+        else:
+            resp = youtube.videos().list(part="status", id=video_id).execute()
+            items = resp.get("items") or []
+        if not items:
+            return ""
+        return str((items[0].get("status") or {}).get("uploadStatus") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _wait_until_processed(video_id: str, *, proxy: str, youtube) -> None:
+    """等视频转码完成再设封面，避免自定义封面被自动截帧覆盖/不显示。"""
+    try:
+        timeout = max(0, int(_env("YOUTUBE_THUMB_WAIT_S", "150")))
+    except ValueError:
+        timeout = 150
+    if timeout == 0:
+        return
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = _video_processing_status(video_id, proxy=proxy, youtube=youtube)
+        if status == "processed":
+            return
+        if status == "failed":
+            return
+        time.sleep(5)
+
+
+def _set_thumbnail_with_retry(
+    video_id: str, thumbnail_path: Path, youtube, *, attempts: int = 3
+) -> None:
+    """设封面 + 重试。处理刚结束时偶发不生效，重试更稳。"""
+    import time
+
+    last_exc: Exception | None = None
+    for i in range(max(1, attempts)):
+        try:
+            _set_thumbnail(video_id, thumbnail_path, youtube)
+            print(f"  已设置封面: {thumbnail_path}", flush=True)
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if i < attempts - 1:
+                time.sleep(4)
+    if last_exc:
+        raise last_exc
+
+
 def _upload_video_requests(video_path: Path, body: dict, proxy: str) -> dict:
     """走 requests + 代理的 resumable 上传，绕开 httplib2 在代理下的
     RedirectMissingLocation 问题。返回 videos.insert 的 JSON 响应。"""
@@ -201,10 +279,15 @@ def upload_video(
 
     if thumbnail_path and thumbnail_path.is_file():
         try:
-            _set_thumbnail(video_id, thumbnail_path, youtube)
-            print(f"  已设置封面: {thumbnail_path}", flush=True)
+            # 等转码完成再设封面，否则自定义封面常被自动截帧覆盖/不显示
+            print("  等待视频处理完成后再设封面…", flush=True)
+            _wait_until_processed(video_id, proxy=proxy, youtube=youtube)
+            _set_thumbnail_with_retry(video_id, thumbnail_path, youtube)
         except Exception as exc:  # noqa: BLE001
-            print(f"  ⚠️ 封面上传失败（视频已发布）: {exc}", flush=True)
+            print(
+                f"  ⚠️ 封面上传失败（视频已发布，可稍后 fix-last 重试）: {exc}",
+                flush=True,
+            )
 
     url = f"https://www.youtube.com/watch?v={video_id}"
     shorts_url = f"https://www.youtube.com/shorts/{video_id}"
