@@ -58,6 +58,14 @@ _FORUM_NARRATION_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     (r"中芯国际跌了近9%", "部分龙头芯片股跌幅明显"),
     (r"公共事业", "公用事业"),
     (r"EBITA", "EBITDA"),
+    (
+        r"雷神科技盘中直接冲到30%涨停",
+        "部分AI PC概念股盘中涨幅明显",
+    ),
+    (
+        r"今年累计涨了793%的8倍大牛股利通电子，却来了个一字跌停",
+        "部分前期涨幅较大的高位标的，同日也出现明显回调",
+    ),
 )
 
 
@@ -72,17 +80,6 @@ def _load_script(path: Path) -> dict:
     if not isinstance(script, dict):
         raise ValueError(f"无效脚本: {path}")
     return script
-
-
-def _load_script_bundle(path: Path) -> tuple[dict, dict]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(data.get("script"), dict):
-        script = data["script"]
-        article = data.get("article") if isinstance(data.get("article"), dict) else {}
-        return script, article
-    if isinstance(data, dict):
-        return data, {}
-    raise ValueError(f"无效脚本: {path}")
 
 
 def _sanitize_forum_title(title: str) -> str:
@@ -117,6 +114,22 @@ def _prepare_forum_narration(text: str) -> str:
     return _strip_cta(_sanitize_forum_narration(text))
 
 
+def _label_covered(label: str, narration: str) -> bool:
+    label = label.strip()
+    if not label or label in narration:
+        return True
+    core = label
+    for sep in ("=", "＝", "：", ":"):
+        if sep in core:
+            core = core.split(sep, 1)[0].strip()
+            break
+    chunks = re.findall(r"[\u4e00-\u9fff]{3,}", core)
+    if not chunks:
+        return core in narration
+    hits = sum(1 for chunk in chunks if chunk in narration)
+    return hits >= max(1, len(chunks) - 1)
+
+
 def _label_to_sentence(label: str) -> str:
     label = _prepare_forum_narration(label.strip())
     if not label:
@@ -127,50 +140,30 @@ def _label_to_sentence(label: str) -> str:
         if sep in label:
             key, val = label.split(sep, 1)
             key, val = key.strip(), val.strip()
-            if key and val:
+            if key and val and len(val) >= 2:
                 return f"{key}方面，大致对应{val.rstrip('。')}。"
-    return f"{label.rstrip('。')}，值得单独记一笔。"
+    return ""
 
 
 def _expand_from_labels(labels: list[str], narration: str) -> str:
     sentences: list[str] = []
     for lb in labels:
-        core = re.split(r"[=＝：:]", lb)[0].strip()
-        if lb in narration or (core and core in narration):
+        if _label_covered(lb, narration):
             continue
         sent = _label_to_sentence(lb)
-        if sent and sent not in narration:
+        if sent and sent not in narration and sent not in sentences:
             sentences.append(sent)
     if not sentences:
         return ""
     if len(sentences) == 1:
         return sentences[0]
-    return "从几个维度展开：" + "".join(sentences)
+    return "补充几个要点：" + "".join(sentences)
 
 
-def _forum_intro(script: dict, article: dict) -> str:
-    title = _sanitize_forum_title(str(script.get("title") or "").strip())
-    keyword = str(script.get("keyword") or "").strip()
-    thesis = _prepare_forum_narration(
-        str(article.get("thesis") or article.get("summary_zh") or "").strip()
-    )
-    if thesis and thesis not in {title, keyword} and len(thesis) >= 12:
-        lead = f"围绕「{keyword}」，{thesis.rstrip('。')}。" if keyword else f"{thesis.rstrip('。')}。"
-    else:
-        lead = "下面把视频里的主线拆开写细一点，方便慢慢看、对照图表理解。"
-    return f"{lead}全文按几个层次展开，尽量把「{title.rstrip('？?')}」背后的逻辑讲清楚。"
-
-
-def _expand_forum_section(slide: dict, index: int, total: int) -> str:
-    headline = str(slide.get("headline") or "").strip()
+def _expand_forum_section(slide: dict) -> str:
     narration = _prepare_forum_narration(str(slide.get("narration") or ""))
     labels = [str(x).strip() for x in (slide.get("on_image_text") or []) if str(x).strip()]
     parts: list[str] = []
-
-    if index > 0:
-        lead = str(slide.get("lead_in") or headline).strip()
-        if lead:
-            parts.append(f"接下来看{lead.rstrip('。')}。")
 
     if narration:
         parts.append(narration)
@@ -180,6 +173,7 @@ def _expand_forum_section(slide: dict, index: int, total: int) -> str:
         parts.append(extra)
 
     concept = _prepare_forum_narration(str(slide.get("concept") or ""))
+    headline = str(slide.get("headline") or "").strip()
     if (
         concept
         and concept not in "\n".join(parts)
@@ -188,11 +182,6 @@ def _expand_forum_section(slide: dict, index: int, total: int) -> str:
         and not narration.startswith(concept[: min(6, len(concept))])
     ):
         parts.append(concept.rstrip("。") + "。")
-
-    if index == total - 1:
-        parts.append(
-            "以上梳理仅供学习交流，后续走势仍取决于政策、业绩与资金面变化，阅读时请保持独立判断。"
-        )
 
     return "\n\n".join(p for p in parts if p.strip())
 
@@ -445,7 +434,7 @@ def build_forum_pack(
     video_path: Path,
     out_dir: Path | None = None,
 ) -> dict:
-    script, article = _load_script_bundle(script_path)
+    script = _load_script(script_path)
     title = _sanitize_forum_title((script.get("title") or "未命名").strip())
     slides = script.get("slides") or []
     out_dir = out_dir or forum_dir_for_video(video_path)
@@ -459,17 +448,12 @@ def build_forum_pack(
         _write_landscape_cover(landscape_src, out_dir) if landscape_src else None
     )
 
-    intro = _forum_intro(script, article) if slides else ""
-    total = len(slides)
     lines = [f"# {title}", ""]
     for i, slide in enumerate(slides, start=1):
         h = (slide.get("headline") or "").strip()
-        body = _expand_forum_section(slide, i - 1, total)
+        body = _expand_forum_section(slide)
         if h:
             lines.append(f"## {h}")
-            lines.append("")
-        if i == 1 and intro:
-            lines.append(intro)
             lines.append("")
         if body:
             lines.append(body)

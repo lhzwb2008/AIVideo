@@ -12,8 +12,43 @@ class YouTubePublishError(RuntimeError):
     pass
 
 
+_THUMB_MAX_BYTES = 2097152  # YouTube 自定义封面上限 2MB
+
+
+def _ensure_thumbnail_within_limit(thumbnail_path: Path) -> Path:
+    """封面超过 2MB 会被 YouTube 拒（HTTP 413），转码为 JPEG 压到限制内。"""
+    try:
+        if thumbnail_path.stat().st_size <= _THUMB_MAX_BYTES:
+            return thumbnail_path
+    except OSError:
+        return thumbnail_path
+
+    import subprocess
+
+    out_dir = thumbnail_path.parent
+    out = out_dir / f"{thumbnail_path.stem}_yt2mb.jpg"
+    # 逐步降质量；竖屏封面 1080x1920 JPEG 一般几百 KB 即可
+    for quality in (3, 5, 8, 12, 18):
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(thumbnail_path),
+            "-q:v", str(quality),
+            str(out),
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            return thumbnail_path
+        if proc.returncode != 0 or not out.is_file():
+            return thumbnail_path
+        if out.stat().st_size <= _THUMB_MAX_BYTES:
+            return out
+    return out if out.is_file() else thumbnail_path
+
+
 def _set_thumbnail(video_id: str, thumbnail_path: Path, youtube) -> bool:
     """上传自定义封面；大文件走 requests + 代理更稳。"""
+    thumbnail_path = _ensure_thumbnail_within_limit(thumbnail_path)
     suffix = thumbnail_path.suffix.lower()
     mime = "image/png" if suffix == ".png" else "image/jpeg"
     proxy = (

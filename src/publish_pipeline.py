@@ -282,20 +282,13 @@ def pipeline_after_script(
     youtube_url = publish_youtube(video, script_path, dry_run=False)
     tiktok_url = publish_tiktok(video, script_path, dry_run=False)
 
-    log(f"\n=== [{index}/{target}] 手动发布文案 ===")
-    print_manual_publish_pack(
-        script_path,
-        video,
-        youtube_url=youtube_url,
-        tiktok_url=tiktok_url,
-    )
-
     append_history_fn(script_path)
     date_tag = datetime.now().strftime("%Y%m%d")
     archived = archive_publish_bundle(video, date_tag=date_tag)
     log(f"已归档：{rel(archived['video'])}")
     if archived.get("forum"):
         log(f"  论坛图文：{rel(archived['forum'])}/")
+        log(f"  发布文案：{rel(archived['forum'])}/README.md")
 
     return {
         "title": title,
