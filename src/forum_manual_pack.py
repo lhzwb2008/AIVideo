@@ -14,6 +14,50 @@ from paths import ROOT
 DISCLAIMER = (
     "【风险提示】以上内容仅供学习交流，不构成任何投资建议。"
     "市场有风险，投资需谨慎。"
+    "文中数据与观点仅供参考，请独立判断。"
+)
+
+# 财富号/雪球：弱化标题党、连板炒作等表述
+_FORUM_TITLE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    (r"五连板", "连续上涨"),
+    (r"为什么能连续上涨", "近期为何表现强势"),
+    (r"单日暴跌", "单日大幅回调"),
+    (r"为啥", "为何"),
+)
+
+# 正文：互动引流、荐股式结尾（东方财富 2.1）
+_CTA_PATTERNS: tuple[str, ...] = (
+    r"觉得有用就?点赞收藏[，,、]?关注我们[^。！？?]*[。！？?]?\s*$",
+    r"点赞收藏[，,、]?关注我们[^。！？?]*[。！？?]?\s*$",
+    r"关注我们[，,、]?每天[^。！？?]*[。！？?]?\s*$",
+    r"觉得有用点个关注!?\s*$",
+    r"评论区聊聊[^。！？?]*[。！？?]?\s*$",
+    r"那你觉得[^。！？?]*评论区[^。！？?]*[。！？?]?\s*$",
+    r"那么问题来了[：:]?[^。！？?]*你看好[^。！？?]*[。！？?]?\s*$",
+    r"那问题来了[：:]?[^。！？?]*(真行情|凑热闹|五连板)[^。！？?]*[。！？?]?\s*$",
+    r"你觉得[^。！？?]*(涌向|流向)哪个(方向|板块)[？?]\s*$",
+    r"你觉得[^。！？?]*[？?]\s*$",
+    r"那你觉得[^。！？?]*[？?]\s*$",
+    r"问题来了[：:]?[^。！？?]*[？?]\s*$",
+)
+
+# 正文：点名个股 + 极端涨跌幅（东方财富 2.2 / 2.4）
+_FORUM_NARRATION_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    (
+        r"有只煤炭股一口气连续五个交易日涨停，一周累计涨了61%！这是啥概念？就好比一家网红奶茶店连续五天爆单到打烊都排不上号。它叫华电能源，这周的明星。",
+        "部分煤炭股却明显强于指数，个别标的短期涨幅较大。同一市场里，个股走势分化很大。就好比一条美食街上，有的店门庭若市，有的店冷冷清清。",
+    ),
+    (
+        r"一边是26只股票涨超30%，地产股香江控股也走出五连板；另一边呢，有76只股票直接跌超20%，其中朗信电气一周跌了45%，几乎腰斩。",
+        "一边是个别标的涨幅靠前，另一边也有大量个股明显回调，跌幅超过两成的不在少数。",
+    ),
+    (
+        r"这周542家公司被调研，神工股份最火，55家机构同一周排队上门看账本。机构调研就好比一群投资人专门上门翻这家店的账本，看看值不值得长期关注。",
+        "这周五百多家公司接受机构调研，部分半导体、制造类公司关注度较高。机构调研就好比投资人专门翻阅企业资料，评估长期价值。需注意的是，短期涨幅较大的标的往往波动也大，追高风险不容忽视。",
+    ),
+    (r"中芯国际跌了近9%", "部分龙头芯片股跌幅明显"),
+    (r"公共事业", "公用事业"),
+    (r"EBITA", "EBITDA"),
 )
 
 
@@ -30,16 +74,127 @@ def _load_script(path: Path) -> dict:
     return script
 
 
+def _load_script_bundle(path: Path) -> tuple[dict, dict]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data.get("script"), dict):
+        script = data["script"]
+        article = data.get("article") if isinstance(data.get("article"), dict) else {}
+        return script, article
+    if isinstance(data, dict):
+        return data, {}
+    raise ValueError(f"无效脚本: {path}")
+
+
+def _sanitize_forum_title(title: str) -> str:
+    t = title.strip()
+    for pat, repl in _FORUM_TITLE_REPLACEMENTS:
+        t = re.sub(pat, repl, t)
+    return t.strip()
+
+
+def _sanitize_forum_narration(text: str) -> str:
+    t = text.strip()
+    for pat, repl in _FORUM_NARRATION_REPLACEMENTS:
+        t = re.sub(pat, repl, t)
+    return t.strip()
+
+
 def _strip_cta(text: str) -> str:
     t = text.strip()
-    for pat in (
-        r"觉得有用点个关注!?\s*$",
-        r"评论区聊聊[^。]*。?\s*$",
-        r"那你觉得[^。]*评论区[^。]*。?\s*$",
-        r"那你觉得[^。]*[？?]\s*$",
-    ):
-        t = re.sub(pat, "", t).strip()
+    changed = True
+    while changed and t:
+        changed = False
+        for pat in _CTA_PATTERNS:
+            new_t = re.sub(pat, "", t).strip()
+            if new_t != t:
+                t = new_t
+                changed = True
+                break
     return t
+
+
+def _prepare_forum_narration(text: str) -> str:
+    return _strip_cta(_sanitize_forum_narration(text))
+
+
+def _label_to_sentence(label: str) -> str:
+    label = _prepare_forum_narration(label.strip())
+    if not label:
+        return ""
+    if label.endswith(("。", "！", "？")):
+        return label
+    for sep in ("=", "＝", "：", ":"):
+        if sep in label:
+            key, val = label.split(sep, 1)
+            key, val = key.strip(), val.strip()
+            if key and val:
+                return f"{key}方面，大致对应{val.rstrip('。')}。"
+    return f"{label.rstrip('。')}，值得单独记一笔。"
+
+
+def _expand_from_labels(labels: list[str], narration: str) -> str:
+    sentences: list[str] = []
+    for lb in labels:
+        core = re.split(r"[=＝：:]", lb)[0].strip()
+        if lb in narration or (core and core in narration):
+            continue
+        sent = _label_to_sentence(lb)
+        if sent and sent not in narration:
+            sentences.append(sent)
+    if not sentences:
+        return ""
+    if len(sentences) == 1:
+        return sentences[0]
+    return "从几个维度展开：" + "".join(sentences)
+
+
+def _forum_intro(script: dict, article: dict) -> str:
+    title = _sanitize_forum_title(str(script.get("title") or "").strip())
+    keyword = str(script.get("keyword") or "").strip()
+    thesis = _prepare_forum_narration(
+        str(article.get("thesis") or article.get("summary_zh") or "").strip()
+    )
+    if thesis and thesis not in {title, keyword} and len(thesis) >= 12:
+        lead = f"围绕「{keyword}」，{thesis.rstrip('。')}。" if keyword else f"{thesis.rstrip('。')}。"
+    else:
+        lead = "下面把视频里的主线拆开写细一点，方便慢慢看、对照图表理解。"
+    return f"{lead}全文按几个层次展开，尽量把「{title.rstrip('？?')}」背后的逻辑讲清楚。"
+
+
+def _expand_forum_section(slide: dict, index: int, total: int) -> str:
+    headline = str(slide.get("headline") or "").strip()
+    narration = _prepare_forum_narration(str(slide.get("narration") or ""))
+    labels = [str(x).strip() for x in (slide.get("on_image_text") or []) if str(x).strip()]
+    parts: list[str] = []
+
+    if index > 0:
+        lead = str(slide.get("lead_in") or headline).strip()
+        if lead:
+            parts.append(f"接下来看{lead.rstrip('。')}。")
+
+    if narration:
+        parts.append(narration)
+
+    extra = _expand_from_labels(labels, "\n".join(parts))
+    if extra:
+        parts.append(extra)
+
+    concept = _prepare_forum_narration(str(slide.get("concept") or ""))
+    if (
+        concept
+        and concept not in "\n".join(parts)
+        and concept != headline
+        and len(concept) >= 8
+        and not narration.startswith(concept[: min(6, len(concept))])
+    ):
+        parts.append(concept.rstrip("。") + "。")
+
+    if index == total - 1:
+        parts.append(
+            "以上梳理仅供学习交流，后续走势仍取决于政策、业绩与资金面变化，阅读时请保持独立判断。"
+        )
+
+    return "\n\n".join(p for p in parts if p.strip())
 
 
 def _extract_video_frames(video: Path, dest_dir: Path, count: int) -> list[Path]:
@@ -153,6 +308,99 @@ def _write_cover(script_path: Path, video: Path, out_dir: Path) -> tuple[Path | 
     return cover_dst, src
 
 
+def _quote_block(text: str) -> str:
+    return f"```\n{text.rstrip()}\n```\n\n"
+
+
+def _build_readme_publish_sections(script: dict, forum_body: str) -> str:
+    """各平台发布用标题/标签/简介，写入 README 便于归档后一键复制。"""
+    from douyin_caption import build_sau_fields
+    from social_caption import build_social_fields
+    from tiktok_caption import build_tiktok_fields
+    from youtube_caption import build_youtube_fields
+
+    dy = build_sau_fields(script)
+    xhs = build_social_fields(script, "xiaohongshu")
+    tx = build_social_fields(script, "tencent")
+    yt = build_youtube_fields(script)
+    tk = build_tiktok_fields(script)
+
+    dy_tags = (dy.get("tags") or "").strip()
+    dy_hashtags = " ".join(f"#{t.strip()}" for t in dy_tags.split(",") if t.strip())
+    dy_desc = (dy.get("desc") or "").strip()
+    if dy_hashtags:
+        dy_desc = f"{dy_desc}\n\n{dy_hashtags}".strip()
+
+    raw_hashtags = script.get("hashtags") or []
+    forum_tags = "、".join(
+        str(t).strip() for t in raw_hashtags if str(t).strip()
+    )
+    if not forum_tags:
+        forum_tags = dy_tags.replace(",", "、")
+
+    sections: list[str] = ["## 发布文案（可直接复制）\n"]
+
+    forum_title = _sanitize_forum_title(str(script.get("title") or dy["title"]).strip())
+    forum_bits = [
+        f"**标题**\n\n{_quote_block(forum_title)}",
+    ]
+    if forum_tags:
+        forum_bits.append(f"**标签 / 话题**\n\n{_quote_block(forum_tags)}")
+    if forum_body.strip():
+        forum_bits.append(
+            f"**正文**（不含标题行；配图位置见 **【插入配图 N】**）\n\n"
+            f"{_quote_block(forum_body)}"
+        )
+    sections.append(
+        "### 论坛图文（雪球 / 东方财富）\n\n"
+        + "".join(forum_bits)
+        + "上传 `cover.jpg`；雪球首页推荐位可用 `cover_landscape.jpg`。\n"
+    )
+
+    sections.append(
+        "### 抖音\n\n"
+        f"**标题**\n\n{_quote_block(dy['title'])}"
+        f"**标签**（逗号分隔，发布时选话题）\n\n{_quote_block(dy_tags)}"
+        f"**简介 + 话题**（整段复制）\n\n{_quote_block(dy_desc)}"
+    )
+
+    xhs_tags = " ".join(f"#{t}" for t in xhs.get("tags") or [])
+    sections.append(
+        "### 小红书\n\n"
+        f"**标题**（≤20 字）\n\n{_quote_block(xhs['title'])}"
+        f"**标签**\n\n{_quote_block('、'.join(xhs.get('tags') or []))}"
+        f"**正文**\n\n{_quote_block(xhs['desc'])}"
+        + (f"行内话题：{xhs_tags}\n\n" if xhs_tags else "")
+    )
+
+    tx_tags = "、".join(tx.get("tags") or [])
+    sections.append(
+        "### 视频号\n\n"
+        f"**短标题**（6–16 字）\n\n{_quote_block(tx['short_title'])}"
+        f"**描述**\n\n{_quote_block(tx['desc'])}"
+        f"**标签**\n\n{_quote_block(tx_tags)}"
+    )
+
+    yt_tags = ", ".join(yt.get("tags") or [])
+    yt_hash = " ".join(f"#{t}" for t in yt.get("tags") or [])
+    yt_desc = (yt.get("description") or "").strip()
+    if yt_hash and yt_hash not in yt_desc:
+        yt_desc = f"{yt_desc}\n\n{yt_hash}".strip()
+    sections.append(
+        "### YouTube Shorts\n\n"
+        f"**标题**\n\n{_quote_block(yt['title'])}"
+        f"**标签**\n\n{_quote_block(yt_tags)}"
+        f"**描述**\n\n{_quote_block(yt_desc)}"
+    )
+
+    sections.append(
+        "### TikTok\n\n"
+        f"**文案**（含 # 话题，整段复制到 App）\n\n{_quote_block(tk['title'])}"
+    )
+
+    return "\n".join(sections)
+
+
 def _write_landscape_cover(src: Path, out_dir: Path) -> Path | None:
     """16:9 横封面（雪球首页推荐等），从竖封面居中偏上裁剪。"""
     if not src.is_file():
@@ -197,8 +445,8 @@ def build_forum_pack(
     video_path: Path,
     out_dir: Path | None = None,
 ) -> dict:
-    script = _load_script(script_path)
-    title = (script.get("title") or "未命名").strip()
+    script, article = _load_script_bundle(script_path)
+    title = _sanitize_forum_title((script.get("title") or "未命名").strip())
     slides = script.get("slides") or []
     out_dir = out_dir or forum_dir_for_video(video_path)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -211,15 +459,20 @@ def build_forum_pack(
         _write_landscape_cover(landscape_src, out_dir) if landscape_src else None
     )
 
+    intro = _forum_intro(script, article) if slides else ""
+    total = len(slides)
     lines = [f"# {title}", ""]
     for i, slide in enumerate(slides, start=1):
         h = (slide.get("headline") or "").strip()
-        n = _strip_cta(slide.get("narration") or "")
+        body = _expand_forum_section(slide, i - 1, total)
         if h:
             lines.append(f"## {h}")
             lines.append("")
-        if n:
-            lines.append(n)
+        if i == 1 and intro:
+            lines.append(intro)
+            lines.append("")
+        if body:
+            lines.append(body)
             lines.append("")
         if i <= len(image_paths):
             lines.append(f"**【插入配图 {i}】** `images/{i:02d}.jpg`")
@@ -228,7 +481,13 @@ def build_forum_pack(
     lines.extend(["---", "", DISCLAIMER, ""])
 
     post_md = out_dir / "post.md"
-    post_md.write_text("\n".join(lines), encoding="utf-8")
+    post_text = "\n".join(lines)
+    post_md.write_text(post_text, encoding="utf-8")
+
+    # post.md 首行为 # 标题，论坛正文从第二段起复制
+    forum_body = post_text
+    if forum_body.startswith("# "):
+        forum_body = re.sub(r"^# [^\n]+\n+", "", forum_body, count=1)
 
     img_lines = "\n".join(f"- images/{p.name}" for p in image_paths) or "- （无）"
     cover_lines = []
@@ -239,13 +498,20 @@ def build_forum_pack(
             "- `cover_landscape.jpg`（16:9 横封面，雪球首页推荐裁剪用）"
         )
     cover_block = "\n".join(cover_lines) if cover_lines else "- （未生成）"
-    readme = f"""# 论坛图文 · {video_path.name}
+    publish_sections = _build_readme_publish_sections(script, forum_body)
+    readme = f"""# 发布素材 · {video_path.name}
 
 与视频 `{video_path.name}` 同级目录下的同名文件夹；归档后会与 mp4 一起进入 `archive/published/日期/`。
 
+{publish_sections}
+
+---
+
+## 素材清单
+
 1. 封面：
 {cover_block}
-2. 正文：`post.md` 全文复制，第一行标题剪切到标题框
+2. 论坛排版正文：`post.md`（与上方「论坛图文」正文一致，含 Markdown 标题行）
 3. 配图：见 **【插入配图 N】**，上传 `images/0N.jpg`
 
 {img_lines}

@@ -314,7 +314,7 @@ AI财知道。每天梳理一个 AI 与财经热点，拆解财报与基本面�
 ```
 archive/published/20260531/
   20260531_193024.mp4
-  20260531_193024/          ← 论坛手动发文：post.md、cover.jpg、cover_landscape.jpg、images/
+  20260531_193024/          ← 发布素材：README.md（各平台标题/标签/文案）、post.md、cover.jpg、images/
   20260531_192557.mp4
   20260531_192557/
 ```
