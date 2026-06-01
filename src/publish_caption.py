@@ -94,11 +94,10 @@ def print_manual_publish_pack(
     print("═" * 58, flush=True)
 
     print(f"\n标题: {fields['title']}", flush=True)
-    print(f"\n简介:\n{fields['desc']}", flush=True)
-    if tags:
-        print(f"\n标签（抖音/小红书等）: {tags}", flush=True)
+    desc_block = fields["desc"]
     if hashtags:
-        print(f"话题: {hashtags}", flush=True)
+        desc_block = f"{desc_block}\n\n{hashtags}"
+    print(f"\n简介+话题（整段复制）:\n{desc_block}", flush=True)
 
     print("\n【YouTube 自动发布】", flush=True)
     print(f"标题: {yt_fields['title']}", flush=True)

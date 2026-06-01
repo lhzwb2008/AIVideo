@@ -7,6 +7,8 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -101,32 +103,88 @@ def publish_tiktok_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
     return _read_last_publish_url("last_tiktok_publish.json", "url")
 
 
+def _retry_config() -> tuple[int, int]:
+    """(最多尝试次数, 每次失败后等待秒数)。次数<=0 视为无限重试。"""
+    try:
+        max_attempts = int(os.environ.get("AIVIDEO_PUBLISH_MAX_RETRIES", "0"))
+    except ValueError:
+        max_attempts = 0
+    try:
+        sleep_s = int(os.environ.get("AIVIDEO_PUBLISH_RETRY_SLEEP", "20"))
+    except ValueError:
+        sleep_s = 20
+    return max_attempts, max(1, sleep_s)
+
+
+def _publish_with_retry(do_fn, *, label: str, dry_run: bool) -> str:
+    """发布失败不退出：提示翻墙并一直重试，直到成功或达到上限。
+
+    AIVIDEO_PUBLISH_MAX_RETRIES<=0（默认）= 无限重试；交互式终端可直接回车立即重试、
+    输入 s 跳过本平台。
+    """
+    max_attempts, sleep_s = _retry_config()
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return do_fn()
+        except Exception as exc:  # noqa: BLE001
+            log(f"  ⚠️ [{label}] 第 {attempt} 次发布失败：{exc}")
+            if dry_run or (max_attempts > 0 and attempt >= max_attempts):
+                log(f"  ↳ [{label}] 已达重试上限，跳过自动发布（不影响成片/手动发布）。")
+                return ""
+            remain = f"剩余 {max_attempts - attempt} 次" if max_attempts > 0 else "将持续重试"
+            log(f"  🔌 [{label}] 请确认已【翻墙/开启代理】，{sleep_s}s 后自动重试…（{remain}）")
+            if sys.stdin and sys.stdin.isatty():
+                log(f"     （回车=立即重试；输入 s 回车=跳过 {label}）")
+                if _wait_or_skip(sleep_s):
+                    log(f"  ↳ [{label}] 已按要求跳过。")
+                    return ""
+            else:
+                time.sleep(sleep_s)
+
+
+def _wait_or_skip(sleep_s: int) -> bool:
+    """交互式：最多等 sleep_s 秒。回车→立即重试(False)；输入 s→跳过(True)；超时→重试(False)。"""
+    import select
+
+    try:
+        ready, _, _ = select.select([sys.stdin], [], [], sleep_s)
+    except (OSError, ValueError):
+        time.sleep(sleep_s)
+        return False
+    if not ready:
+        return False
+    line = sys.stdin.readline().strip().lower()
+    return line == "s"
+
+
 def publish_youtube(video: Path, script_path: Path, *, dry_run: bool) -> str:
     if not youtube_enabled():
         return ""
-    try:
+
+    def _do() -> str:
         url = publish_youtube_api(video, script_path, dry_run=dry_run)
         if url:
             log(f"  [YouTube] {url}")
         return url
-    except Exception as exc:  # noqa: BLE001
-        log(f"  ⚠️ [YouTube] 发布失败（不影响成片/手动发布）：{exc}")
-        return ""
+
+    return _publish_with_retry(_do, label="YouTube", dry_run=dry_run)
 
 
 def publish_tiktok(video: Path, script_path: Path, *, dry_run: bool) -> str:
     if not tiktok_enabled():
         return ""
-    try:
+
+    def _do() -> str:
         url = publish_tiktok_api(video, script_path, dry_run=dry_run)
         if url:
             log(f"  [TikTok] {url}")
         elif not dry_run:
             log("  [TikTok] 已上传到收件箱，请在 App 内粘贴终端文案后发布")
         return url
-    except Exception as exc:  # noqa: BLE001
-        log(f"  ⚠️ [TikTok] 发布失败（不影响成片/手动发布）：{exc}")
-        return ""
+
+    return _publish_with_retry(_do, label="TikTok", dry_run=dry_run)
 
 
 def archive_video(video: Path, *, date_tag: str) -> Path:

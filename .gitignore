@@ -14,6 +14,7 @@ output/
 logs/
 tmp/
 .temp/
+archive/
 
 # 媒体
 *.mp4

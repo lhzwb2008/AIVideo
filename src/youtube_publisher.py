@@ -57,6 +57,72 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def _upload_video_requests(video_path: Path, body: dict, proxy: str) -> dict:
+    """走 requests + 代理的 resumable 上传，绕开 httplib2 在代理下的
+    RedirectMissingLocation 问题。返回 videos.insert 的 JSON 响应。"""
+    import requests
+    from google.auth.transport.requests import Request
+
+    from youtube_auth import _load_credentials
+
+    creds = _load_credentials()
+    if not creds.valid:
+        creds.refresh(Request())
+
+    timeout = 600
+    try:
+        timeout = max(60, int(_env("YOUTUBE_HTTP_TIMEOUT", "600")))
+    except ValueError:
+        pass
+
+    proxies = {"http": proxy, "https": proxy}
+    file_size = video_path.stat().st_size
+
+    init_url = (
+        "https://youtube.googleapis.com/upload/youtube/v3/videos"
+        "?uploadType=resumable&part=snippet,status"
+    )
+    init_headers = {
+        "Authorization": f"Bearer {creds.token}",
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": "video/mp4",
+        "X-Upload-Content-Length": str(file_size),
+    }
+    init = requests.post(
+        init_url, headers=init_headers, json=body, proxies=proxies, timeout=timeout
+    )
+    if init.status_code >= 400:
+        raise YouTubePublishError(
+            f"resumable init HTTP {init.status_code}: {init.text[:500]}"
+        )
+    session_url = init.headers.get("Location") or init.headers.get("location")
+    if not session_url:
+        raise YouTubePublishError("resumable init 未返回上传会话 URL（Location 头）")
+
+    print(f"  上传中…（{file_size // 1024} KB，走代理 requests）", flush=True)
+    put_headers = {
+        "Authorization": f"Bearer {creds.token}",
+        "Content-Type": "video/mp4",
+        "Content-Length": str(file_size),
+    }
+    with video_path.open("rb") as fh:
+        resp = requests.put(
+            session_url,
+            headers=put_headers,
+            data=fh,
+            proxies=proxies,
+            timeout=timeout,
+        )
+    if resp.status_code not in (200, 201):
+        raise YouTubePublishError(
+            f"视频上传 HTTP {resp.status_code}: {resp.text[:500]}"
+        )
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise YouTubePublishError(f"上传成功但响应非 JSON: {resp.text[:300]}") from exc
+
+
 def upload_video(
     video_path: Path,
     *,
@@ -98,25 +164,36 @@ def upload_video(
     if tags:
         body["snippet"]["tags"] = [t[:30] for t in tags[:30] if t.strip()]
 
-    youtube = build_youtube_service()
-    media = MediaFileUpload(
-        str(video_path),
-        mimetype="video/mp4",
-        resumable=True,
-        chunksize=1024 * 1024 * 8,
+    # 代理下 httplib2 的 resumable 上传会因重定向缺 Location 头报错
+    # （RedirectMissingLocation），改用 requests 直传更稳（与封面上传一致）。
+    proxy = (
+        _env("YOUTUBE_HTTP_PROXY")
+        or _env("https_proxy")
+        or _env("HTTPS_PROXY")
     )
-    request = youtube.videos().insert(
-        part="snippet,status",
-        body=body,
-        media_body=media,
-    )
+    youtube = None
+    if proxy:
+        response = _upload_video_requests(video_path, body, proxy)
+    else:
+        youtube = build_youtube_service()
+        media = MediaFileUpload(
+            str(video_path),
+            mimetype="video/mp4",
+            resumable=True,
+            chunksize=1024 * 1024 * 8,
+        )
+        request = youtube.videos().insert(
+            part="snippet,status",
+            body=body,
+            media_body=media,
+        )
 
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status:
-            pct = int(status.progress() * 100)
-            print(f"  上传进度: {pct}%", flush=True)
+        response = None
+        while response is None:
+            status, response = request.next_chunk()
+            if status:
+                pct = int(status.progress() * 100)
+                print(f"  上传进度: {pct}%", flush=True)
 
     video_id = response.get("id") or ""
     if not video_id:
