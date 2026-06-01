@@ -178,70 +178,66 @@ src/
   cursor_client.py   # Cursor Cloud Agents REST + SSE
   batch_aivideo.py   # 批量编排（近 7 天 URL + 标题/主题去重）
   make_publish.py    # 自动选题一键制作发布编排
-  publish_pipeline.py # 生图→合成→抖音→归档→联动 YouTube/小红书
-  publish_resolve.py # 按视频匹配脚本与封面（YouTube 等共用）
+  publish_pipeline.py # 生图→合成→YouTube/TikTok API→打印文案→归档
+  publish_caption.py  # 统一文案终端展示
+  publish_resolve.py # 按视频匹配脚本与封面（API 发布共用）
   publish_youtube.py / youtube_*.py  # YouTube Data API 发布
-  douyin_*.py / sau_client.py / publish_douyin.py  # 抖音发布（主流程 + 单条调试）
-  douyin_caption.py  # 抖音标题/简介/话题生成
-  social_caption.py  # 小红书/快手/视频号风格文案生成（复用 douyin_caption）
-  social_publisher.py # 小红书/快手/视频号（主流程联动 + 单条调试）
+  publish_tiktok.py / tiktok_*.py    # TikTok Content Posting API 发布
+  douyin_*.py / publish_douyin.py    # 抖音（独立调试，不进主流程）
+  social_publisher.py # 小红书/快手/视频号（独立调试，不进主流程）
   backfill_social.py # 把存量视频批量补发到其它平台（慎用）
   apply_sau_patches.py # 给 vendor 打兼容补丁（抖音登录 + 小红书话题容错）
 ```
 
 ## 发布策略
 
-**主流程**（`make-and-publish.sh` / `make-topics.sh` / `make-from-script.sh` 共用 `publish_pipeline.py`）：
+**主流程**（三种 make 脚本共用 `publish_pipeline.py`）：
 
-1. **抖音**（必成功，否则整条失败）
-2. **归档**到 `archive/published/YYYYMMDD/`
-3. **联动**（best-effort，失败不阻断）：小红书 / 快手 / 视频号（`AIVIDEO_PUBLISH_XHS` 等）→ **YouTube Shorts**（`AIVIDEO_PUBLISH_YOUTUBE`，官方 API）
+1. 生图 → 合成
+2. **YouTube API** 自动发布（`AIVIDEO_PUBLISH_YOUTUBE=1`，默认开）
+3. **TikTok API** 自动发布（`AIVIDEO_PUBLISH_TIKTOK=1`，默认关）
+4. 终端打印**一份**通用文案 + 创作者后台链接
+5. 归档（`--no-publish` 时不发布、不归档）
 
-### 抖音发布（主流程）
+国内平台（抖音/小红书/快手/视频号）**仅手动发布**，勿用浏览器脚本自动发帖。
 
-```bash
-./douyin-login.sh
-./make-and-publish.sh
-```
+完整渠道对照见 **[docs/PUBLISH_CHANNELS.md](docs/PUBLISH_CHANNELS.md)**。
 
-### YouTube Shorts（主流程联动，默认开）
+### YouTube Shorts（主流程，默认开）
 
 ```bash
 ./setup-youtube.sh
 ./youtube-login.sh
-# .env: YOUTUBE_HTTP_PROXY=http://127.0.0.1:7897  YOUTUBE_PRIVACY=public
-./make-and-publish.sh    # 抖音成功后自动上传 YouTube
-./scripts/publish-youtube.sh output/xxx.mp4 --script logs/xxx.json   # 单条调试
+./make-and-publish.sh
+./scripts/publish-youtube.sh output/xxx.mp4 --script logs/xxx.json
 ```
 
 开关：`AIVIDEO_PUBLISH_YOUTUBE=1`。记录：`logs/last_youtube_publish.json`。
 
-### 小红书 / 快手 / 视频号（主流程联动）
+### TikTok Direct Post（主流程，默认关）
 
 ```bash
-./social-login.sh xiaohongshu
+./setup-tiktok.sh
+# Login Kit redirect: http://127.0.0.1:8765/callback/
+./tiktok-login.sh
+# .env: AIVIDEO_PUBLISH_TIKTOK=1  TIKTOK_PRIVACY=SELF_ONLY  # 未过审前通常只能私密
+./scripts/publish-tiktok.sh output/xxx.mp4 --script logs/xxx.json
 ```
 
-开关：`AIVIDEO_PUBLISH_XHS`（默认 1）、`AIVIDEO_PUBLISH_KS`、`AIVIDEO_PUBLISH_SHIPINHAO`。
+开关：`AIVIDEO_PUBLISH_TIKTOK=0`。记录：`logs/last_tiktok_publish.json`。
 
-独立调试脚本：
+### 国内平台（手动）
 
-```bash
-./scripts/publish-xiaohongshu.sh output/xxx.mp4 --script logs/xxx.json
-./scripts/backfill-social.sh xiaohongshu --dry-run   # 存量补发，慎用
-```
+| 平台 | 创作者后台 |
+|------|------------|
+| 抖音 | https://creator.douyin.com/creator-micro/content/upload |
+| 小红书 | https://creator.xiaohongshu.com/publish/publish?from=homepage |
+| 快手 | https://cp.kuaishou.com/article/publish/video |
+| 视频号 | https://channels.weixin.qq.com/platform/post/create |
 
-### 抖音（独立调试，不进主流程）
+独立调试（不进主流程，有封号风险）：`./scripts/publish-douyin.sh`、`./scripts/publish-xiaohongshu.sh` 等。
 
-抖音无开放个人 API，原 Playwright 脚本仍保留供调试。
-
-```bash
-./setup-sau.sh
-./douyin-login.sh
-./scripts/publish-douyin.sh output/xxx.mp4 --script logs/xxx.json
-```
-
-记录：`logs/published_videos.json`、`logs/video_manifest.jsonl`、`logs/article_history.json`。其中 `article_history.json` 会保留近期已做标题，默认近 7 天用于选题去重；可用 `BATCH_HISTORY_DAYS` 调整。
+记录：`logs/article_history.json`（选题去重，默认近 7 天）；`BATCH_HISTORY_DAYS` 可调。
 
 ## 各平台账号简介（复制用）
 

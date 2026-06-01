@@ -6,7 +6,7 @@
   check    校验 token 并显示频道名
   publish  上传单条视频
 
-独立使用（尚未接入 make-and-publish）：
+独立使用：
   ./setup-youtube.sh
   ./youtube-login.sh
   ./scripts/publish-youtube.sh output/xxx.mp4 --script logs/xxx.json

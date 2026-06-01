@@ -1,34 +1,22 @@
 #!/usr/bin/env python3
-"""制作发布共用流水线：脚本落地 → 生图 → 合成 → 抖音 → 归档 → YouTube / 其它平台。"""
+"""制作发布共用流水线：脚本落地 → 生图 → 合成 → YouTube/TikTok API → 打印文案 → 归档。"""
 
 from __future__ import annotations
 
 import json
 import os
-import random
 import shutil
 import subprocess
-import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from paths import ROOT
-from publish_all_douyin import load_published, save_published
+from publish_caption import (
+    print_manual_publish_pack,
+    tiktok_enabled,
+    youtube_enabled,
+)
 from research import run_article_research
-
-
-def youtube_enabled() -> bool:
-    value = os.environ.get("AIVIDEO_PUBLISH_YOUTUBE")
-    if value is None or value.strip() == "":
-        return True
-    return value.strip().lower() in ("1", "true", "yes", "on")
-
-SOCIAL_PLATFORMS = {
-    "xiaohongshu": ("AIVIDEO_PUBLISH_XHS", True),
-    "kuaishou": ("AIVIDEO_PUBLISH_KS", False),
-    "shipinhao": ("AIVIDEO_PUBLISH_SHIPINHAO", False),
-}
-SOCIAL_LABEL = {"xiaohongshu": "小红书", "kuaishou": "快手", "shipinhao": "视频号"}
 
 
 def log(message: str) -> None:
@@ -68,38 +56,22 @@ def latest_video() -> Path:
     return video
 
 
-def _social_enabled(platform: str) -> bool:
-    env_key, default = SOCIAL_PLATFORMS[platform]
-    value = os.environ.get(env_key)
-    if value is None or value.strip() == "":
-        return default
-    return value.strip().lower() in ("1", "true", "yes", "on")
-
-
-def _social_gap_seconds() -> int:
-    try:
-        lo = int(os.environ.get("AIVIDEO_SOCIAL_GAP_MIN", "45"))
-        hi = int(os.environ.get("AIVIDEO_SOCIAL_GAP_MAX", "120"))
-    except ValueError:
-        lo, hi = 45, 120
-    lo = max(0, lo)
-    hi = max(lo, hi)
-    return random.randint(lo, hi)
-
-
-def _read_last_youtube_url() -> str:
-    log_path = ROOT / "logs" / "last_youtube_publish.json"
+def _read_last_publish_url(log_name: str, *keys: str) -> str:
+    log_path = ROOT / "logs" / log_name
     if not log_path.is_file():
         return ""
     try:
         data = json.loads(log_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return ""
-    return str(data.get("shorts_url") or data.get("url") or "").strip()
+    for key in keys:
+        value = str(data.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def publish_youtube_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
-    """YouTube Data API 发布（best-effort）。返回发布 URL（若有）。"""
     cmd = [
         str(ROOT / "scripts" / "publish-youtube.sh"),
         rel(video),
@@ -111,40 +83,22 @@ def publish_youtube_api(video: Path, script_path: Path, *, dry_run: bool) -> str
     run(cmd, label="发布YouTube")
     if dry_run:
         return ""
-    return _read_last_youtube_url()
+    return _read_last_publish_url("last_youtube_publish.json", "shorts_url", "url")
 
 
-def publish_social(video: Path, script_path: Path) -> None:
-    from backfill_social import load_platform_published, save_platform_published
-
-    attempted = 0
-    for platform in SOCIAL_PLATFORMS:
-        if not _social_enabled(platform):
-            continue
-        label = SOCIAL_LABEL[platform]
-        done = load_platform_published(platform)
-        if video.name in done:
-            log(f"  [{label}] 已发过，跳过")
-            continue
-        if attempted > 0:
-            gap = _social_gap_seconds()
-            log(f"  ⏳ 拟人化间隔 {gap}s 后再发{label}…")
-            time.sleep(gap)
-        attempted += 1
-        try:
-            cmd = [
-                str(ROOT / "scripts" / "publish-social.sh"),
-                platform,
-                rel(video),
-                "--script",
-                rel(script_path),
-            ]
-            run(cmd, label=f"发布{label}")
-            done.add(video.name)
-            save_platform_published(platform, done)
-            log(f"  [{label}] 发布成功")
-        except Exception as exc:  # noqa: BLE001
-            log(f"  ⚠️ [{label}] 发布失败（不影响抖音/主流程）：{exc}")
+def publish_tiktok_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    cmd = [
+        str(ROOT / "scripts" / "publish-tiktok.sh"),
+        rel(video),
+        "--script",
+        rel(script_path),
+    ]
+    if dry_run:
+        cmd.append("--dry-run")
+    run(cmd, label="发布TikTok")
+    if dry_run:
+        return ""
+    return _read_last_publish_url("last_tiktok_publish.json", "url")
 
 
 def publish_youtube(video: Path, script_path: Path, *, dry_run: bool) -> str:
@@ -153,10 +107,25 @@ def publish_youtube(video: Path, script_path: Path, *, dry_run: bool) -> str:
     try:
         url = publish_youtube_api(video, script_path, dry_run=dry_run)
         if url:
-            log(f"  [YouTube] 发布成功: {url}")
+            log(f"  [YouTube] {url}")
         return url
     except Exception as exc:  # noqa: BLE001
-        log(f"  ⚠️ [YouTube] 发布失败（不影响抖音/主流程）：{exc}")
+        log(f"  ⚠️ [YouTube] 发布失败（不影响成片/手动发布）：{exc}")
+        return ""
+
+
+def publish_tiktok(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    if not tiktok_enabled():
+        return ""
+    try:
+        url = publish_tiktok_api(video, script_path, dry_run=dry_run)
+        if url:
+            log(f"  [TikTok] {url}")
+        elif not dry_run:
+            log("  [TikTok] 发布完成（暂无公开链接，可能仍在审核或未过 App Review）")
+        return url
+    except Exception as exc:  # noqa: BLE001
+        log(f"  ⚠️ [TikTok] 发布失败（不影响成片/手动发布）：{exc}")
         return ""
 
 
@@ -181,52 +150,64 @@ def pipeline_after_script(
     append_history_fn,
     skip_publish: bool = False,
 ) -> dict:
+    del publish_check  # 保留参数兼容；国内平台改手动发布
+
     run([str(ROOT / "scripts" / "run-enrich-images.sh"), str(script_path)], label="生图")
     run([str(ROOT / "scripts" / "run-compose.sh"), str(script_path)], label="合成")
     video = latest_video()
 
     if skip_publish:
-        log(f"\n=== [{index}/{target}] 跳过发布（--no-publish）===")
+        log(f"\n=== [{index}/{target}] 跳过自动发布（--no-publish）===")
+        print_manual_publish_pack(script_path, video, skip_auto_note=True)
         return {"title": title, "video": rel(video), "script": rel(script_path), "published": False}
 
-    log(f"\n=== [{index}/{target}] 发布抖音 ===")
-    publish_cmd = [str(ROOT / "scripts" / "publish-douyin.sh"), rel(video), "--script", rel(script_path)]
-    if publish_check:
-        publish_cmd.append("--check")
-    if dry_run:
-        publish_cmd.append("--dry-run")
-    run(publish_cmd, label="发布")
-
     youtube_url = ""
+    tiktok_url = ""
+
     if dry_run:
-        log(f"\n=== [{index}/{target}] 预演 YouTube ===")
+        log(f"\n=== [{index}/{target}] 预演 API 发布 ===")
         youtube_url = publish_youtube(video, script_path, dry_run=True)
+        tiktok_url = publish_tiktok(video, script_path, dry_run=True)
+        print_manual_publish_pack(
+            script_path,
+            video,
+            youtube_url=youtube_url,
+            tiktok_url=tiktok_url,
+            skip_auto_note=True,
+        )
         return {
             "title": title,
             "video": rel(video),
             "script": rel(script_path),
             "published": False,
             "youtube_url": youtube_url,
+            "tiktok_url": tiktok_url,
         }
 
-    published = load_published()
-    video_rel = rel(video)
-    published.add(video_rel)
-    save_published(published)
+    if youtube_enabled() or tiktok_enabled():
+        log(f"\n=== [{index}/{target}] API 自动发布（YouTube / TikTok）===")
+    youtube_url = publish_youtube(video, script_path, dry_run=False)
+    tiktok_url = publish_tiktok(video, script_path, dry_run=False)
+
+    log(f"\n=== [{index}/{target}] 手动发布文案 ===")
+    print_manual_publish_pack(
+        script_path,
+        video,
+        youtube_url=youtube_url,
+        tiktok_url=tiktok_url,
+    )
+
     append_history_fn(script_path)
     archived = archive_video(video, date_tag=datetime.now().strftime("%Y%m%d"))
-    log(f"抖音发布成功，已归档：{rel(archived)}")
-
-    log(f"\n=== [{index}/{target}] 联动发布其它平台 ===")
-    publish_social(archived, script_path)
-    youtube_url = publish_youtube(archived, script_path, dry_run=False)
+    log(f"已归档：{rel(archived)}")
 
     return {
         "title": title,
         "video": rel(archived),
         "script": rel(script_path),
-        "published": True,
+        "published": bool(youtube_url or tiktok_url),
         "youtube_url": youtube_url,
+        "tiktok_url": tiktok_url,
     }
 
 

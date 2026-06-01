@@ -4,6 +4,8 @@
 .env.*.local
 credentials/youtube/client_secret.json
 credentials/youtube/*_token.json
+credentials/tiktok/client.json
+credentials/tiktok/*_token.json
 logs/youtube_thumbs/
 experiments/runs/
 

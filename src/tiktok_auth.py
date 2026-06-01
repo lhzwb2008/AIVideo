@@ -1,0 +1,295 @@
+"""TikTok Content Posting API OAuth2（Desktop Login Kit + PKCE）。"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import secrets
+import threading
+import urllib.parse
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+from paths import ROOT
+
+SCOPES = ["user.info.basic", "video.publish"]
+AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
+TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
+
+
+class TikTokAuthError(RuntimeError):
+    pass
+
+
+def _env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default).strip()
+
+
+def account_name() -> str:
+    return _env("TIKTOK_ACCOUNT", "main") or "main"
+
+
+def credentials_dir() -> Path:
+    custom = _env("TIKTOK_CREDENTIALS_DIR")
+    if custom:
+        return Path(custom).expanduser()
+    return ROOT / "credentials" / "tiktok"
+
+
+def client_config_path() -> Path:
+    custom = _env("TIKTOK_CLIENT_CONFIG")
+    if custom:
+        return Path(custom).expanduser()
+    return credentials_dir() / "client.json"
+
+
+def token_path() -> Path:
+    custom = _env("TIKTOK_TOKEN_PATH")
+    if custom:
+        return Path(custom).expanduser()
+    return credentials_dir() / f"{account_name()}_token.json"
+
+
+def redirect_uri() -> str:
+    custom = _env("TIKTOK_REDIRECT_URI")
+    if custom:
+        return custom
+    port = _oauth_port()
+    return f"http://127.0.0.1:{port}/callback/"
+
+
+def _oauth_port() -> int:
+    raw = _env("TIKTOK_OAUTH_PORT", "8765")
+    try:
+        return max(1024, int(raw))
+    except ValueError:
+        return 8765
+
+
+def _load_client_config() -> dict:
+    path = client_config_path()
+    if not path.is_file():
+        raise TikTokAuthError(
+            f"未找到 TikTok 应用配置: {path}\n"
+            "请在 TikTok for Developers 创建应用，保存 client_key/client_secret 到:\n"
+            "  credentials/tiktok/client.json\n"
+            "并在 Login Kit 注册 redirect_uri（默认 http://127.0.0.1:8765/callback/）"
+        )
+    data = json.loads(path.read_text(encoding="utf-8"))
+    key = str(data.get("client_key") or data.get("clientKey") or "").strip()
+    secret = str(data.get("client_secret") or data.get("clientSecret") or "").strip()
+    if not key or not secret:
+        raise TikTokAuthError(f"{path} 需包含 client_key 与 client_secret")
+    return {"client_key": key, "client_secret": secret}
+
+
+def _http_session():
+    import requests
+
+    session = requests.Session()
+    proxy = (
+        _env("TIKTOK_HTTP_PROXY")
+        or _env("https_proxy")
+        or _env("HTTPS_PROXY")
+        or _env("http_proxy")
+        or _env("HTTP_PROXY")
+    )
+    if proxy:
+        session.proxies.update({"http": proxy, "https": proxy})
+    return session
+
+
+def _http_timeout() -> int:
+    try:
+        return max(30, int(_env("TIKTOK_HTTP_TIMEOUT", "120")))
+    except ValueError:
+        return 120
+
+
+def _generate_pkce() -> tuple[str, str]:
+    verifier = secrets.token_urlsafe(64)[:128]
+    challenge = hashlib.sha256(verifier.encode("ascii")).hexdigest()
+    return verifier, challenge
+
+
+def _save_token(data: dict) -> None:
+    path = token_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_token_file() -> dict | None:
+    path = token_path()
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _token_request(payload: dict) -> dict:
+    import requests
+
+    session = _http_session()
+    resp = session.post(
+        TOKEN_URL,
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=_http_timeout(),
+    )
+    data = resp.json()
+    if resp.status_code >= 400 or data.get("error"):
+        desc = data.get("error_description") or data.get("error") or resp.text[:300]
+        raise TikTokAuthError(f"OAuth token 请求失败: {desc}")
+    return data
+
+
+def refresh_access_token(token_data: dict) -> dict:
+    cfg = _load_client_config()
+    refresh = str(token_data.get("refresh_token") or "").strip()
+    if not refresh:
+        raise TikTokAuthError("token 缺少 refresh_token，请重新授权: ./tiktok-login.sh --force")
+    data = _token_request(
+        {
+            "client_key": cfg["client_key"],
+            "client_secret": cfg["client_secret"],
+            "grant_type": "refresh_token",
+            "refresh_token": refresh,
+        }
+    )
+    merged = {**token_data, **data}
+    _save_token(merged)
+    return merged
+
+
+def get_access_token(*, force_refresh: bool = False) -> str:
+    token_data = _load_token_file()
+    if not token_data:
+        raise TikTokAuthError(
+            f"未找到 token: {token_path()}\n请先运行: ./tiktok-login.sh"
+        )
+
+    access = str(token_data.get("access_token") or "").strip()
+    expires_in = int(token_data.get("expires_in") or 0)
+    updated_at = float(token_data.get("_updated_at") or 0)
+    import time
+
+    stale = force_refresh or not access
+    if not stale and expires_in > 0 and updated_at:
+        stale = time.time() >= updated_at + max(60, expires_in - 120)
+
+    if stale:
+        token_data = refresh_access_token(token_data)
+        access = str(token_data.get("access_token") or "").strip()
+
+    if not access:
+        raise TikTokAuthError("无法获取有效 access_token，请运行: ./tiktok-login.sh --force")
+    return access
+
+
+def run_login(*, force: bool = False) -> int:
+    if force and token_path().is_file():
+        token_path().unlink()
+
+    cfg = _load_client_config()
+    verifier, challenge = _generate_pkce()
+    state = secrets.token_urlsafe(24)
+    redirect = redirect_uri()
+    scope = _env("TIKTOK_SCOPES", ",".join(SCOPES))
+
+    params = {
+        "client_key": cfg["client_key"],
+        "scope": scope,
+        "response_type": "code",
+        "redirect_uri": redirect,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+    auth_link = AUTH_URL + "?" + urllib.parse.urlencode(params)
+
+    result: dict = {}
+    error: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            parsed = urllib.parse.urlparse(self.path)
+            if not parsed.path.rstrip("/").endswith("/callback"):
+                self.send_response(404)
+                self.end_headers()
+                return
+            qs = urllib.parse.parse_qs(parsed.query)
+            if qs.get("state", [""])[0] != state:
+                error.append("state 不匹配，可能存在 CSRF")
+            elif qs.get("error"):
+                error.append(qs.get("error_description", qs["error"])[0])
+            elif qs.get("code"):
+                result["code"] = qs["code"][0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            msg = "✅ TikTok 授权成功，可以关闭此页面。" if result.get("code") else "❌ 授权失败，请回到终端查看。"
+            self.wfile.write(f"<html><body><h2>{msg}</h2></body></html>".encode())
+
+        def log_message(self, *_args):  # noqa: D401
+            return
+
+    port = _oauth_port()
+    server = HTTPServer(("127.0.0.1", port), Handler)
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+
+    print(f"正在打开浏览器授权 TikTok… redirect_uri={redirect}", flush=True)
+    print(f"若浏览器未自动打开，请访问:\n{auth_link}\n", flush=True)
+    webbrowser.open(auth_link)
+    thread.join(timeout=300)
+    server.server_close()
+
+    if error:
+        raise TikTokAuthError(error[0])
+    code = result.get("code")
+    if not code:
+        raise TikTokAuthError("未收到授权 code（超时或 redirect_uri 与开发者后台不一致）")
+
+    data = _token_request(
+        {
+            "client_key": cfg["client_key"],
+            "client_secret": cfg["client_secret"],
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": redirect,
+            "code_verifier": verifier,
+        }
+    )
+    import time
+
+    data["_updated_at"] = time.time()
+    _save_token(data)
+    print(f"✅ TikTok 授权已保存: {token_path()}", flush=True)
+    print(f"   scope: {data.get('scope', '')}", flush=True)
+    return 0
+
+
+def run_check() -> int:
+    token = get_access_token()
+    cfg = _load_client_config()
+    import requests
+
+    session = _http_session()
+    resp = session.post(
+        "https://open.tiktokapis.com/v2/post/publish/creator_info/query/",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=UTF-8",
+        },
+        json={},
+        timeout=_http_timeout(),
+    )
+    body = resp.json()
+    err = (body.get("error") or {}).get("code") or ""
+    if resp.status_code >= 400 or (err and err != "ok"):
+        raise TikTokAuthError(f"token 校验失败: {body}")
+    info = body.get("data") or {}
+    print(f"✅ TikTok token 有效 — @{info.get('creator_username', '?')}", flush=True)
+    print(f"   可用隐私: {', '.join(info.get('privacy_level_options') or [])}", flush=True)
+    return 0
