@@ -33,7 +33,7 @@ VIDEO_MANUAL_PLATFORMS: list[tuple[str, str, str]] = [
 
 # 需要手动发「图文」的财经论坛：(名称, 发布地址)
 FORUM_MANUAL_PLATFORMS: list[tuple[str, str]] = [
-    ("雪球", "https://xueqiu.com/"),
+    ("雪球", "https://mp.xueqiu.com/"),
     ("东方财富(股吧/财富号)", "https://mpservice.eastmoney.com/"),
 ]
 
@@ -60,6 +60,7 @@ def print_manual_publish_pack(
     youtube_url: str = "",
     tiktok_url: str = "",
     eastmoney_title: str = "",
+    xueqiu_title: str = "",
     skip_auto_note: bool = False,
 ) -> None:
     script = _load_script_dict(script_path) or load_script(script_path)
@@ -117,6 +118,7 @@ def print_manual_publish_pack(
         youtube_url=youtube_url,
         tiktok_url=tiktok_url,
         eastmoney_title=eastmoney_title,
+        xueqiu_title=xueqiu_title,
         skip_auto_note=skip_auto_note,
     )
 
@@ -129,6 +131,7 @@ def _print_todo_checklist(
     youtube_url: str,
     tiktok_url: str,
     eastmoney_title: str,
+    xueqiu_title: str,
     skip_auto_note: bool,
 ) -> None:
     """流程结束后的「待办清单」，提醒哪些需要手动发，免得忘。"""
@@ -155,6 +158,11 @@ def _print_todo_checklist(
                 print(f"  [✓] 东方财富已提交: {eastmoney_title}", flush=True)
             else:
                 print("  [!] 东方财富未发布或失败，可手动: ./scripts/publish-eastmoney.sh", flush=True)
+        if xueqiu_enabled():
+            if xueqiu_title:
+                print(f"  [✓] 雪球已提交: {xueqiu_title}", flush=True)
+            else:
+                print("  [!] 雪球未发布或失败，可手动: ./scripts/publish-xueqiu.sh", flush=True)
 
     # 2) 手动发布视频（抖音/小红书/视频号）
     src_hint = f"（上传成片 {video_rel}）" if video_rel else ""
@@ -164,19 +172,26 @@ def _print_todo_checklist(
         print(f"  [ ] {name}: {url}", flush=True)
         print(f"        {tip}", flush=True)
 
-    # 3) 手动发布图文（雪球；东方财富已自动则仅补雪球）
+    # 3) 手动发布图文（论坛包；东财/雪球已自动则跳过）
     if has_forum:
+        auto_forum = (eastmoney_enabled() and eastmoney_title) or (
+            xueqiu_enabled() and xueqiu_title
+        )
         print(f"\n— 手动发布·图文（用 {forum_rel}/post.md + cover.jpg）—", flush=True)
-        if eastmoney_enabled() and eastmoney_title:
-            print("  东方财富已由 Playwright 自动提交（审核中），剩余：", flush=True)
+        if auto_forum:
+            print("  论坛图文已由 Playwright 自动提交，剩余平台（如有）：", flush=True)
         else:
             print("  post.md 第一行做标题，正文整段贴入，按【插入配图 N】上传 images/0N.jpg：", flush=True)
         for name, url in FORUM_MANUAL_PLATFORMS:
             if name.startswith("东方财富") and eastmoney_enabled() and eastmoney_title:
                 print(f"  [✓] {name}: 已自动发布", flush=True)
                 continue
+            if name == "雪球" and xueqiu_enabled() and xueqiu_title:
+                print(f"  [✓] {name}: 已自动发布", flush=True)
+                continue
             print(f"  [ ] {name}: {url}", flush=True)
-        print("        雪球首页推荐位可改用 cover_landscape.jpg（16:9 横图）", flush=True)
+        if not xueqiu_enabled():
+            print("        雪球首页推荐位可改用 cover_landscape.jpg（16:9 横图）", flush=True)
 
     print("\n" + "─" * 58, flush=True)
     print("提示: 财经平台风控严，简介勿出现「荐股/收益/带单」等字眼。", flush=True)
@@ -199,6 +214,13 @@ def tiktok_enabled() -> bool:
 
 def eastmoney_enabled() -> bool:
     value = os.environ.get("AIVIDEO_PUBLISH_EASTMONEY")
+    if value is None or value.strip() == "":
+        return False
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def xueqiu_enabled() -> bool:
+    value = os.environ.get("AIVIDEO_PUBLISH_XUEQIU")
     if value is None or value.strip() == "":
         return False
     return value.strip().lower() in ("1", "true", "yes", "on")

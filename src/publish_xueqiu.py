@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""发布论坛图文包到东方财富创作平台。"""
+"""发布论坛图文包到雪球创作者中心。"""
 
 from __future__ import annotations
 
@@ -11,9 +11,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from eastmoney_publisher import EastmoneyPublishError, parse_forum_pack, publish_forum_pack
 from forum_auth import run_with_relogin
 from paths import ROOT
+from xueqiu_publisher import (
+    XueqiuPublishError,
+    parse_xueqiu_pack,
+    publish_forum_pack,
+)
 
 
 def load_env() -> None:
@@ -34,7 +38,7 @@ def resolve_pack(path: str | None) -> Path:
         if not pack.is_absolute():
             pack = ROOT / pack
         if not pack.is_dir():
-            raise EastmoneyPublishError(f"论坛包目录不存在: {pack}")
+            raise XueqiuPublishError(f"论坛包目录不存在: {pack}")
         return pack
 
     published = ROOT / "archive" / "published"
@@ -44,41 +48,41 @@ def resolve_pack(path: str | None) -> Path:
         reverse=True,
     )
     if not candidates:
-        raise EastmoneyPublishError("未找到论坛包，请指定目录")
+        raise XueqiuPublishError("未找到论坛包，请指定目录")
     return candidates[0].parent
 
 
 def packs_for_date(date_tag: str) -> list[Path]:
     base = ROOT / "archive" / "published" / date_tag
     if not base.is_dir():
-        raise EastmoneyPublishError(f"归档日期目录不存在: {base}")
+        raise XueqiuPublishError(f"归档日期目录不存在: {base}")
     packs = sorted(
         {p.parent for p in base.glob("*/post.md")},
         key=lambda p: p.name,
     )
     if not packs:
-        raise EastmoneyPublishError(f"{date_tag} 下无论坛包")
+        raise XueqiuPublishError(f"{date_tag} 下无论坛包")
     return packs
 
 
 def _write_log(result: dict) -> Path:
     log_dir = ROOT / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "last_eastmoney_publish.json"
+    log_path = log_dir / "last_xueqiu_publish.json"
     payload = {"at": datetime.now(timezone.utc).isoformat(), **result}
     log_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    history = log_dir / "eastmoney_publish_history.jsonl"
+    history = log_dir / "xueqiu_publish_history.jsonl"
     with history.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
     return log_path
 
 
 def _dry_run_check(pack: Path, *, account: str) -> dict:
-    data = parse_forum_pack(pack)
-    from eastmoney_session import verify_editor_sync
+    from xueqiu_session import verify_editor_sync
 
+    data = parse_xueqiu_pack(pack)
     if not verify_editor_sync(account=account):
-        raise EastmoneyPublishError("未登录")
+        raise XueqiuPublishError("未登录")
     return {
         "title": data["title"],
         "pack_dir": data["pack_dir"],
@@ -112,9 +116,9 @@ def publish_pack(
         return attempt()
     return run_with_relogin(
         attempt,
-        platform="eastmoney",
+        platform="xueqiu",
         account=account,
-        label="东方财富",
+        label="雪球",
         interactive_login=True,
     )
 
@@ -127,14 +131,14 @@ def publish_forum_dir(
 ) -> str:
     """主流程入口：发布单个论坛包，cookie 失效时等待扫码后继续。"""
     load_env()
-    account = account or os.environ.get("EASTMONEY_ACCOUNT", "main")
+    account = account or os.environ.get("XUEQIU_ACCOUNT", "main")
     pack = Path(forum_dir)
     if not pack.is_absolute():
         pack = ROOT / pack
     if not (pack / "post.md").is_file():
         return ""
 
-    print(f"\n[发布东方财富] {pack}", flush=True)
+    print(f"\n[发布雪球] {pack}", flush=True)
     result = publish_pack(
         pack,
         headless=True,
@@ -166,7 +170,7 @@ def _publish_one(
 
 def main() -> int:
     load_env()
-    parser = argparse.ArgumentParser(description="东方财富长文图文发布")
+    parser = argparse.ArgumentParser(description="雪球长文图文发布")
     parser.add_argument(
         "pack_dir",
         nargs="?",
@@ -188,7 +192,7 @@ def main() -> int:
         action="store_true",
         help="校验登录态与素材，不打开浏览器填表",
     )
-    parser.add_argument("--account", default=os.environ.get("EASTMONEY_ACCOUNT", "main"))
+    parser.add_argument("--account", default=os.environ.get("XUEQIU_ACCOUNT", "main"))
     args = parser.parse_args()
 
     try:
@@ -196,7 +200,7 @@ def main() -> int:
             packs = packs_for_date(args.date)
         else:
             packs = [resolve_pack(args.pack_dir)]
-    except EastmoneyPublishError as exc:
+    except XueqiuPublishError as exc:
         print(f"发布失败: {exc}", file=sys.stderr)
         return 1
 
@@ -219,7 +223,7 @@ def main() -> int:
                     publish=publish,
                     account=args.account,
                 )
-        except EastmoneyPublishError as exc:
+        except XueqiuPublishError as exc:
             print(f"发布失败 [{pack.name}]: {exc}", file=sys.stderr)
             continue
         log_path = _write_log({**result, "draft_only": not publish})

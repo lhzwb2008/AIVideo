@@ -17,8 +17,10 @@ from publish_caption import (
     eastmoney_enabled,
     print_manual_publish_pack,
     tiktok_enabled,
+    xueqiu_enabled,
     youtube_enabled,
 )
+from forum_auth import is_login_error
 from research import run_article_research
 
 
@@ -105,18 +107,15 @@ def publish_tiktok_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
 
 
 def publish_eastmoney_api(forum_dir: Path, *, dry_run: bool) -> str:
-    cmd = [
-        str(ROOT / "scripts" / "publish-eastmoney.sh"),
-        rel(forum_dir),
-    ]
-    if dry_run:
-        cmd.append("--dry-run")
-    else:
-        cmd.append("--publish")
-    run(cmd, label="发布东方财富")
-    if dry_run:
-        return ""
-    return _read_last_publish_url("last_eastmoney_publish.json", "title")
+    from publish_eastmoney import publish_forum_dir
+
+    return publish_forum_dir(forum_dir, dry_run=dry_run)
+
+
+def publish_xueqiu_api(forum_dir: Path, *, dry_run: bool) -> str:
+    from publish_xueqiu import publish_forum_dir
+
+    return publish_forum_dir(forum_dir, dry_run=dry_run)
 
 
 def _retry_config() -> tuple[int, int]:
@@ -203,6 +202,52 @@ def publish_tiktok(video: Path, script_path: Path, *, dry_run: bool) -> str:
     return _publish_with_retry(_do, label="TikTok", dry_run=dry_run)
 
 
+def _publish_forum_with_retry(do_fn, *, label: str, dry_run: bool) -> str:
+    """论坛 Playwright 发布：cookie 失效已在内部等待扫码；其它错误可重试/跳过。"""
+    max_attempts, sleep_s = _retry_config()
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return do_fn()
+        except Exception as exc:  # noqa: BLE001
+            if is_login_error(exc):
+                log(f"  🔐 [{label}] 登录问题：{exc}（应已弹窗等待扫码，正在重试…）")
+                continue
+            log(f"  ⚠️ [{label}] 第 {attempt} 次发布失败：{exc}")
+            if dry_run or (max_attempts > 0 and attempt >= max_attempts):
+                log(f"  ↳ [{label}] 已达重试上限，跳过自动发布（不影响成片/手动发布）。")
+                return ""
+            remain = f"剩余 {max_attempts - attempt} 次" if max_attempts > 0 else "将持续重试"
+            log(f"  ↻ [{label}] {sleep_s}s 后自动重试…（{remain}）")
+            if sys.stdin and sys.stdin.isatty():
+                log(f"     （回车=立即重试；输入 s 回车=跳过 {label}）")
+                if _wait_or_skip(sleep_s):
+                    log(f"  ↳ [{label}] 已按要求跳过。")
+                    return ""
+            else:
+                time.sleep(sleep_s)
+
+
+def publish_xueqiu(forum_dir: str | Path, *, dry_run: bool) -> str:
+    if not xueqiu_enabled():
+        return ""
+    path = Path(forum_dir)
+    if not path.is_absolute():
+        path = ROOT / path
+    if not (path / "post.md").is_file():
+        log(f"  ↳ [雪球] 跳过：无论坛包 {rel(path)}")
+        return ""
+
+    def _do() -> str:
+        title = publish_xueqiu_api(path, dry_run=dry_run)
+        if title:
+            log(f"  [雪球] {title}")
+        return title
+
+    return _publish_forum_with_retry(_do, label="雪球", dry_run=dry_run)
+
+
 def publish_eastmoney(forum_dir: str | Path, *, dry_run: bool) -> str:
     if not eastmoney_enabled():
         return ""
@@ -219,7 +264,7 @@ def publish_eastmoney(forum_dir: str | Path, *, dry_run: bool) -> str:
             log(f"  [东方财富] {title}")
         return title
 
-    return _publish_with_retry(_do, label="东方财富", dry_run=dry_run)
+    return _publish_forum_with_retry(_do, label="东方财富", dry_run=dry_run)
 
 
 def archive_video(video: Path, *, date_tag: str) -> Path:
@@ -292,6 +337,7 @@ def pipeline_after_script(
     youtube_url = ""
     tiktok_url = ""
     eastmoney_title = ""
+    xueqiu_title = ""
 
     if dry_run:
         log(f"\n=== [{index}/{target}] 预演 API 发布 ===")
@@ -300,12 +346,14 @@ def pipeline_after_script(
         forum_preview = video.parent / video.stem
         if forum_preview.is_dir() and (forum_preview / "post.md").is_file():
             eastmoney_title = publish_eastmoney(forum_preview, dry_run=True)
+            xueqiu_title = publish_xueqiu(forum_preview, dry_run=True)
         print_manual_publish_pack(
             script_path,
             video,
             youtube_url=youtube_url,
             tiktok_url=tiktok_url,
             eastmoney_title=eastmoney_title,
+            xueqiu_title=xueqiu_title,
             skip_auto_note=True,
         )
         return {
@@ -316,10 +364,11 @@ def pipeline_after_script(
             "youtube_url": youtube_url,
             "tiktok_url": tiktok_url,
             "eastmoney_title": eastmoney_title,
+            "xueqiu_title": xueqiu_title,
         }
 
-    if youtube_enabled() or tiktok_enabled() or eastmoney_enabled():
-        log(f"\n=== [{index}/{target}] API 自动发布（YouTube / TikTok / 东方财富）===")
+    if youtube_enabled() or tiktok_enabled() or eastmoney_enabled() or xueqiu_enabled():
+        log(f"\n=== [{index}/{target}] API 自动发布（YouTube / TikTok / 东方财富 / 雪球）===")
     youtube_url = publish_youtube(video, script_path, dry_run=False)
     tiktok_url = publish_tiktok(video, script_path, dry_run=False)
 
@@ -331,6 +380,7 @@ def pipeline_after_script(
         log(f"  论坛图文：{rel(archived['forum'])}/")
         log(f"  发布文案：{rel(archived['forum'])}/README.md")
         eastmoney_title = publish_eastmoney(archived["forum"], dry_run=False)
+        xueqiu_title = publish_xueqiu(archived["forum"], dry_run=False)
 
     print_manual_publish_pack(
         script_path,
@@ -338,6 +388,7 @@ def pipeline_after_script(
         youtube_url=youtube_url,
         tiktok_url=tiktok_url,
         eastmoney_title=eastmoney_title,
+        xueqiu_title=xueqiu_title,
     )
 
     return {
@@ -345,10 +396,11 @@ def pipeline_after_script(
         "video": rel(archived["video"]),
         "forum": rel(archived["forum"]) if archived.get("forum") else "",
         "script": rel(script_path),
-        "published": bool(youtube_url or tiktok_url or eastmoney_title),
+        "published": bool(youtube_url or tiktok_url or eastmoney_title or xueqiu_title),
         "youtube_url": youtube_url,
         "tiktok_url": tiktok_url,
         "eastmoney_title": eastmoney_title,
+        "xueqiu_title": xueqiu_title,
     }
 
 

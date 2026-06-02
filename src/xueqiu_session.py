@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验东方财富创作平台登录态。"""
+"""校验雪球创作者中心登录态。"""
 
 from __future__ import annotations
 
@@ -8,9 +8,10 @@ import asyncio
 import sys
 from pathlib import Path
 
-from eastmoney_publisher import (
+from paths import ROOT
+from xueqiu_publisher import (
     EDITOR_URL,
-    EastmoneyPublishError,
+    XueqiuPublishError,
     _chrome_path,
     _ensure_patchright,
     _open_longform_editor,
@@ -18,7 +19,6 @@ from eastmoney_publisher import (
     profile_dir,
     sau_home,
 )
-from paths import ROOT
 
 
 async def login_interactive(*, account: str | None = None, timeout_s: float = 300) -> Path:
@@ -27,7 +27,7 @@ async def login_interactive(*, account: str | None = None, timeout_s: float = 30
     from patchright.async_api import async_playwright
 
     account = account or "main"
-    cookie = sau_home(ROOT) / "cookies" / f"eastmoney_{account}.json"
+    cookie = sau_home(ROOT) / "cookies" / f"xueqiu_{account}.json"
     cookie.parent.mkdir(parents=True, exist_ok=True)
     profile = profile_dir(account=account)
     profile.mkdir(parents=True, exist_ok=True)
@@ -50,19 +50,27 @@ async def login_interactive(*, account: str | None = None, timeout_s: float = 30
             **launch,
         )
         page = context.pages[0] if context.pages else await context.new_page()
-        await _open_longform_editor(page)
-        print("请在浏览器中完成登录（扫码或短信），进入长文编辑器后自动保存…", flush=True)
+        await page.goto(
+            "https://xueqiu.com/account/login?url=https://mp.xueqiu.com",
+            wait_until="domcontentloaded",
+            timeout=90_000,
+        )
+        print("请在浏览器中完成登录，进入长文编辑器后自动保存…", flush=True)
         for _ in range(int(timeout_s)):
             url = page.url.lower()
-            if "usercenter" not in url and "login" not in url:
-                loc = page.locator('input[placeholder*="标题"]')
+            if "login" not in url:
+                try:
+                    await _open_longform_editor(page)
+                except Exception:
+                    pass
+                loc = page.locator('textarea[placeholder*="标题"], input[placeholder*="标题"], .ProseMirror')
                 if await loc.count():
                     await context.storage_state(path=str(cookie))
                     await context.close()
                     return cookie
             await asyncio.sleep(1)
         await context.close()
-    raise EastmoneyPublishError("登录超时")
+    raise XueqiuPublishError("登录超时")
 
 
 async def verify_editor(*, account: str | None = None) -> bool:
@@ -71,7 +79,7 @@ async def verify_editor(*, account: str | None = None) -> bool:
 
     try:
         cookie = cookie_path(account=account)
-    except EastmoneyPublishError:
+    except XueqiuPublishError:
         return False
     launch: dict = {
         "headless": True,
@@ -94,11 +102,9 @@ async def verify_editor(*, account: str | None = None) -> bool:
             )
             page = await context.new_page()
             await page.goto(EDITOR_URL, wait_until="domcontentloaded", timeout=90_000)
-            url = page.url.lower()
-            if "usercenter" in url or "login" in url:
-                return False
-            loc = page.locator('input[placeholder*="标题"]')
-            return await loc.count() > 0
+            from xueqiu_publisher import _editor_ready
+
+            return await _editor_ready(page)
         finally:
             await browser.close()
 
@@ -108,7 +114,7 @@ def verify_editor_sync(*, account: str | None = None) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="校验东方财富长文编辑器登录态")
+    parser = argparse.ArgumentParser(description="校验雪球长文编辑器登录态")
     parser.add_argument("--account", default=None)
     parser.add_argument("--login", action="store_true", help="有头浏览器登录并保存 cookie")
     parser.add_argument("--check", action="store_true", help="校验登录态（默认行为）")
@@ -119,13 +125,13 @@ def main() -> int:
             print(f"已保存 cookie: {path}")
             return 0
         ok = asyncio.run(verify_editor(account=args.account))
-    except EastmoneyPublishError as exc:
+    except XueqiuPublishError as exc:
         print(exc, file=sys.stderr)
         return 1
     if ok:
-        print("东方财富创作平台：登录态有效")
+        print("雪球创作者中心：登录态有效")
         return 0
-    print("东方财富创作平台：未登录或 cookie 已过期", file=sys.stderr)
+    print("雪球创作者中心：未登录或 cookie 已过期", file=sys.stderr)
     return 1
 
 
