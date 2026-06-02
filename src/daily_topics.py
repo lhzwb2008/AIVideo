@@ -39,16 +39,20 @@ _HKUS_KW = re.compile(
 DEFAULT_DIR_RATIO = {"astock": 0.55, "ai": 0.25, "hkus": 0.20}
 DEFAULT_ASTOCK_MIN_RATIO = 0.5  # A股条数须满足 count/target > 此值（默认 >50%）
 
-PROPOSE_SYSTEM = """你是抖音栏目「AI财知道」的每日选题编辑。输入是近几天 AI/财经/A股 热点候选（标题+摘要），你的任务是提炼「话题线索」title_hint，而不是挑选哪篇文章。
+PROPOSE_SYSTEM = """你是抖音栏目「AI财知道」的每日选题编辑。输入是近几天 AI/财经/A股 热点候选（标题+摘要）。
 
-每条 title_hint 会走：按线索搜最新文章 → 深读 → 改编成 3-4 页「为什么/是什么/意味着什么」问答短视频。
+每条会走：按线索搜文 → 深读 → 改编成 3-4 页短视频。**Hook-First：先定炸裂冷开场，再定问句标题。**
 
 要求：
-1. title_hint 用中文，8-28 字，适合做成搜索友好问句（为什么/是什么/意味着什么/到底…）。
-2. 优先 48 小时内真实热点；A股 爆点（涨停潮/题材/龙虎榜/业绩/IPO）可大胆写，但禁止荐股、喊单、股票代码。
-3. 与【近期已做标题】避免同一公司、同一事件、同一财报重复。
-4. 输出 6-8 条；其中 direction=astock（A股/国内股市）不少于【A股最少条数】条，其余覆盖 ai / hkus。
-5. direction 只能是 astock、ai、hkus；category 与 direction 一致（astock→astock, ai→ai, hkus→hkus）。
+1. title_hint：中文 8-28 字，搜索友好问句（为什么/意味着什么/到底…）。
+2. cold_open：12-28 字，**必须一句话说完**。**先跟普通人生活挂钩**，再抛反差/数字/反问；禁止「今天讲…」和纯术语开场（路人 3 秒听不懂就失败）。
+   - 好：「你手机里的一个小元件，居然能带飞整条涨停链」「买菜发现鸡蛋又涨了？背后可能是这种原料」
+   - 差：「MLCC概念突然集体涨停」「CPO供给瓶颈加剧」（术语留到正文里由浅入深讲）
+3. theme_cluster：概念簇英文 id，同产业链/同题材必须相同。示例：optical_module、ai_chip、ev_auto、macro_rates、consumer_platform；无法归类用 general。
+4. angle：10-24 字，本篇唯一视角（如「只讲供给瓶颈，不讲股价」）。
+5. 优先 48 小时内真实热点；禁止荐股、喊单、股票代码。
+6. 与【近期已做标题】【近期概念簇】避免重复；**本批 6-10 条里同一 theme_cluster 最多出现 1 次**；CPO/光模块/800G/硅光等同簇不要换皮重复。
+7. direction=astock 不少于【A股最少条数】条，其余 ai / hkus；direction 只能是 astock、ai、hkus。
 
 只输出 JSON，不要 markdown。"""
 
@@ -56,6 +60,9 @@ PROPOSE_USER = """【今天】{today}
 
 【近期已做过的标题（勿重复）】
 {recent_topics_json}
+
+【近期已发概念簇（勿重复）】
+{recent_clusters_json}
 
 【热点候选（仅作线索，不必绑定某篇 URL）】
 {candidates_json}
@@ -67,6 +74,9 @@ PROPOSE_USER = """【今天】{today}
       "direction": "astock|ai|hkus",
       "category": "astock|ai|hkus",
       "title_hint": "为什么…/…意味着什么",
+      "cold_open": "炸裂一句，12-28字",
+      "theme_cluster": "optical_module",
+      "angle": "本篇唯一角度",
       "reason": "20-40字，说明新鲜度与可讲性"
     }}
   ]
@@ -230,11 +240,19 @@ def propose_topic_hints(
         f"  🤖 让 {text_model()} 从 {len(pool)} 条热点提炼问句话题线索"
         f"（目标 {target} 条，至少 {min_astock} 条 A股）…"
     )
+    try:
+        from theme_clusters import recent_cluster_summary
+
+        recent_clusters = recent_cluster_summary()
+    except Exception:  # noqa: BLE001
+        recent_clusters = []
+
     raw = chat_complete(
         system=system,
         user=PROPOSE_USER.format(
             today=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             recent_topics_json=json.dumps(recent_topics or [], ensure_ascii=False, indent=2),
+            recent_clusters_json=json.dumps(recent_clusters or [], ensure_ascii=False, indent=2),
             candidates_json=json.dumps(_candidate_view(pool, limit=limit), ensure_ascii=False, indent=2),
         ),
         max_tokens=3500,
@@ -253,10 +271,23 @@ def propose_topic_hints(
         cat = categories.normalize_category(row.get("category")) or direction
         if cat not in DIRECTION_ORDER:
             cat = direction
+        cold_open = str(row.get("cold_open") or "").strip()
+        angle = str(row.get("angle") or "").strip()
+        theme_cluster = str(row.get("theme_cluster") or "").strip()
+        try:
+            from theme_clusters import infer_theme_cluster
+
+            if not theme_cluster:
+                theme_cluster = infer_theme_cluster(hint, cold_open, angle)
+        except Exception:  # noqa: BLE001
+            theme_cluster = theme_cluster or "general"
         proposed.append({
             "direction": direction,
             "category": cat,
             "title_hint": hint,
+            "cold_open": cold_open,
+            "theme_cluster": theme_cluster,
+            "angle": angle,
             "reason": str(row.get("reason") or "").strip(),
         })
     return proposed
@@ -266,6 +297,10 @@ def _topic_as_cand(topic: dict) -> dict:
     return {
         "title": topic.get("title_hint"),
         "question_title": topic.get("title_hint"),
+        "title_hint": topic.get("title_hint"),
+        "cold_open": topic.get("cold_open"),
+        "theme_cluster": topic.get("theme_cluster"),
+        "angle": topic.get("angle"),
         "summary_zh": topic.get("reason") or topic.get("title_hint"),
     }
 
@@ -285,6 +320,7 @@ def select_daily_topics(
     selected: list[dict] = []
     picked_dirs: dict[str, int] = {d: 0 for d in DIRECTION_ORDER}
     used_hints: set[str] = set()
+    used_clusters: dict[str, int] = {}
     dir_rank = {"astock": 0, "ai": 1, "hkus": 2}
     proposed_sorted = sorted(
         proposed,
@@ -300,20 +336,31 @@ def select_daily_topics(
         d = row.get("direction", "ai")
         if respect_quota and picked_dirs.get(d, 0) >= quotas.get(d, 0):
             return False
-        reason = duplicate_topic_reason(_topic_as_cand(row), recent_items)
+        reason = duplicate_topic_reason(
+            _topic_as_cand(row), recent_items, extra_cluster_counts=used_clusters,
+        )
         if reason:
             print(f"  ↯ 话题去重：{hint}（{reason}）")
+            return False
+        cluster = str(row.get("theme_cluster") or "general").strip()
+        if cluster != "general" and used_clusters.get(cluster, 0) >= 1:
+            print(f"  ↯ 本批概念簇去重：{hint}（簇 {cluster} 本批已选）")
             return False
         for prev in selected:
             if _hints_too_similar(hint, str(prev.get("title_hint") or "")):
                 print(f"  ↯ 本批去重：{hint} ≈ {prev.get('title_hint')}")
                 return False
         used_hints.add(hint)
+        if cluster != "general":
+            used_clusters[cluster] = used_clusters.get(cluster, 0) + 1
         picked_dirs[d] = picked_dirs.get(d, 0) + 1
         selected.append({
             "index": len(selected) + 1,
             "raw": hint,
             "title_hint": hint,
+            "cold_open": row.get("cold_open"),
+            "theme_cluster": cluster,
+            "angle": row.get("angle"),
             "provided_content": None,
             "category": row.get("category") or d,
             "direction": d,
@@ -390,7 +437,15 @@ def discover_daily_topics(*, days: int, target: int) -> list[dict]:
     print(f"\n提炼出 {len(proposed)} 条话题线索：")
     for i, p in enumerate(proposed, 1):
         tag = DIRECTION_LABEL.get(p.get("direction", ""), "?")
-        print(f"  {i}. [{tag}] {p.get('title_hint')} — {p.get('reason', '')}")
+        co = p.get("cold_open") or ""
+        cl = p.get("theme_cluster") or ""
+        print(f"  {i}. [{tag}] {p.get('title_hint')}")
+        if co:
+            print(f"      冷开场: {co}")
+        if cl:
+            print(f"      概念簇: {cl} — {p.get('reason', '')}")
+        else:
+            print(f"      — {p.get('reason', '')}")
 
     selected = select_daily_topics(proposed, target=target, recent_topics=recent_topics)
     made = {d: 0 for d in DIRECTION_ORDER}
@@ -400,7 +455,9 @@ def discover_daily_topics(*, days: int, target: int) -> list[dict]:
     print(f"\n选定 {len(selected)}/{target} 条（实际 {_quota_brief(actual_n, made)}）：")
     for t in selected:
         tag = DIRECTION_LABEL.get(t.get("direction", ""), "?")
-        print(f"  ✓ [{tag}] {t.get('title_hint')}")
+        co = t.get("cold_open") or ""
+        extra = f" | 冷开场: {co}" if co else ""
+        print(f"  ✓ [{tag}] {t.get('title_hint')}{extra}")
 
     report = ROOT / "logs" / "daily_topics_last.json"
     report.write_text(

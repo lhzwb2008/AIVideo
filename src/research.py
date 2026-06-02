@@ -932,6 +932,10 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
 {
   "title": "6-18字中文问句标题",
   "keyword": "2-8字关键词",
+  "cold_open": "12-28字冷开场：先生活场景再反差，禁止纯术语",
+  "cold_open_type": "conflict|number|question|myth_bust",
+  "theme_cluster": "optical_module|ai_chip|ev_auto|macro_rates|consumer_platform|general",
+  "angle": "10-24字本篇唯一角度",
   "hashtags": ["3-5个能蹭上的热点大词，优先用大家真会搜的赛事/事件/公司名，别自创窄词或写品牌名"],
   "slides": [
     {
@@ -947,7 +951,7 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
 - **大白话优先**：能用日常说法就别用专业术语。一旦出现普通人不懂的概念（如市盈率、毛利率、算力、流动性、估值、护城河、降息等），必须**当场用一句生活化的比喻或熟悉的例子**讲清它是什么，再往下说。例：与其说「毛利率下滑」，不如说「卖一杯奶茶以前能赚 4 块，现在只能赚 2 块」。
 - **多打比方、多举例**：尽量把抽象数字和逻辑落到具体场景上——用买菜、点外卖、租房、打车、开奶茶店、追剧这类大家熟悉的事来类比公司经营、行情、技术原理。能举一个生活化例子说明的，就不要干巴巴讲道理。
 - **少念观点、多讲故事**：不要把文章里的判断和结论直接搬运过来念（「文章认为/数据显示……」式的复述）。要消化成自己的话，用「打个比方」「你想象一下」「这就好比」「说人话就是」这种口吻把道理讲活。
-- **开头钩子要抓人**：第 1 页封面口播用一个反差、悬念、或贴近观众的具体问题开场（比如「一杯奶茶的成本，居然能看出一家公司赚不赚钱？」），勾住人往下看，别一上来就抛术语或背景介绍。
+- **冷开场 cold_open（硬性，单独字段）**：12-28 字、一句话说完，**仅作口播+底部字幕**（合成时不会印在封面图上）。**必须让零基础路人 3 秒听懂「跟我有啥关系」**——先用手机/涨价/买菜/工资/家电等生活场景做入口，再抛数字/反问/反常识；禁止「今天讲…」和纯术语开场。封面 slides[0].narration **不要重复 cold_open**，从「说人话就是」由浅入深。
 - **节奏轻快、有人味**：像跟朋友唠嗑，可以适度用口语化的小调侃、反问、感叹，但不浮夸、不标题党、不虚构。宁可信息密度低一点也要讲明白，别堆砌。
 - 注意：以上「生动口语」要求不能突破后面的合规红线（不荐股、不喊单、不出现股票代码等）。
 
@@ -956,8 +960,8 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
   - **宁可用大家都在搜的大词，也不要自己造没人搜的窄词**（如「赛事生意」「体育超级月」这种自创短语就别用，换成「世界杯」「NBA总决赛」这种通用热词）。
   - **不要写品牌频道名（如 AI财知道）**当标签——新号自创话题没人搜，纯属浪费坑位，发布程序也不会再补品牌标签。
   - 每个一般 2-8 字（英文公司名/赛事名可稍长），不带 # 号，宁少勿多、不要凑无关泛词。例：讲 A股 电力股涨停写 ["A股","电力股","涨停"]；讲英伟达财报写 ["英伟达","美股","财报"]；讲三大体育决赛扎堆写 ["世界杯","欧冠","NBA总决赛","体育经济"]。
-- slides 3-4 页（最多 4 页）；第 1 页是封面钩子，最后一页是结论/影响/警示。
-- 最后一页的 narration 收尾时，要**先根据这个话题自然抛出一个开放式问题**引导观众去评论区讨论（结合本期具体内容，不要套「你怎么看」这种空话，要有具体钩子，比如「你会押注哪一家」「这个价格你觉得贵不贵」之类与本期话题强相关的问题），**再**自然带一句让大家点赞收藏关注；不要生硬。
+- slides 3-4 页（最多 4 页）；第 1 页是封面正文页（非冷开场），最后一页是结论/影响/警示。
+- 最后一页的 narration 收尾时，要**先根据这个话题自然抛出一个开放式问题**引导观众去评论区讨论（结合本期具体内容，不要套「你怎么看」这种空话，要有具体钩子），**再**引导互动：**必须明确提到「收藏」**（财经类收藏权重高），例如「觉得有用就收藏下来，对照看盘用」；可顺带提关注，但**不要只喊点赞**；不要生硬。
 - title 必须是问句，优先使用「什么是 X？」「X 为什么火了？」「X 到底意味着什么？」「X 财报到底好不好？」「X 为什么大涨/大跌？」这类搜索友好标题。
 - 不要输出 source、article、layout、lead_in、chapter_title、concept；这些由程序自动补。
 - narration 用朋友聊天式中文，避免新闻腔；不要念出“AI财知道”。
@@ -1024,6 +1028,31 @@ def soft_sanitize_script(data: dict) -> dict:
     title = _strip_stock_codes(str(data.get("title") or "").strip())
     if title:
         data["title"] = _compact_title(title)
+    cold_open = _strip_stock_codes(str(data.get("cold_open") or "").strip())
+    if cold_open:
+        data["cold_open"] = _trim_to(cold_open, 28)
+    data["angle"] = _trim_to(_strip_stock_codes(str(data.get("angle") or "").strip()), 24)
+    tc = str(data.get("theme_cluster") or "").strip()
+    if not tc:
+        try:
+            from theme_clusters import infer_theme_cluster
+
+            tc = infer_theme_cluster(
+                str(data.get("title") or ""),
+                str(data.get("cold_open") or ""),
+                str(data.get("angle") or ""),
+            )
+        except Exception:  # noqa: BLE001
+            tc = "general"
+    data["theme_cluster"] = tc or "general"
+    plan = data.get("_topic_plan")
+    if isinstance(plan, dict):
+        if not data.get("cold_open") and plan.get("cold_open"):
+            data["cold_open"] = _trim_to(_strip_stock_codes(str(plan["cold_open"])), 28)
+        if not data.get("angle") and plan.get("angle"):
+            data["angle"] = _trim_to(str(plan["angle"]), 24)
+        if data.get("theme_cluster") in ("", "general") and plan.get("theme_cluster"):
+            data["theme_cluster"] = str(plan["theme_cluster"])
     # 规范化 hashtags：去 # / 去空 / 去重 / 去股票代码 / 每个 ≤8 字 / 最多 5 个
     raw_tags = data.get("hashtags")
     if isinstance(raw_tags, list):
@@ -1039,6 +1068,11 @@ def soft_sanitize_script(data: dict) -> dict:
     slides = data.get("slides")
     if not isinstance(slides, list):
         return data
+    if not data.get("cold_open") and slides and isinstance(slides[0], dict):
+        first = str(slides[0].get("narration") or "").strip()
+        sent = re.split(r"[。！？!?]", first, maxsplit=1)[0].strip()
+        if 12 <= len(sent) <= 28:
+            data["cold_open"] = sent
     # 控制页数：超出上限时保留前 N-1 页 + 最后一页（结论），避免砍掉收尾
     limit = max_slides()
     if len(slides) > limit:
@@ -1074,7 +1108,114 @@ def soft_sanitize_script(data: dict) -> dict:
         else:
             lead = str(slide.get("lead_in") or slide.get("headline") or "接着看").strip()
             slide["lead_in"] = _trim_to(lead, 14)
+    _ensure_save_cta_on_last_slide(slides)
     return data
+
+
+def _ensure_save_cta_on_last_slide(slides: list) -> None:
+    """最后一页口播缺「收藏」时补一句财经向收藏引导（不破坏字数上限）。"""
+    if not slides:
+        return
+    last = slides[-1]
+    if not isinstance(last, dict):
+        return
+    n = str(last.get("narration") or "").strip()
+    if not n or "收藏" in n:
+        return
+    suffix = _SAVE_CTA_SUFFIX
+    max_len = 220
+    if len(n) + 1 + len(suffix) <= max_len:
+        last["narration"] = n.rstrip("。！？,.!?") + "。" + suffix
+        return
+    # 超长时替换末尾常见的「点赞/关注」套话
+    for old in (
+        "点个关注加点赞，下条更新别错过！",
+        "点个关注，明天同一时间见！",
+        "点赞关注，",
+        "点个赞，",
+    ):
+        if old in n:
+            n = n.replace(old, "收藏下来对照看盘用。")
+            if "收藏" in n and len(n) <= max_len:
+                last["narration"] = n
+                return
+    trimmed = _trim_to(n, max_len - len(suffix) - 1)
+    last["narration"] = trimmed.rstrip("。！？,.!?") + "。" + suffix
+
+
+def _script_all_publish_texts(script: dict) -> list[tuple[str, str]]:
+    """返回 (字段说明, 文本) 供合规扫描。"""
+    out: list[tuple[str, str]] = [
+        ("title", str(script.get("title") or "")),
+        ("cold_open", str(script.get("cold_open") or "")),
+    ]
+    for tag in script.get("hashtags") or []:
+        out.append(("hashtag", str(tag)))
+    for i, slide in enumerate(script.get("slides") or [], start=1):
+        if not isinstance(slide, dict):
+            continue
+        for key in ("headline", "subtitle", "narration", "lead_in"):
+            out.append((f"第{i}页.{key}", str(slide.get(key) or "")))
+        for j, item in enumerate(slide.get("on_image_text") or []):
+            out.append((f"第{i}页.on_image_text[{j}]", str(item)))
+    return out
+
+
+def douyin_pre_publish_scan(script: dict) -> tuple[list[str], list[str]]:
+    """发布前预审：返回 (warnings, blocking_errors)。blocking 应中止发布。"""
+    warnings: list[str] = []
+    errors: list[str] = []
+    slides = script.get("slides") or []
+    cold_open = str(script.get("cold_open") or "").strip()
+    if cold_open:
+        if _COVER_WEAK_HOOK.match(cold_open):
+            warnings.append(f"冷开场偏平（「{cold_open}」），建议生活场景+反差")
+        elif not _COLD_OPEN_LIFE.search(cold_open):
+            warnings.append(f"冷开场缺生活入口（「{cold_open}」），路人可能听不懂")
+        elif not re.search(r"[\d%％？?！!]|为什么|怎么|难道|居然|其实|别|错|不是", cold_open):
+            warnings.append(f"冷开场可再加数字/反问（「{cold_open}」）")
+    elif slides and isinstance(slides[0], dict):
+        warnings.append("缺少 cold_open 冷开场字段，成片将退回旧封面逻辑")
+    if slides and isinstance(slides[-1], dict):
+        last_n = str(slides[-1].get("narration") or "")
+        if "收藏" not in last_n:
+            warnings.append("最后一页口播未提到「收藏」，建议加上「收藏下来对照看盘用」")
+
+    for label, txt in _script_all_publish_texts(script):
+        if not txt.strip():
+            continue
+        for p in _DOUYIN_SENSITIVE_BLOCK:
+            if p in txt:
+                errors.append(f"{label} 含预审拦截词「{p}」")
+        for p in _DOUYIN_SENSITIVE_WARN:
+            if p in txt:
+                warnings.append(f"{label} 含敏感词「{p}」（易触发平台限流）")
+        for p in _RECO_BANNED:
+            if p in txt:
+                errors.append(f"{label} 含违规词「{p}」")
+        for pat in _STOCK_CODE_PATTERNS:
+            m = pat.search(txt)
+            if m:
+                errors.append(f"{label} 含股票代码「{m.group(0)}」")
+    return warnings, errors
+
+
+def print_douyin_pre_publish_scan(script: dict, *, strict: bool = False) -> bool:
+    """打印预审结果；strict=True 且有 blocking 时返回 False。"""
+    warnings, errors = douyin_pre_publish_scan(script)
+    if warnings:
+        print("[douyin预审] 建议优化：", file=sys.stderr)
+        for w in warnings:
+            print(f"  ⚠ {w}", file=sys.stderr)
+    if errors:
+        print("[douyin预审] 须修改后再发：", file=sys.stderr)
+        for e in errors:
+            print(f"  ✗ {e}", file=sys.stderr)
+    if not warnings and not errors:
+        print("[douyin预审] 通过（标题/口播/上屏文字）", file=sys.stderr)
+    if strict and errors:
+        return False
+    return True
 
 
 _BANNED_PHRASES = (
@@ -1111,7 +1252,31 @@ _RECO_BANNED = (
     "荐股", "喊单", "带单", "跟我买", "带你赚", "目标价", "买入评级", "卖出评级",
     "满仓", "加仓", "减仓", "抄底", "梭哈", "全仓", "买点", "卖点", "买入信号",
     "稳赚", "包赚", "稳赢", "必涨", "必跌", "翻倍", "收益率", "内幕消息", "内部消息",
+    "买入", "卖出", "保证收益", "稳赚不赔", "躺赚", "月入", "免费荐股", "涨停板预测",
 )
+
+# 抖音预审/灵犬常见敏感表达（发布前扫描，命中则警告或拦截）
+_DOUYIN_SENSITIVE_WARN = (
+    "私信加我", "加微信", "加V", "扫码", "二维码", "进群", "领福利",
+    "保本", "零风险", "高收益", "财富自由", "一夜暴富", "跟着买", "跟着赚",
+)
+_DOUYIN_SENSITIVE_BLOCK = (
+    "保证收益", "稳赚不赔", "免费荐股", "涨停板预测", "内幕", "带单",
+)
+
+_COVER_WEAK_HOOK = re.compile(
+    r"^(今天|咱们|我们|接下来|首先|这一期|这期|大家好|本期|来聊|来说说|讲一下|说说)"
+)
+# 冷开场须带生活化入口（路人 3 秒能建立关联）
+_COLD_OPEN_LIFE = re.compile(
+    r"你|大家|普通人|手机|电脑|家电|奶茶|外卖|买菜|超市|房租|工资|涨价|便宜了|贵了|"
+    r"没想到|其实|就像|好比|家里|日常|生活|用电|充电|追剧|刷视频|工资条|账单"
+)
+_COLD_OPEN_JARGON_ONLY = re.compile(
+    r"(?i)MLCC|CPO|HBM|GPU|EPS|PE\b|硅光|800G|1\.6T|换手率|市盈率|概念股|涨停潮|"
+    r"光模块|供给瓶颈|产业链|标的|估值|财报|IPO|龙虎榜"
+)
+_SAVE_CTA_SUFFIX = "觉得有用就收藏下来，对照看盘用。"
 
 
 def _strip_stock_codes(text: str) -> str:
@@ -1140,6 +1305,31 @@ def validate_article_script(data: dict, article: dict) -> dict:
     for key in ("title", "keyword", "slides", "source"):
         if key not in data:
             raise ValueError(f"缺少 {key}")
+
+    cold_open = str(data.get("cold_open") or "").strip()
+    if not cold_open:
+        raise ValueError("缺少 cold_open（12-28 字冷开场，一句话说完）")
+    if not (12 <= len(cold_open) <= 28):
+        raise ValueError(f"cold_open 须 12-28 字，当前 {len(cold_open)}: {cold_open!r}")
+    if _COVER_WEAK_HOOK.match(cold_open):
+        raise ValueError(f"cold_open 禁止平铺开头: {cold_open!r}")
+    if not _COLD_OPEN_LIFE.search(cold_open):
+        raise ValueError(
+            f"cold_open 必须含生活化入口（你/手机/涨价/买菜等），让路人 3 秒听懂: {cold_open!r}"
+        )
+    if _COLD_OPEN_JARGON_ONLY.search(cold_open) and not re.search(
+        r"手机|电脑|家电|买菜|奶茶|工资|账单|涨价|贵了|便宜", cold_open
+    ):
+        raise ValueError(
+            f"cold_open 勿以纯财经术语开场，请改成生活场景+反差: {cold_open!r}"
+        )
+    for p in _RECO_BANNED:
+        if p in cold_open:
+            raise ValueError(f"cold_open 含违规词「{p}」")
+    for pat in _STOCK_CODE_PATTERNS:
+        m = pat.search(cold_open)
+        if m:
+            raise ValueError(f"cold_open 含股票代码「{m.group(0)}」")
 
     title = str(data["title"]).strip()
     if len(title) < 4:
@@ -1249,6 +1439,9 @@ def merge_article_into_script(data: dict, article: dict) -> dict:
     if not str(data.get("keyword") or "").strip():
         data["keyword"] = (article.get("summary_zh") or "")[:6] or "AI"
     data["article"] = article
+    plan = article.get("_topic_plan")
+    if isinstance(plan, dict):
+        data["_topic_plan"] = plan
     return data
 
 
@@ -1262,8 +1455,8 @@ ADAPT_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重�
 - 每页有 chapter_title / concept / headline / narration / image_prompt / on_image_text
 - 必须忠实于已选定文章原文（URL: {url}），不虚构事实
 - 口播必须像「AI财知道」自己的财经解读，不要说「文章认为」「作者指出」「文中提到」「某某的观点」；来源只作内部依据。
-- 面向零基础观众，坚持大白话：遇到专业术语当场用生活化比喻/例子解释；多打比方、多举具体例子，少直接念文章观点；开头用钩子抓人，节奏轻快有人味（但不得违反下面的合规红线）。
-- 【合规红线】：标题/口播/上屏文字/hashtags 都严禁出现任何股票代码（A股6位、港股带.HK、美股字母代码等），也严禁荐股、喊单、目标价、买卖点、仓位建议、「稳赚/必涨/翻倍/收益率/内幕」等字眼，只做客观信息梳理与原理解释。
+- cold_open 必须生活化入口+反差，禁止纯术语；须输出 theme_cluster + angle；封面 narration 勿重复 cold_open；最后一页引导「收藏」。
+- 【合规红线】：标题/口播/上屏文字/hashtags 都严禁出现任何股票代码（A股6位、港股带.HK、美股字母代码等），也严禁荐股、喊单、目标价、买卖点、仓位建议、「稳赚/必涨/翻倍/收益率/内幕/买入/卖出」等字眼，只做客观信息梳理与原理解释。
 """
 
 
@@ -1283,18 +1476,42 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
         "【原文深读细节（由 Cursor 联网读完原文后整理，全部基于原文，不准再编）】\n"
         + json.dumps(details, ensure_ascii=False, indent=2)
     )
+    topic_block = _topic_plan_block(article)
     return (
-        f"{meta_block}\n\n{details_block}\n\n"
-        "请严格根据上面的「原文深读细节」改编。输出字段只允许 title / keyword / slides；"
+        f"{topic_block}{meta_block}\n\n{details_block}\n\n"
+        "请严格根据上面的「原文深读细节」改编。输出字段须含 title / keyword / cold_open / "
+        "cold_open_type / theme_cluster / angle / hashtags / slides；"
         "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
         "slides 每页只填 headline / narration / image_prompt / on_image_text。"
         "不要输出 source、article、layout、lead_in、chapter_title、concept。"
         "写法上要直接给出本栏目的判断和解释，禁止在口播里说「文章认为」「作者指出」「文中提到」「某某的观点」；"
         "来源信息只用于事实依据，不对观众显性提及。\n"
         "面向零基础观众：尽量用大白话，遇到专业术语就借助细节里的 key_terms 白话解释和 everyday_analogies 类比，"
-        "用买菜、点外卖、开奶茶店这种生活化例子把它讲活；多打比方、少照搬观点，开头用钩子抓人，节奏轻快。\n\n"
+        "用买菜、点外卖、开奶茶店这种生活化例子把它讲活；多打比方、少照搬观点；"
+        "必须输出 cold_open / theme_cluster / angle；封面 narration 不要重复 cold_open；"
+        "最后一页口播要带「收藏」引导。\n\n"
         "请输出严格 JSON 对象（不要 markdown，不要解释）。"
     )
+
+
+def _topic_plan_block(article: dict) -> str:
+    plan = article.get("_topic_plan")
+    if not isinstance(plan, dict):
+        return ""
+    parts = []
+    if plan.get("title_hint"):
+        parts.append(f"- 选题问句: {plan['title_hint']}")
+    if plan.get("cold_open"):
+        parts.append(
+            f"- 冷开场（须保留生活化入口，可微调）: {plan['cold_open']}"
+        )
+    if plan.get("angle"):
+        parts.append(f"- 本篇角度: {plan['angle']}")
+    if plan.get("theme_cluster"):
+        parts.append(f"- 概念簇: {plan['theme_cluster']}")
+    if not parts:
+        return ""
+    return "【选题已定（Hook-First，请服从）】\n" + "\n".join(parts) + "\n\n"
 
 
 def adapt_article_to_script(
@@ -1340,7 +1557,9 @@ def adapt_article_to_script(
             last_parsed = raw
             data = merge_article_into_script(raw, article)
             data = soft_sanitize_script(data)  # 软修复长度类违规
-            return validate_article_script(data, article), agent_id
+            validated = validate_article_script(data, article)
+            print_douyin_pre_publish_scan(validated)
+            return validated, agent_id
         except (ValueError, json.JSONDecodeError) as e:
             last_err = e
             if attempt >= max_attempts - 1:

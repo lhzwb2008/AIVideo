@@ -14,6 +14,7 @@ from pathlib import Path
 from douyin_caption import build_sau_fields, _strip_urls
 from douyin_publisher import DouyinPublishError, publish_video, resolve_playwright_python
 from paths import ROOT
+from research import print_douyin_pre_publish_scan
 from sau_client import SauError, check_douyin_session, douyin_account
 
 
@@ -131,6 +132,13 @@ def main() -> int:
             print(f"标签: {tags}")
         if cover_path:
             print(f"封面: {cover_path}")
+
+        if script is not None:
+            strict = os.environ.get("AIVIDEO_DOUYIN_COMPLIANCE_STRICT", "1").strip().lower() not in (
+                "0", "false", "no", "off",
+            )
+            if not print_douyin_pre_publish_scan(script, strict=strict):
+                raise DouyinPublishError("抖音发布前预审未通过，请按上方提示修改脚本后重试")
 
         if args.dry_run:
             return 0

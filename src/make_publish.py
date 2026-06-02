@@ -42,6 +42,10 @@ def main() -> int:
     target = max(1, args.count)
     topic_days = int(os.environ.get("AIVIDEO_TOPIC_DAYS", "3"))
 
+    log(
+        f"本次制作 {target} 条；可一天多次执行 "
+        f"（例如 ./make-and-publish.sh 1 连跑 3 次），概念簇会去重累计。"
+    )
     topics = discover_daily_topics(days=args.days, target=target)
     if not topics:
         log("没有可用话题，本次不制作。")

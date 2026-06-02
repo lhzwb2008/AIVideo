@@ -116,6 +116,7 @@ def build_script(payload: dict) -> tuple[dict, dict]:
     data = research.merge_article_into_script(data, article)
     data = research.soft_sanitize_script(data)
     script = research.validate_article_script(data, article)
+    research.print_douyin_pre_publish_scan(script)
 
     try:
         resolved = categories.resolve_category(script, explicit_category)

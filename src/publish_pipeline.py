@@ -435,7 +435,17 @@ def process_topic(
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     script_path = logs_dir / f"last_script_{stamp}_topic{index:02d}.json"
 
+    co = topic.get("cold_open") or ""
     log(f"\n=== [{index}/{target}] 话题：{topic.get('title_hint')} ===")
+    if co:
+        log(f"  冷开场: {co}")
+    article = dict(article)
+    article["_topic_plan"] = {
+        "title_hint": topic.get("title_hint"),
+        "cold_open": topic.get("cold_open"),
+        "theme_cluster": topic.get("theme_cluster"),
+        "angle": topic.get("angle"),
+    }
     script, _ = run_article_research(
         output=script_path,
         auto_pick=True,

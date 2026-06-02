@@ -59,13 +59,24 @@ def _env_int(name: str, default: int) -> int:
 
 
 def cover_duration_s() -> float:
-    """开场静音封面时长（秒）。过长易被当成卡住；0 表示跳过独立封面段。"""
+    """旧版静音封面帧时长；有 cold_open 时不再使用（首帧取自冷开场）。"""
     raw = os.environ.get("AIVIDEO_COVER_DURATION_S", "0.8").strip()
     try:
         value = float(raw)
     except ValueError:
         value = 0.8
     return max(0.0, min(value, 3.0))
+
+
+def cold_open_duration_s(text: str, audio_path: Path | None = None) -> float:
+    """冷开场时长：跟 TTS 长度走，限制在 min~max 秒。"""
+    min_s = max(1.5, _env_float("AIVIDEO_COLD_OPEN_MIN_S", 2.5))
+    max_s = max(min_s, _env_float("AIVIDEO_COLD_OPEN_MAX_S", 4.5))
+    if audio_path and audio_path.is_file():
+        dur = ffprobe_duration(audio_path)
+        return max(min_s, min(max_s, dur + 0.12))
+    n = len((text or "").strip())
+    return max(min_s, min(max_s, n / 4.5))
 
 # ============================================================
 # 栏目品牌：AI财知道
@@ -74,7 +85,7 @@ BRAND_NAME = os.environ.get("AIVIDEO_BRAND_NAME", "AI财知道").strip()
 BRAND_TAGLINE = os.environ.get("AIVIDEO_BRAND_TAGLINE", "每天一个 AI 和股市的为什么").strip()
 OUTRO_NARRATION = os.environ.get(
     "AIVIDEO_OUTRO_NARRATION",
-    "我是AI财知道，每天用大白话讲清一个AI和股市热点，A股美股港股都聊。觉得有用就点个关注加点赞，下条更新别错过！",
+    "我是AI财知道，每天用大白话讲清一个AI和股市热点，A股美股港股都聊。觉得有用就收藏下来对照看盘用，也欢迎点个关注，下条更新别错过！",
 ).strip()
 OUTRO_HEADLINE = os.environ.get("AIVIDEO_OUTRO_HEADLINE", "点赞 · 收藏 · 关注").strip()
 OUTRO_SUBLINE = os.environ.get("AIVIDEO_OUTRO_SUBLINE", "看懂 AI 和股市的事").strip()
@@ -87,11 +98,11 @@ if _OUTRO_VARIANTS_RAW:
 else:
     OUTRO_NARRATION_VARIANTS = [
         OUTRO_NARRATION,
-        "我是AI财知道，每天用大白话讲一个AI和股市热点。点个关注，明天同一时间见！",
-        "今天的AI和股市为什么就讲到这。觉得有用就点赞收藏，关注我别错过下一条。",
-        "AI财知道陪你看懂AI和钱的事，A股美股港股都聊。点关注，每天一条不掉队。",
-        "就到这。如果这条让你多懂一点，麻烦点个赞，关注我们继续每天更新。",
-        "我是AI财知道，专挑值得解释的AI和股市热点。点赞关注，明天继续陪你看世界。",
+        "我是AI财知道，每天用大白话讲一个AI和股市热点。记得收藏对照看盘用，也点个关注，明天同一时间见！",
+        "今天的AI和股市为什么就讲到这。觉得有用就收藏下来，对照看盘用，也欢迎关注我别错过下一条。",
+        "AI财知道陪你看懂AI和钱的事，A股美股港股都聊。收藏好这条，点关注每天一条不掉队。",
+        "就到这。如果这条让你多懂一点，收藏下来有空再看，也欢迎关注我们继续每天更新。",
+        "我是AI财知道，专挑值得解释的AI和股市热点。收藏加关注，明天继续陪你看世界。",
     ]
 
 
@@ -358,20 +369,184 @@ def render_title_cover(
     return out_path
 
 
+def render_cold_open_frame(
+    *,
+    cold_open: str,
+    out_path: Path,
+    hero_image: Path | None = None,
+    title: str = "",
+) -> Path:
+    """冷开场画面：示意图 + 底部大字钩子（只显示 cold_open）。"""
+    canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), BG_COLOR)
+    draw = ImageDraw.Draw(canvas)
+    _draw_grid(draw)
+
+    hero_area_h = 1180
+    hero_top = 120
+    if hero_image and hero_image.is_file():
+        img = Image.open(hero_image).convert("RGB")
+        max_w = CANVAS_W - 160
+        ratio = min(max_w / img.width, hero_area_h / img.height)
+        new_w = int(img.width * ratio)
+        new_h = int(img.height * ratio)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        x = (CANVAS_W - new_w) // 2
+        y = hero_top + (hero_area_h - new_h) // 2
+        canvas.paste(img, (x, y))
+        draw.rectangle(
+            [(x - 6, y - 6), (x + new_w + 6, y + new_h + 6)],
+            outline=(40, 40, 40),
+            width=4,
+        )
+    else:
+        _draw_corner_doodles(draw)
+
+    hook = (cold_open or "").strip()
+    text_max_w = CANVAS_W - 180
+    hook_size = _fit_font_size(hook, text_max_w, base_size=96, min_size=56)
+    hook_font = load_font(hook_size)
+    hook_lines = _wrap_chinese(hook, hook_font, text_max_w)
+    line_h = int(hook_size * 1.2)
+    total_h = line_h * len(hook_lines)
+
+    box_x1, box_x2 = 50, CANVAS_W - 50
+    pad_top, pad_bottom = 48, 48
+    box_h = total_h + pad_top + pad_bottom
+    box_y2 = CANVAS_H - 100
+    box_y1 = box_y2 - box_h
+    shadow_off = 14
+    draw.rounded_rectangle(
+        [(box_x1 + shadow_off, box_y1 + shadow_off), (box_x2 + shadow_off, box_y2 + shadow_off)],
+        radius=40,
+        fill=(40, 40, 40),
+    )
+    draw.rounded_rectangle(
+        [(box_x1, box_y1), (box_x2, box_y2)],
+        radius=40,
+        fill=_accent(),
+        outline=(40, 40, 40),
+        width=6,
+    )
+    cur_y = box_y1 + pad_top
+    for line in hook_lines:
+        tw = hook_font.getbbox(line)[2] - hook_font.getbbox(line)[0]
+        draw.text(((CANVAS_W - tw) / 2, cur_y), line, font=hook_font, fill=(40, 40, 40))
+        cur_y += line_h
+
+    if title and title.strip() != hook:
+        tag_size = _fit_font_size(title, text_max_w, base_size=40, min_size=28)
+        tag_font = load_font(tag_size)
+        tw = tag_font.getbbox(title)[2] - tag_font.getbbox(title)[0]
+        draw.text(((CANVAS_W - tw) / 2, box_y1 - 56), title, font=tag_font, fill=(70, 50, 30))
+
+    _draw_brand_badge(draw, font_size=50)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path, "PNG")
+    return out_path
+
+
+def build_cover_png(
+    *,
+    out_path: Path,
+    title_text: str,
+    subtitle_text: str,
+    ai_cover_path: Path,
+    hero_path: Path,
+) -> Path:
+    """标准封面图（标题块/AI 全屏），不在画面上叠 cold_open 大字。"""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if ai_cover_path.is_file():
+        render_full_cover(ai_cover_path, out_path=out_path)
+    elif title_text:
+        if not hero_path.is_file():
+            print("  ⚠️  cover.png 缺失，回退到 PIL 拼接封面", file=sys.stderr)
+        render_title_cover(
+            title=title_text,
+            subtitle=subtitle_text,
+            out_path=out_path,
+            hero_image=hero_path if hero_path.is_file() else None,
+        )
+    else:
+        Image.new("RGB", (CANVAS_W, CANVAS_H), BG_COLOR).save(out_path)
+    return out_path
+
+
+def compose_cold_open_clip(
+    *,
+    image_path: Path,
+    audio_path: Path,
+    out_path: Path,
+    cold_open_text: str = "",
+    work_dir: Path,
+) -> Path:
+    """冷开场：沿用标准封面画面 + cold_open 口播，字幕跟读（与正文段相同逻辑）。"""
+    duration = cold_open_duration_s(cold_open_text, audio_path)
+    text = (cold_open_text or "").strip()
+    phrases = split_narration(text) or [text[:18] if text else "…"]
+    spans = allocate_phrase_times(phrases, duration)
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    font = font_path()
+    filters: list[str] = [_kenburns_filter(0, duration)]
+    for idx, (phrase, (start, end)) in enumerate(zip(phrases, spans)):
+        tf = _make_phrase_textfile(phrase, work_dir / f"cold_phrase_{idx:02d}.txt")
+        filters.append(
+            _drawtext_filter(
+                textfile=tf,
+                font=font,
+                fontsize=54,
+                y=SUBTITLE_Y,
+                start=start,
+                end=end,
+            )
+        )
+    filter_chain = ",".join(filters)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", str(image_path),
+        "-i", str(audio_path),
+        "-vf", filter_chain,
+        "-af", "pan=stereo|c0=c0|c1=c0",
+        "-r", "30",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
+        "-shortest",
+        "-t", f"{duration:.3f}",
+        str(out_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"冷开场 clip 合成失败:\n{proc.stderr[-1500:]}")
+    return out_path
+
+
 def compose_cover_clip(
     *,
     cover_image: Path,
     duration: float,
     out_path: Path,
+    audio_path: Path | None = None,
+    audio_start_s: float = 0.0,
 ) -> Path:
-    """把封面图变成 N 秒静音视频；采样率与 TTS 段一致，concat 不掉链子。"""
+    """封面图视频：默认 0.8s 供抖音自动取封面；可叠加第 1 页口播前段，让人声第一时间出现。"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
+    cmd: list[str] = [
         "ffmpeg", "-y",
         "-loop", "1", "-i", str(cover_image),
-        "-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate={TTS_SAMPLE_RATE}",
+    ]
+    if audio_path and audio_path.is_file():
+        if audio_start_s > 0:
+            cmd += ["-ss", f"{audio_start_s:.3f}"]
+        cmd += ["-i", str(audio_path)]
+    else:
+        cmd += ["-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate={TTS_SAMPLE_RATE}"]
+    cmd += [
         "-t", f"{duration:.3f}",
         "-vf", _kenburns_filter(0, duration),
+        "-af", "pan=stereo|c0=c0|c1=c0",
         "-r", "30",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20",
         "-pix_fmt", "yuv420p",
@@ -651,8 +826,12 @@ def compose_clip(
     out_path: Path,
     work_dir: Path,
     kenburns_direction: int = 0,
+    audio_start_s: float = 0.0,
 ) -> Path:
-    duration = ffprobe_duration(audio_path)
+    if audio_start_s > 0:
+        duration = max(0.05, ffprobe_duration(audio_path) - audio_start_s)
+    else:
+        duration = ffprobe_duration(audio_path)
     phrases = split_narration(narration) or [narration[:18]]
     spans = allocate_phrase_times(phrases, duration)
 
@@ -678,7 +857,12 @@ def compose_clip(
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1", "-i", str(base_image),
-        "-i", str(audio_path),
+    ]
+    if audio_start_s > 0:
+        cmd += ["-ss", f"{audio_start_s:.3f}", "-i", str(audio_path)]
+    else:
+        cmd += ["-i", str(audio_path)]
+    cmd += [
         "-vf", filter_chain,
         "-af", "pan=stereo|c0=c0|c1=c0",
         "-r", "30",
@@ -894,6 +1078,13 @@ def compose_video(
 
     set_theme(categories.resolve_category(script, os.environ.get("AIVIDEO_CATEGORY")))
 
+    try:
+        from research import print_douyin_pre_publish_scan
+
+        print_douyin_pre_publish_scan(script)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[douyin预审] 跳过：{exc}", file=sys.stderr)
+
     work_dir = (work_dir or ROOT / "logs" / "compose" / script_file.stem)
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -903,40 +1094,60 @@ def compose_video(
     title_text = str(script.get("title") or "").strip()
     cover_slide = slides[0] if slides else {}
     subtitle_text = str(cover_slide.get("subtitle") or "").strip()
-    if title_text:
-        print(f"[cover] 准备封面：{title_text}", file=sys.stderr)
-        ai_cover_rel = script.get("cover_image")
-        if ai_cover_rel:
-            ai_cover_path = Path(ai_cover_rel) if Path(ai_cover_rel).is_absolute() else ROOT / ai_cover_rel
-        else:
-            ai_cover_path = ROOT / "logs" / "images" / script_file.stem / "cover.png"
+    cold_open_text = str(script.get("cold_open") or "").strip()
 
-        cover_png = work_dir / "cover.png"
-        if ai_cover_path.is_file():
-            # AI 生成的封面：铺满 1080x1920 画布
-            render_full_cover(ai_cover_path, out_path=cover_png)
-        else:
-            # 兜底：用 slide_01 + PIL 叠色块
-            print("  ⚠️  cover.png 缺失，回退到 PIL 拼接封面", file=sys.stderr)
-            hero_rel = cover_slide.get("image_path")
-            if hero_rel:
-                hero_path = Path(hero_rel) if Path(hero_rel).is_absolute() else ROOT / hero_rel
-            else:
-                hero_path = ROOT / "logs" / "images" / script_file.stem / "slide_01.png"
-            render_title_cover(
-                title=title_text,
-                subtitle=subtitle_text,
-                out_path=cover_png,
-                hero_image=hero_path if hero_path.is_file() else None,
-            )
+    ai_cover_rel = script.get("cover_image")
+    if ai_cover_rel:
+        ai_cover_path = Path(ai_cover_rel) if Path(ai_cover_rel).is_absolute() else ROOT / ai_cover_rel
+    else:
+        ai_cover_path = ROOT / "logs" / "images" / script_file.stem / "cover.png"
+    hero_rel = cover_slide.get("image_path")
+    if hero_rel:
+        hero_path = Path(hero_rel) if Path(hero_rel).is_absolute() else ROOT / hero_rel
+    else:
+        hero_path = ROOT / "logs" / "images" / script_file.stem / "slide_01.png"
+    cover_png = work_dir / "cover.png"
+    if cold_open_text:
+        print(f"[cold_open] 口播：{cold_open_text}", file=sys.stderr)
+        build_cover_png(
+            out_path=cover_png,
+            title_text=title_text,
+            subtitle_text=subtitle_text,
+            ai_cover_path=ai_cover_path,
+            hero_path=hero_path,
+        )
+        print("  封面保持原标题样式，钩子走底部字幕", file=sys.stderr)
+        audio_cold = work_dir / "audio_cold_open.mp3"
+        cold_phrase_dir = work_dir / "cold_phrases"
+        if not skip_tts or not audio_cold.is_file():
+            print("   冷开场 TTS …", file=sys.stderr)
+            tts_synthesize(cold_open_text, out_path=audio_cold)
+        cold_mp4 = work_dir / "clip_00_cold_open.mp4"
+        compose_cold_open_clip(
+            image_path=cover_png,
+            audio_path=audio_cold,
+            out_path=cold_mp4,
+            cold_open_text=cold_open_text,
+            work_dir=cold_phrase_dir,
+        )
+        clips.append(cold_mp4)
+        dur = cold_open_duration_s(cold_open_text, audio_cold)
+        print(f"  冷开场 {dur:.2f}s（封面不变 + 字幕跟读）", file=sys.stderr)
+    elif title_text:
+        print(f"[cover] 准备封面：{title_text}", file=sys.stderr)
+        build_cover_png(
+            out_path=cover_png,
+            title_text=title_text,
+            subtitle_text=subtitle_text,
+            ai_cover_path=ai_cover_path,
+            hero_path=hero_path,
+        )
         cover_dur = cover_duration_s()
         if cover_dur > 0:
             cover_mp4 = work_dir / "clip_00_cover.mp4"
             compose_cover_clip(cover_image=cover_png, duration=cover_dur, out_path=cover_mp4)
             clips.append(cover_mp4)
-            print(f"  封面停留 {cover_dur:.2f}s（可用 AIVIDEO_COVER_DURATION_S 调整）", file=sys.stderr)
-        else:
-            print("  跳过独立封面段（AIVIDEO_COVER_DURATION_S=0）", file=sys.stderr)
+            print(f"  静音封面 {cover_dur:.2f}s（建议脚本补 cold_open）", file=sys.stderr)
 
     for i, slide in enumerate(slides, start=1):
         print(f"[{i}/{total}] 合成单段：{slide.get('chapter_title') or slide.get('headline') or ''}", file=sys.stderr)
@@ -956,7 +1167,10 @@ def compose_video(
 
         narration = str(slide.get("narration") or "")
         audio_path = work_dir / f"audio_{i:02d}.mp3"
-        if not skip_tts or not audio_path.is_file():
+        if not audio_path.is_file():
+            print(f"   TTS …", file=sys.stderr)
+            tts_synthesize(narration, out_path=audio_path)
+        elif not skip_tts:
             print(f"   TTS …", file=sys.stderr)
             tts_synthesize(narration, out_path=audio_path)
 

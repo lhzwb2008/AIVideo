@@ -112,6 +112,7 @@ def print_manual_publish_pack(
     print(tk_fields["title"], flush=True)
 
     _print_todo_checklist(
+        script=script,
         video_rel=video_rel,
         forum_rel=forum_rel,
         has_forum=has_forum,
@@ -125,6 +126,7 @@ def print_manual_publish_pack(
 
 def _print_todo_checklist(
     *,
+    script: dict | None = None,
     video_rel: str,
     forum_rel: str,
     has_forum: bool,
@@ -195,6 +197,13 @@ def _print_todo_checklist(
 
     print("\n" + "─" * 58, flush=True)
     print("提示: 财经平台风控严，简介勿出现「荐股/收益/带单」等字眼。", flush=True)
+    if script:
+        try:
+            from research import print_douyin_pre_publish_scan
+
+            print_douyin_pre_publish_scan(script)
+        except Exception:
+            pass
     print("─" * 58 + "\n", flush=True)
 
 

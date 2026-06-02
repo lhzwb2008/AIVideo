@@ -203,8 +203,24 @@ def _token_set(text: str) -> set[str]:
     return {t for t in tokens if t not in stop}
 
 
-def duplicate_topic_reason(candidate: dict, recent_items: list[dict] | None = None) -> str:
-    """本地兜底去重：同公司+同季度财报/股价异动，或标题高度相似，都视为重复。"""
+def duplicate_topic_reason(
+    candidate: dict,
+    recent_items: list[dict] | None = None,
+    *,
+    extra_cluster_counts: dict[str, int] | None = None,
+) -> str:
+    """本地兜底去重：概念簇、同公司+财报、标题高度相似。"""
+    try:
+        from theme_clusters import cluster_duplicate_reason
+
+        cluster_reason = cluster_duplicate_reason(
+            candidate, recent_items, extra_counts=extra_cluster_counts,
+        )
+        if cluster_reason:
+            return cluster_reason
+    except Exception:  # noqa: BLE001
+        pass
+
     cand_text = _topic_text(candidate)
     if not cand_text:
         return ""
@@ -287,13 +303,29 @@ def append_history_from_script(script_path: Path, video: Path | None = None) -> 
         return
     article = data.get("article") or (data.get("script") or {}).get("article") or {}
     script = data.get("script") or data
-    append_history({
+    try:
+        from theme_clusters import infer_theme_cluster
+
+        theme_cluster = str(script.get("theme_cluster") or "").strip()
+        if not theme_cluster:
+            theme_cluster = infer_theme_cluster(
+                str(script.get("title") or ""),
+                str(script.get("cold_open") or ""),
+                str(script.get("angle") or ""),
+            )
+    except Exception:  # noqa: BLE001
+        theme_cluster = str(script.get("theme_cluster") or "").strip()
+
+    record = {
         "url": article.get("url") or (script.get("source") or {}).get("url") or "",
         "title": article.get("title") or script.get("title") or "",
         "article_title": article.get("title") or "",
         "script_title": script.get("title") or "",
         "question_title": article.get("question_title") or "",
-    })
+        "cold_open": str(script.get("cold_open") or "").strip(),
+        "theme_cluster": theme_cluster,
+    }
+    append_history({k: v for k, v in record.items() if v})
 
 
 def retry(step: str, fn, *, max_attempts: int, pause: int):
