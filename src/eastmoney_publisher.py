@@ -69,7 +69,8 @@ def _ensure_patchright():
         from patchright.async_api import async_playwright  # noqa: F401
     except ImportError as exc:
         raise EastmoneyPublishError(
-            "未安装 patchright。请先运行: ./scripts/setup-sau.sh"
+            "未安装 patchright（或当前 Python 与 SAU 环境不兼容）。"
+            "请先运行: ./setup-sau.sh"
         ) from exc
 
 

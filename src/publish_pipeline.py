@@ -107,15 +107,29 @@ def publish_tiktok_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
 
 
 def publish_eastmoney_api(forum_dir: Path, *, dry_run: bool) -> str:
-    from publish_eastmoney import publish_forum_dir
-
-    return publish_forum_dir(forum_dir, dry_run=dry_run)
+    cmd = [
+        str(ROOT / "scripts" / "publish-eastmoney.sh"),
+        rel(forum_dir),
+    ]
+    if dry_run:
+        cmd.append("--dry-run")
+    else:
+        cmd.append("--publish")
+    run(cmd, label="发布东方财富")
+    return _read_last_publish_url("last_eastmoney_publish.json", "title")
 
 
 def publish_xueqiu_api(forum_dir: Path, *, dry_run: bool) -> str:
-    from publish_xueqiu import publish_forum_dir
-
-    return publish_forum_dir(forum_dir, dry_run=dry_run)
+    cmd = [
+        str(ROOT / "scripts" / "publish-xueqiu.sh"),
+        rel(forum_dir),
+    ]
+    if dry_run:
+        cmd.append("--dry-run")
+    else:
+        cmd.append("--publish")
+    run(cmd, label="发布雪球")
+    return _read_last_publish_url("last_xueqiu_publish.json", "title")
 
 
 def _retry_config() -> tuple[int, int]:

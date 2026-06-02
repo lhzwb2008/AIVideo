@@ -13,4 +13,8 @@ COUNT="${1:-${AIVIDEO_MAX_VIDEOS_PER_RUN:-3}}"
 # 每天跑一次，窗口收紧到近 3 天（兼顾新鲜度与 Exa published_at 的索引误差）
 DAYS="${AIVIDEO_DAYS:-${DAILY_RUN_DAYS:-3}}"
 
-python3 "$ROOT/src/make_publish.py" --count "$COUNT" --days "$DAYS"
+PY="$ROOT/.venv/bin/python3"
+if [[ ! -x "$PY" ]]; then
+  PY="python3"
+fi
+exec "$PY" "$ROOT/src/make_publish.py" --count "$COUNT" --days "$DAYS"
