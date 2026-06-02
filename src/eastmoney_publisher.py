@@ -8,6 +8,13 @@ import re
 import sys
 from pathlib import Path
 
+from forum_editor_fill import (
+    dedupe_body_paragraphs,
+    fill_eastmoney_body_sections,
+    focus_editor_end,
+    move_cursor_to_end,
+    prepare_image_upload,
+)
 from paths import ROOT
 
 
@@ -41,9 +48,72 @@ def cookie_path(root: Path | None = None, account: str | None = None) -> Path:
     return path
 
 
+def account_label_path(root: Path | None = None, account: str | None = None) -> Path:
+    account = account or _env(ACCOUNT_ENV, "main")
+    return sau_home(root) / "cookies" / f"eastmoney_{account}.account"
+
+
+def read_saved_account_label(root: Path | None = None, account: str | None = None) -> str:
+    path = account_label_path(root, account)
+    if path.is_file():
+        return path.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def save_account_label(label: str, root: Path | None = None, account: str | None = None) -> None:
+    label = label.strip()
+    if not label:
+        return
+    path = account_label_path(root, account)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(label, encoding="utf-8")
+
+
+async def read_editor_account_label(page) -> str:
+    return (
+        await page.evaluate(
+            """
+            () => {
+              const selectors = [
+                '.user-name', '.nick-name', '.nickname', '[class*="nick"]',
+                '[class*="user-name"]', '.header-user', '.author-name',
+              ];
+              for (const sel of selectors) {
+                for (const el of document.querySelectorAll(sel)) {
+                  const t = (el.textContent || '').trim();
+                  if (t && t.length >= 2 && t.length <= 32) return t;
+                }
+              }
+              return '';
+            }
+            """
+        )
+        or ""
+    ).strip()
+
+
+async def ensure_expected_account(page, *, account: str | None = None) -> str:
+    label = await read_editor_account_label(page)
+    if label:
+        save_account_label(label, account=account)
+        print(f"  东方财富账号: {label}", flush=True)
+        return label
+    saved = read_saved_account_label(account=account)
+    if saved:
+        print(f"  东方财富账号: {saved}（沿用上次登录记录）", flush=True)
+    return saved
+
+
 def profile_dir(root: Path | None = None, account: str | None = None) -> Path:
     account = account or _env(ACCOUNT_ENV, "main")
     return sau_home(root) / "cookies" / "browser_profiles" / f"eastmoney_{account}"
+
+
+async def _grant_clipboard(context) -> None:
+    try:
+        await context.grant_permissions(["clipboard-read", "clipboard-write"])
+    except Exception:
+        pass
 
 
 def _chrome_path() -> str:
@@ -94,7 +164,7 @@ def parse_forum_pack(pack_dir: Path) -> dict:
 
     def flush_section() -> None:
         nonlocal current_head, current_paras, pending_image
-        body = "\n\n".join(p for p in current_paras if p.strip())
+        body = "\n\n".join(dedupe_body_paragraphs(current_paras))
         if body or pending_image or current_head:
             sections.append(
                 {
@@ -175,6 +245,53 @@ async def _open_longform_editor(page) -> None:
     await title_input.first.wait_for(state="visible", timeout=60_000)
 
 
+def distinct_eastmoney_title(title: str, pack_dir: Path) -> str:
+    """重发时略改标题，避免东方财富「标题重复」拦截（不用特殊符号/重发字样）。"""
+    tweaks = [
+        ("为什么", "为何"),
+        ("为何", "为什么"),
+        ("突然", "忽然"),
+        ("为啥", "为什么"),
+        ("怎么走", "如何走"),
+        ("逆市", "逆势"),
+        ("开始", "着手"),
+        ("全线", "整体"),
+        ("板块", "赛道"),
+    ]
+    start = sum(ord(c) for c in pack_dir.name) % len(tweaks)
+    for i in range(len(tweaks)):
+        src, dst = tweaks[(start + i) % len(tweaks)]
+        if src in title:
+            candidate = title.replace(src, dst, 1)
+            if candidate != title:
+                return candidate[:100]
+    # 最后兜底：换一字，不用括号/符号
+    if "？" in title:
+        return title.replace("？", "吗？", 1)[:100]
+    return title[:100]
+
+
+async def _read_dialog_text(page) -> str:
+    try:
+        return (
+            await page.evaluate(
+                """
+                () => Array.from(
+                  document.querySelectorAll(
+                    '.dialog_wrapper, .dialog, [class*="dialog"], .el-message-box'
+                  )
+                )
+                  .map(el => (el.innerText || '').trim())
+                  .filter(Boolean)
+                  .join('\\n')
+                """
+            )
+            or ""
+        )
+    except Exception:
+        return ""
+
+
 async def _wait_logged_in(page, *, timeout_s: float = 120) -> None:
     for _ in range(int(timeout_s)):
         url = page.url.lower()
@@ -190,54 +307,55 @@ async def _wait_logged_in(page, *, timeout_s: float = 120) -> None:
 async def _fill_title(page, title: str) -> None:
     inp = page.locator('input[placeholder*="标题"]').first
     await inp.wait_for(state="visible", timeout=30_000)
+    await inp.click()
     await inp.fill(title)
+    await asyncio.sleep(0.8)
+    url = page.url.lower()
+    if "usercenter" in url or "/login" in url:
+        raise EastmoneyPublishError(
+            "登录态失效（填标题后跳转到 usercenter/login）。"
+            "请运行: ./eastmoney-login.sh --force"
+        )
+    editor = page.locator(".ProseMirror.cfh_editor_area, .ProseMirror").first
+    for _ in range(40):
+        if "usercenter" in page.url.lower():
+            raise EastmoneyPublishError(
+                "登录态失效，请运行: ./eastmoney-login.sh --force"
+            )
+        if await page.locator(".ProseMirror.cfh_editor_area, .ProseMirror").count():
+            try:
+                if await editor.is_visible():
+                    break
+            except Exception:
+                pass
+        await asyncio.sleep(0.5)
+    else:
+        raise EastmoneyPublishError(
+            f"填标题后正文编辑器未出现（{page.url}）。"
+            "请运行: ./eastmoney-login.sh --force"
+        )
+    await asyncio.sleep(0.3)
 
 
 async def _focus_editor_end(page) -> None:
-    editor = page.locator(".ProseMirror").first
-    await editor.wait_for(state="visible", timeout=30_000)
-    await editor.click(timeout=10_000)
-    await page.keyboard.press("Control+End")
+    await focus_editor_end(page)
 
 
 async def _fill_body_sections(
     page,
     sections: list[dict],
     *,
+    pack_dir: Path,
     disclaimer: str = "",
     insert_image=None,
 ) -> None:
-    insert_image = insert_image or _insert_body_image
-    editor = page.locator(".ProseMirror").first
-    await editor.wait_for(state="visible", timeout=30_000)
-    await editor.click()
-    await page.keyboard.press("Control+A")
-    await page.keyboard.press("Backspace")
-
-    wrote = False
-    for sec in sections:
-        headline = (sec.get("headline") or "").strip()
-        body = (sec.get("body") or "").strip()
-        chunks = [c for c in (headline, body) if c]
-        if chunks:
-            await _focus_editor_end(page)
-            if wrote:
-                await page.keyboard.press("Enter")
-                await page.keyboard.press("Enter")
-            await page.keyboard.insert_text("\n\n".join(chunks))
-            wrote = True
-        img = sec.get("image")
-        if img:
-            await insert_image(page, img)
-            wrote = True
-
-    if disclaimer.strip():
-        await _focus_editor_end(page)
-        if wrote:
-            await page.keyboard.press("Enter")
-            await page.keyboard.press("Enter")
-        await page.keyboard.insert_text(disclaimer.strip())
-    await asyncio.sleep(0.5)
+    await fill_eastmoney_body_sections(
+        page,
+        sections,
+        pack_dir=pack_dir,
+        disclaimer=disclaimer,
+        insert_image=insert_image or _insert_body_image,
+    )
 
 
 async def _launch_context(p, *, headless: bool, account: str | None):
@@ -255,7 +373,18 @@ async def _launch_context(p, *, headless: bool, account: str | None):
     profile = profile_dir(account=account)
     profile.mkdir(parents=True, exist_ok=True)
 
-    # 优先用 storage_state（含 HttpOnly 外的登录 cookie），避免 profile 里只有匿名态
+    # 有头调试优先 profile；日常 headless 用已同步的 storage_state（与 login 同账号）
+    if not headless and profile.is_dir() and any(profile.iterdir()):
+        context = await p.chromium.launch_persistent_context(
+            str(profile),
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
+            viewport={"width": 1440, "height": 1000},
+            **launch,
+        )
+        await _grant_clipboard(context)
+        return context, cookie
+
     if cookie.is_file() and cookie.stat().st_size > 64:
         browser = await p.chromium.launch(**launch)
         context = await browser.new_context(
@@ -263,6 +392,7 @@ async def _launch_context(p, *, headless: bool, account: str | None):
             locale="zh-CN",
             timezone_id="Asia/Shanghai",
             viewport={"width": 1440, "height": 1000},
+            permissions=["clipboard-read", "clipboard-write"],
         )
         return context, cookie
 
@@ -274,6 +404,7 @@ async def _launch_context(p, *, headless: bool, account: str | None):
             viewport={"width": 1440, "height": 1000},
             **launch,
         )
+        await _grant_clipboard(context)
         return context, cookie
 
     browser = await p.chromium.launch(**launch)
@@ -282,16 +413,29 @@ async def _launch_context(p, *, headless: bool, account: str | None):
         locale="zh-CN",
         timezone_id="Asia/Shanghai",
         viewport={"width": 1440, "height": 1000},
+        permissions=["clipboard-read", "clipboard-write"],
     )
     return context, cookie
+
+
+async def _ensure_editor_page(page) -> None:
+    if "pc_article" not in page.url.lower():
+        await _open_longform_editor(page)
+    await page.locator('input[placeholder*="标题"]').first.wait_for(
+        state="visible", timeout=30_000
+    )
+    await page.locator(".ProseMirror.cfh_editor_area, .ProseMirror").first.wait_for(
+        state="attached", timeout=30_000
+    )
+    await page.evaluate("window.scrollTo(0, 0)")
+    await asyncio.sleep(0.3)
 
 
 async def _insert_body_image(page, image_path: str) -> None:
     if "usercenter" in page.url.lower() or "/login" in page.url.lower():
         raise EastmoneyPublishError("插入配图时跳转到登录页，请重新 ./eastmoney-login.sh")
 
-    await _focus_editor_end(page)
-    await page.keyboard.press("Enter")
+    await move_cursor_to_end(page)
     await page.keyboard.press("Enter")
 
     btn = page.locator("button.em_icon_image, .em_icon_image").first
@@ -321,6 +465,7 @@ async def _insert_body_image(page, image_path: str) -> None:
         after = await page.locator(".ProseMirror img").count()
         if after > before:
             await asyncio.sleep(0.5)
+            await move_cursor_to_end(page)
             return
         await asyncio.sleep(1)
     raise EastmoneyPublishError(f"正文图片插入失败: {image_path}")
@@ -383,19 +528,31 @@ async def _set_source_personal(page) -> None:
 
 async def _dismiss_dialogs(page) -> None:
     for _ in range(3):
-        btn = page.locator(
-            ".dialog_wrapper .btn_confirm, .dialog_wrapper button, "
-            ".el-message-box__btns .el-button--primary"
-        ).filter(has_text="确定")
-        if await btn.count():
-            await btn.first.click(timeout=3000, force=True)
-            await asyncio.sleep(0.5)
+        clicked = False
+        for sel in (
+            ".dialog_btn_confirm",
+            ".dialog_wrapper .btn_confirm",
+            ".el-message-box__btns .el-button--primary",
+        ):
+            btn = page.locator(sel).first
+            try:
+                if await btn.is_visible(timeout=300):
+                    await btn.click(timeout=3000, force=True)
+                    await asyncio.sleep(0.5)
+                    clicked = True
+                    break
+            except Exception:
+                continue
+        if clicked:
             continue
         close = page.locator(".dialog_wrapper .close, .el-dialog__close").first
-        if await close.count():
-            await close.click(timeout=2000, force=True)
-            await asyncio.sleep(0.5)
-            continue
+        try:
+            if await close.is_visible(timeout=300):
+                await close.click(timeout=2000, force=True)
+                await asyncio.sleep(0.5)
+                continue
+        except Exception:
+            pass
         break
 
 
@@ -418,44 +575,83 @@ async def _agree_terms(page) -> None:
             )
 
 
+async def _publish_succeeded(page) -> bool:
+    url = page.url.lower()
+    if any(k in url for k in ("articlelist", "article/list", "success", "mycenter")):
+        return True
+    for text in (
+        "发布成功",
+        "提交成功",
+        "发布文章成功",
+        "已提交",
+        "提交审核",
+        "进入审核",
+    ):
+        if await page.get_by_text(text, exact=False).count():
+            return True
+    return False
+
+
+async def _click_confirm_dialogs(page) -> None:
+    for sel in (
+        ".dialog_btn_confirm",
+        ".dialog_wrapper .btn_confirm",
+        ".el-message-box__btns .el-button--primary",
+        ".el-dialog__footer .el-button--primary",
+    ):
+        btn = page.locator(sel).first
+        try:
+            if await btn.is_visible(timeout=800):
+                await btn.click(timeout=3000, force=True)
+                await asyncio.sleep(0.8)
+        except Exception:
+            continue
+
+
 async def _click_publish(page) -> None:
     await _dismiss_dialogs(page)
     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     await _set_source_personal(page)
     await _agree_terms(page)
     await asyncio.sleep(0.5)
-    pub = page.locator(".button_publish, .editor-main-btn").filter(has_text="发布").first
+
+    pub = page.locator(".button_publish").first
     if not await pub.count():
-        pub = page.get_by_text("发布", exact=True).last
+        pub = page.locator(".editor-main-btn").filter(has_text="发布").first
+    if not await pub.count():
+        pub = page.get_by_role("button", name="发布").first
+    await pub.wait_for(state="attached", timeout=15_000)
     await pub.scroll_into_view_if_needed()
-    await pub.click(timeout=15_000, force=True)
-    for _ in range(20):
-        await asyncio.sleep(1)
-        url = page.url.lower()
-        if "articlelist" in url or "success" in url:
-            return
-        if await page.get_by_text("发布成功", exact=False).count():
-            return
-        if await page.get_by_text("提交成功", exact=False).count():
-            return
-        if await page.get_by_text("发布文章成功", exact=False).count():
-            view = page.get_by_text("查看我的文章", exact=False)
-            if await view.count():
-                await view.first.click(timeout=5000, force=True)
-            return
-        warn = page.get_by_text("请同意", exact=False)
-        if await warn.count():
-            await _dismiss_dialogs(page)
+
+    for attempt in range(3):
+        await pub.click(timeout=15_000, force=True)
+        await asyncio.sleep(1.2)
+        dialog = await _read_dialog_text(page)
+        if any(k in dialog for k in ("标题重复", "标题已存在", "请勿发布重复")):
+            raise EastmoneyPublishError(f"标题重复：{dialog[:120]}")
+        await _click_confirm_dialogs(page)
+        dialog = await _read_dialog_text(page)
+        if any(k in dialog for k in ("标题重复", "标题已存在", "请勿发布重复")):
+            raise EastmoneyPublishError(f"标题重复：{dialog[:120]}")
+        for _ in range(30):
+            if await _publish_succeeded(page):
+                return
+            dialog = await _read_dialog_text(page)
+            if any(k in dialog for k in ("标题重复", "标题已存在", "请勿发布重复")):
+                raise EastmoneyPublishError(f"标题重复：{dialog[:120]}")
+            body = await page.evaluate("() => document.body.innerText || ''")
+            if any(k in body for k in ("发布成功", "提交成功", "发布文章成功")):
+                return
+            await _click_confirm_dialogs(page)
+            await asyncio.sleep(1)
+        if attempt < 2:
             await _agree_terms(page)
-            await pub.click(timeout=10_000, force=True)
-            continue
-        confirm = page.locator(
-            ".dialog_wrapper .btn_confirm, .el-message-box__btns .el-button--primary"
-        ).filter(has_text="确定")
-        if await confirm.count():
-            await confirm.first.click(timeout=3000, force=True)
-            continue
-    await asyncio.sleep(2)
+
+    raise EastmoneyPublishError(
+        "点击发布后未检测到成功页，文章可能仍在草稿箱。"
+        f" 当前 URL: {page.url}。"
+        " 请到创作中心草稿箱确认后重试。"
+    )
 
 
 async def publish_forum_pack(
@@ -487,11 +683,18 @@ async def publish_forum_pack(
                 raise EastmoneyPublishError("未登录，请先 ./eastmoney-login.sh")
 
             await _dismiss_draft_banner(page)
-            await _fill_title(page, data["title"])
-            await _upload_cover(page, data["cover"])
+            publish_title = distinct_eastmoney_title(data["title"], pack_dir)
+            if publish_title != data["title"]:
+                print(f"  标题略改（避免重复）: {publish_title}", flush=True)
+            await _fill_title(page, publish_title)
             await _fill_body_sections(
-                page, data["sections"], disclaimer=data.get("disclaimer") or ""
+                page,
+                data["sections"],
+                pack_dir=pack_dir,
+                disclaimer=data.get("disclaimer") or "",
             )
+            await _upload_cover(page, data["cover"])
+            await ensure_expected_account(page, account=account)
             await _set_source_personal(page)
             await _agree_terms(page)
 
@@ -506,7 +709,8 @@ async def publish_forum_pack(
 
             await context.storage_state(path=str(cookie))
             return {
-                "title": data["title"],
+                "title": publish_title,
+                "original_title": data["title"],
                 "pack_dir": data["pack_dir"],
                 "cover": data["cover"],
                 "images": [s.get("image") for s in data["sections"] if s.get("image")],

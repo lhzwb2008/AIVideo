@@ -15,10 +15,11 @@ from eastmoney_publisher import (
     _ensure_patchright,
     _open_longform_editor,
     cookie_path,
+    ensure_expected_account,
     profile_dir,
+    read_saved_account_label,
     sau_home,
 )
-from paths import ROOT
 
 
 async def login_interactive(*, account: str | None = None, timeout_s: float = 300) -> Path:
@@ -27,7 +28,7 @@ async def login_interactive(*, account: str | None = None, timeout_s: float = 30
     from patchright.async_api import async_playwright
 
     account = account or "main"
-    cookie = sau_home(ROOT) / "cookies" / f"eastmoney_{account}.json"
+    cookie = sau_home() / "cookies" / f"eastmoney_{account}.json"
     cookie.parent.mkdir(parents=True, exist_ok=True)
     profile = profile_dir(account=account)
     profile.mkdir(parents=True, exist_ok=True)
@@ -53,22 +54,38 @@ async def login_interactive(*, account: str | None = None, timeout_s: float = 30
         await _open_longform_editor(page)
         print("请在浏览器中完成登录（扫码或短信），进入长文编辑器后自动保存…", flush=True)
         for _ in range(int(timeout_s)):
-            url = page.url.lower()
-            if "usercenter" not in url and "login" not in url:
-                loc = page.locator('input[placeholder*="标题"]')
-                if await loc.count():
+            try:
+                if await _probe_editor_writable(page):
+                    await ensure_expected_account(page, account=account)
                     await context.storage_state(path=str(cookie))
                     await context.close()
                     return cookie
+            except Exception:
+                pass
             await asyncio.sleep(1)
         await context.close()
     raise EastmoneyPublishError("登录超时")
+
+
+async def _probe_editor_writable(page) -> bool:
+    url = page.url.lower()
+    if "usercenter" in url or "login" in url:
+        return False
+    inp = page.locator('input[placeholder*="标题"]').first
+    if not await inp.count():
+        return False
+    await inp.fill("__login_probe__")
+    await asyncio.sleep(0.8)
+    if "usercenter" in page.url.lower() or "login" in page.url.lower():
+        return False
+    return await page.locator(".ProseMirror.cfh_editor_area, .ProseMirror").count() > 0
 
 
 async def verify_editor(*, account: str | None = None) -> bool:
     _ensure_patchright()
     from patchright.async_api import async_playwright
 
+    account = account or "main"
     try:
         cookie = cookie_path(account=account)
     except EastmoneyPublishError:
@@ -83,7 +100,28 @@ async def verify_editor(*, account: str | None = None) -> bool:
     else:
         launch["channel"] = "chrome"
 
+    profile = profile_dir(account=account)
+
     async with async_playwright() as p:
+        if profile.is_dir() and any(profile.iterdir()):
+            context = await p.chromium.launch_persistent_context(
+                str(profile),
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+                viewport={"width": 1440, "height": 900},
+                **launch,
+            )
+            try:
+                page = context.pages[0] if context.pages else await context.new_page()
+                await page.goto(EDITOR_URL, wait_until="domcontentloaded", timeout=90_000)
+                ok = await _probe_editor_writable(page)
+                if ok:
+                    await ensure_expected_account(page, account=account)
+                    await context.storage_state(path=str(cookie))
+                return ok
+            finally:
+                await context.close()
+
         browser = await p.chromium.launch(**launch)
         try:
             context = await browser.new_context(
@@ -94,11 +132,7 @@ async def verify_editor(*, account: str | None = None) -> bool:
             )
             page = await context.new_page()
             await page.goto(EDITOR_URL, wait_until="domcontentloaded", timeout=90_000)
-            url = page.url.lower()
-            if "usercenter" in url or "login" in url:
-                return False
-            loc = page.locator('input[placeholder*="标题"]')
-            return await loc.count() > 0
+            return await _probe_editor_writable(page)
         finally:
             await browser.close()
 
@@ -123,7 +157,11 @@ def main() -> int:
         print(exc, file=sys.stderr)
         return 1
     if ok:
-        print("东方财富创作平台：登录态有效")
+        label = read_saved_account_label(account=args.account)
+        if label:
+            print(f"东方财富创作平台：登录态有效（账号 {label}）")
+        else:
+            print("东方财富创作平台：登录态有效")
         return 0
     print("东方财富创作平台：未登录或 cookie 已过期", file=sys.stderr)
     return 1

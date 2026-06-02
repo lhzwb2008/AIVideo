@@ -11,10 +11,10 @@ from eastmoney_publisher import (
     _chrome_path,
     _ensure_patchright,
     _fill_body_sections,
-    _focus_editor_end,
     parse_forum_pack,
     sau_home,
 )
+from forum_editor_fill import focus_editor_end, move_cursor_to_end, prepare_image_upload
 from paths import ROOT
 
 
@@ -120,6 +120,7 @@ async def _launch_context(p, *, headless: bool, account: str | None):
             locale="zh-CN",
             timezone_id="Asia/Shanghai",
             viewport={"width": 1440, "height": 1000},
+            permissions=["clipboard-read", "clipboard-write"],
         )
         return context, cookie
 
@@ -139,6 +140,7 @@ async def _launch_context(p, *, headless: bool, account: str | None):
         locale="zh-CN",
         timezone_id="Asia/Shanghai",
         viewport={"width": 1440, "height": 1000},
+        permissions=["clipboard-read", "clipboard-write"],
     )
     return context, cookie
 
@@ -147,8 +149,7 @@ async def _insert_body_image(page, image_path: str) -> None:
     if "login" in page.url.lower():
         raise XueqiuPublishError("插入配图时跳转到登录页，请重新 ./xueqiu-login.sh")
 
-    await _focus_editor_end(page)
-    await page.keyboard.press("Enter")
+    await focus_editor_end(page)
     await page.keyboard.press("Enter")
 
     before = await page.locator(".ProseMirror img").count()
@@ -156,12 +157,13 @@ async def _insert_body_image(page, image_path: str) -> None:
         '[class*="toolbar"] input[type="file"][accept*="image"]'
     ).first
     await file_input.wait_for(state="attached", timeout=15_000)
-    await file_input.set_input_files(image_path)
+    await file_input.set_input_files(prepare_image_upload(image_path))
 
     for _ in range(60):
         after = await page.locator(".ProseMirror img").count()
         if after > before:
             await asyncio.sleep(0.8)
+            await move_cursor_to_end(page)
             return
         await asyncio.sleep(1)
     raise XueqiuPublishError(f"正文图片插入失败: {image_path}")

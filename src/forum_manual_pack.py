@@ -176,12 +176,14 @@ def _expand_forum_section(slide: dict) -> str:
     headline = str(slide.get("headline") or "").strip()
     if (
         concept
-        and concept not in "\n".join(parts)
         and concept != headline
         and len(concept) >= 8
         and not narration.startswith(concept[: min(6, len(concept))])
     ):
-        parts.append(concept.rstrip("。") + "。")
+        from forum_editor_fill import concept_redundant
+
+        if not concept_redundant(concept, "\n".join(parts)):
+            parts.append(concept.rstrip("。") + "。")
 
     return "\n\n".join(p for p in parts if p.strip())
 

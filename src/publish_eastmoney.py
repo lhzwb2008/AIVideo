@@ -119,6 +119,14 @@ def publish_pack(
     )
 
 
+def _default_headless() -> bool:
+    return os.environ.get("EASTMONEY_HEADLESS", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
 def publish_forum_dir(
     forum_dir: Path | str,
     *,
@@ -137,7 +145,7 @@ def publish_forum_dir(
     print(f"\n[发布东方财富] {pack}", flush=True)
     result = publish_pack(
         pack,
-        headless=True,
+        headless=_default_headless(),
         publish=not dry_run,
         account=account,
         interactive_login=True,
