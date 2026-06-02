@@ -259,6 +259,7 @@ async def publish_forum_pack(
             await _fill_body_sections(
                 page,
                 data["sections"],
+                pack_dir=pack_dir,
                 disclaimer=data.get("disclaimer") or "",
                 insert_image=_insert_body_image,
             )
