@@ -10,6 +10,8 @@ from pathlib import Path
 from eastmoney_publisher import (
     _chrome_path,
     _ensure_patchright,
+    _fill_body_sections,
+    _focus_editor_end,
     parse_forum_pack,
     sau_home,
 )
@@ -94,29 +96,6 @@ async def _fill_title(page, title: str) -> None:
     await inp.fill(title)
 
 
-async def _fill_body_sections(page, sections: list[dict]) -> None:
-    editor = page.locator(".ProseMirror").first
-    await editor.wait_for(state="visible", timeout=30_000)
-    await editor.click()
-    await page.keyboard.press("Control+A")
-    await page.keyboard.press("Backspace")
-
-    wrote = False
-    for sec in sections:
-        body = (sec.get("body") or "").strip()
-        if body:
-            if wrote:
-                await page.keyboard.press("Enter")
-                await page.keyboard.press("Enter")
-            await page.keyboard.insert_text(body)
-            wrote = True
-        img = sec.get("image")
-        if img:
-            await _insert_body_image(page, img)
-            wrote = True
-    await asyncio.sleep(0.5)
-
-
 async def _launch_context(p, *, headless: bool, account: str | None):
     chrome = _chrome_path()
     launch: dict = {
@@ -168,9 +147,7 @@ async def _insert_body_image(page, image_path: str) -> None:
     if "login" in page.url.lower():
         raise XueqiuPublishError("插入配图时跳转到登录页，请重新 ./xueqiu-login.sh")
 
-    editor = page.locator(".ProseMirror").first
-    await editor.click(timeout=10_000)
-    await page.keyboard.press("Control+End")
+    await _focus_editor_end(page)
     await page.keyboard.press("Enter")
     await page.keyboard.press("Enter")
 
@@ -277,7 +254,12 @@ async def publish_forum_pack(
 
             await _fill_title(page, data["title"])
             await _upload_cover(page, data["cover"])
-            await _fill_body_sections(page, data["sections"])
+            await _fill_body_sections(
+                page,
+                data["sections"],
+                disclaimer=data.get("disclaimer") or "",
+                insert_image=_insert_body_image,
+            )
 
             await asyncio.sleep(2)
             if draft_only:

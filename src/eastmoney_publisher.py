@@ -86,14 +86,16 @@ def parse_forum_pack(pack_dir: Path) -> dict:
         title = lines[0][2:].strip()
 
     sections: list[dict] = []
+    disclaimer_lines: list[str] = []
     current_head = ""
     current_paras: list[str] = []
     pending_image: str | None = None
+    in_footer = False
 
     def flush_section() -> None:
         nonlocal current_head, current_paras, pending_image
         body = "\n\n".join(p for p in current_paras if p.strip())
-        if body or pending_image:
+        if body or pending_image or current_head:
             sections.append(
                 {
                     "headline": current_head,
@@ -101,19 +103,26 @@ def parse_forum_pack(pack_dir: Path) -> dict:
                     "image": pending_image,
                 }
             )
+        current_head = ""
         current_paras = []
         pending_image = None
 
     for line in lines[1:]:
         s = line.strip()
+        if s.startswith("---"):
+            flush_section()
+            in_footer = True
+            continue
+        if in_footer:
+            if s:
+                disclaimer_lines.append(s)
+            continue
         if s.startswith("## "):
             flush_section()
             current_head = s[3:].strip()
             continue
-        if s.startswith("---"):
-            continue
         if s.startswith("【风险提示】"):
-            current_paras.append(s)
+            disclaimer_lines.append(s)
             continue
         m = re.match(r"\*\*【插入配图\s*(\d+)】\*\*\s*`([^`]+)`", s)
         if m:
@@ -130,6 +139,7 @@ def parse_forum_pack(pack_dir: Path) -> dict:
         current_paras.append(s)
 
     flush_section()
+    disclaimer = "\n".join(disclaimer_lines).strip()
 
     cover = pack_dir / "cover.jpg"
     if not cover.is_file():
@@ -143,6 +153,7 @@ def parse_forum_pack(pack_dir: Path) -> dict:
     return {
         "title": title,
         "sections": sections,
+        "disclaimer": disclaimer,
         "cover": str(cover.resolve()),
         "pack_dir": str(pack_dir.resolve()),
     }
@@ -182,7 +193,21 @@ async def _fill_title(page, title: str) -> None:
     await inp.fill(title)
 
 
-async def _fill_body_sections(page, sections: list[dict]) -> None:
+async def _focus_editor_end(page) -> None:
+    editor = page.locator(".ProseMirror").first
+    await editor.wait_for(state="visible", timeout=30_000)
+    await editor.click(timeout=10_000)
+    await page.keyboard.press("Control+End")
+
+
+async def _fill_body_sections(
+    page,
+    sections: list[dict],
+    *,
+    disclaimer: str = "",
+    insert_image=None,
+) -> None:
+    insert_image = insert_image or _insert_body_image
     editor = page.locator(".ProseMirror").first
     await editor.wait_for(state="visible", timeout=30_000)
     await editor.click()
@@ -191,17 +216,27 @@ async def _fill_body_sections(page, sections: list[dict]) -> None:
 
     wrote = False
     for sec in sections:
+        headline = (sec.get("headline") or "").strip()
         body = (sec.get("body") or "").strip()
-        if body:
+        chunks = [c for c in (headline, body) if c]
+        if chunks:
+            await _focus_editor_end(page)
             if wrote:
                 await page.keyboard.press("Enter")
                 await page.keyboard.press("Enter")
-            await page.keyboard.insert_text(body)
+            await page.keyboard.insert_text("\n\n".join(chunks))
             wrote = True
         img = sec.get("image")
         if img:
-            await _insert_body_image(page, img)
+            await insert_image(page, img)
             wrote = True
+
+    if disclaimer.strip():
+        await _focus_editor_end(page)
+        if wrote:
+            await page.keyboard.press("Enter")
+            await page.keyboard.press("Enter")
+        await page.keyboard.insert_text(disclaimer.strip())
     await asyncio.sleep(0.5)
 
 
@@ -255,10 +290,7 @@ async def _insert_body_image(page, image_path: str) -> None:
     if "usercenter" in page.url.lower() or "/login" in page.url.lower():
         raise EastmoneyPublishError("插入配图时跳转到登录页，请重新 ./eastmoney-login.sh")
 
-    editor = page.locator(".ProseMirror").first
-    await editor.wait_for(state="visible", timeout=15_000)
-    await editor.click(timeout=10_000)
-    await page.keyboard.press("Control+End")
+    await _focus_editor_end(page)
     await page.keyboard.press("Enter")
     await page.keyboard.press("Enter")
 
@@ -457,7 +489,9 @@ async def publish_forum_pack(
             await _dismiss_draft_banner(page)
             await _fill_title(page, data["title"])
             await _upload_cover(page, data["cover"])
-            await _fill_body_sections(page, data["sections"])
+            await _fill_body_sections(
+                page, data["sections"], disclaimer=data.get("disclaimer") or ""
+            )
             await _set_source_personal(page)
             await _agree_terms(page)
 
