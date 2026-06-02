@@ -14,6 +14,7 @@ from pathlib import Path
 
 from paths import ROOT
 from publish_caption import (
+    eastmoney_enabled,
     print_manual_publish_pack,
     tiktok_enabled,
     youtube_enabled,
@@ -103,6 +104,21 @@ def publish_tiktok_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
     return _read_last_publish_url("last_tiktok_publish.json", "url")
 
 
+def publish_eastmoney_api(forum_dir: Path, *, dry_run: bool) -> str:
+    cmd = [
+        str(ROOT / "scripts" / "publish-eastmoney.sh"),
+        rel(forum_dir),
+    ]
+    if dry_run:
+        cmd.append("--dry-run")
+    else:
+        cmd.append("--publish")
+    run(cmd, label="发布东方财富")
+    if dry_run:
+        return ""
+    return _read_last_publish_url("last_eastmoney_publish.json", "title")
+
+
 def _retry_config() -> tuple[int, int]:
     """(最多尝试次数, 每次失败后等待秒数)。次数<=0 视为无限重试。"""
     try:
@@ -187,6 +203,25 @@ def publish_tiktok(video: Path, script_path: Path, *, dry_run: bool) -> str:
     return _publish_with_retry(_do, label="TikTok", dry_run=dry_run)
 
 
+def publish_eastmoney(forum_dir: str | Path, *, dry_run: bool) -> str:
+    if not eastmoney_enabled():
+        return ""
+    path = Path(forum_dir)
+    if not path.is_absolute():
+        path = ROOT / path
+    if not (path / "post.md").is_file():
+        log(f"  ↳ [东方财富] 跳过：无论坛包 {rel(path)}")
+        return ""
+
+    def _do() -> str:
+        title = publish_eastmoney_api(path, dry_run=dry_run)
+        if title:
+            log(f"  [东方财富] {title}")
+        return title
+
+    return _publish_with_retry(_do, label="东方财富", dry_run=dry_run)
+
+
 def archive_video(video: Path, *, date_tag: str) -> Path:
     """仅归档 mp4（兼容旧调用）；主流程请用 archive_publish_bundle。"""
     return archive_publish_bundle(video, date_tag=date_tag)["video"]
@@ -256,16 +291,21 @@ def pipeline_after_script(
 
     youtube_url = ""
     tiktok_url = ""
+    eastmoney_title = ""
 
     if dry_run:
         log(f"\n=== [{index}/{target}] 预演 API 发布 ===")
         youtube_url = publish_youtube(video, script_path, dry_run=True)
         tiktok_url = publish_tiktok(video, script_path, dry_run=True)
+        forum_preview = video.parent / video.stem
+        if forum_preview.is_dir() and (forum_preview / "post.md").is_file():
+            eastmoney_title = publish_eastmoney(forum_preview, dry_run=True)
         print_manual_publish_pack(
             script_path,
             video,
             youtube_url=youtube_url,
             tiktok_url=tiktok_url,
+            eastmoney_title=eastmoney_title,
             skip_auto_note=True,
         )
         return {
@@ -275,10 +315,11 @@ def pipeline_after_script(
             "published": False,
             "youtube_url": youtube_url,
             "tiktok_url": tiktok_url,
+            "eastmoney_title": eastmoney_title,
         }
 
-    if youtube_enabled() or tiktok_enabled():
-        log(f"\n=== [{index}/{target}] API 自动发布（YouTube / TikTok）===")
+    if youtube_enabled() or tiktok_enabled() or eastmoney_enabled():
+        log(f"\n=== [{index}/{target}] API 自动发布（YouTube / TikTok / 东方财富）===")
     youtube_url = publish_youtube(video, script_path, dry_run=False)
     tiktok_url = publish_tiktok(video, script_path, dry_run=False)
 
@@ -289,15 +330,25 @@ def pipeline_after_script(
     if archived.get("forum"):
         log(f"  论坛图文：{rel(archived['forum'])}/")
         log(f"  发布文案：{rel(archived['forum'])}/README.md")
+        eastmoney_title = publish_eastmoney(archived["forum"], dry_run=False)
+
+    print_manual_publish_pack(
+        script_path,
+        archived["video"],
+        youtube_url=youtube_url,
+        tiktok_url=tiktok_url,
+        eastmoney_title=eastmoney_title,
+    )
 
     return {
         "title": title,
         "video": rel(archived["video"]),
         "forum": rel(archived["forum"]) if archived.get("forum") else "",
         "script": rel(script_path),
-        "published": bool(youtube_url or tiktok_url),
+        "published": bool(youtube_url or tiktok_url or eastmoney_title),
         "youtube_url": youtube_url,
         "tiktok_url": tiktok_url,
+        "eastmoney_title": eastmoney_title,
     }
 
 

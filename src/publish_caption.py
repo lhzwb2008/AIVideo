@@ -59,6 +59,7 @@ def print_manual_publish_pack(
     *,
     youtube_url: str = "",
     tiktok_url: str = "",
+    eastmoney_title: str = "",
     skip_auto_note: bool = False,
 ) -> None:
     script = _load_script_dict(script_path) or load_script(script_path)
@@ -115,6 +116,7 @@ def print_manual_publish_pack(
         has_forum=has_forum,
         youtube_url=youtube_url,
         tiktok_url=tiktok_url,
+        eastmoney_title=eastmoney_title,
         skip_auto_note=skip_auto_note,
     )
 
@@ -126,6 +128,7 @@ def _print_todo_checklist(
     has_forum: bool,
     youtube_url: str,
     tiktok_url: str,
+    eastmoney_title: str,
     skip_auto_note: bool,
 ) -> None:
     """流程结束后的「待办清单」，提醒哪些需要手动发，免得忘。"""
@@ -147,6 +150,11 @@ def _print_todo_checklist(
         else:
             print("  [→] TikTok 已上传到收件箱草稿 —— 打开 App，", flush=True)
             print("      粘贴上面【TikTok】整段文案后点发布", flush=True)
+        if eastmoney_enabled():
+            if eastmoney_title:
+                print(f"  [✓] 东方财富已提交: {eastmoney_title}", flush=True)
+            else:
+                print("  [!] 东方财富未发布或失败，可手动: ./scripts/publish-eastmoney.sh", flush=True)
 
     # 2) 手动发布视频（抖音/小红书/视频号）
     src_hint = f"（上传成片 {video_rel}）" if video_rel else ""
@@ -156,11 +164,17 @@ def _print_todo_checklist(
         print(f"  [ ] {name}: {url}", flush=True)
         print(f"        {tip}", flush=True)
 
-    # 3) 手动发布图文（雪球/东方财富）
+    # 3) 手动发布图文（雪球；东方财富已自动则仅补雪球）
     if has_forum:
         print(f"\n— 手动发布·图文（用 {forum_rel}/post.md + cover.jpg）—", flush=True)
-        print("  post.md 第一行做标题，正文整段贴入，按【插入配图 N】上传 images/0N.jpg：", flush=True)
+        if eastmoney_enabled() and eastmoney_title:
+            print("  东方财富已由 Playwright 自动提交（审核中），剩余：", flush=True)
+        else:
+            print("  post.md 第一行做标题，正文整段贴入，按【插入配图 N】上传 images/0N.jpg：", flush=True)
         for name, url in FORUM_MANUAL_PLATFORMS:
+            if name.startswith("东方财富") and eastmoney_enabled() and eastmoney_title:
+                print(f"  [✓] {name}: 已自动发布", flush=True)
+                continue
             print(f"  [ ] {name}: {url}", flush=True)
         print("        雪球首页推荐位可改用 cover_landscape.jpg（16:9 横图）", flush=True)
 
@@ -178,6 +192,13 @@ def youtube_enabled() -> bool:
 
 def tiktok_enabled() -> bool:
     value = os.environ.get("AIVIDEO_PUBLISH_TIKTOK")
+    if value is None or value.strip() == "":
+        return False
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def eastmoney_enabled() -> bool:
+    value = os.environ.get("AIVIDEO_PUBLISH_EASTMONEY")
     if value is None or value.strip() == "":
         return False
     return value.strip().lower() in ("1", "true", "yes", "on")

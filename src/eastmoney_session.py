@@ -100,10 +100,15 @@ async def verify_editor(*, account: str | None = None) -> bool:
             await browser.close()
 
 
+def verify_editor_sync(*, account: str | None = None) -> bool:
+    return asyncio.run(verify_editor(account=account))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="校验东方财富长文编辑器登录态")
     parser.add_argument("--account", default=None)
     parser.add_argument("--login", action="store_true", help="有头浏览器登录并保存 cookie")
+    parser.add_argument("--check", action="store_true", help="校验登录态（默认行为）")
     args = parser.parse_args()
     try:
         if args.login:

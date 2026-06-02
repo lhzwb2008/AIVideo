@@ -215,9 +215,20 @@ async def _launch_context(p, *, headless: bool, account: str | None):
     else:
         launch["channel"] = "chrome"
 
+    cookie = cookie_path(account=account)
     profile = profile_dir(account=account)
     profile.mkdir(parents=True, exist_ok=True)
-    cookie = cookie_path(account=account)
+
+    # 优先用 storage_state（含 HttpOnly 外的登录 cookie），避免 profile 里只有匿名态
+    if cookie.is_file() and cookie.stat().st_size > 64:
+        browser = await p.chromium.launch(**launch)
+        context = await browser.new_context(
+            storage_state=str(cookie),
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
+            viewport={"width": 1440, "height": 1000},
+        )
+        return context, cookie
 
     if profile.is_dir() and any(profile.iterdir()):
         context = await p.chromium.launch_persistent_context(
@@ -254,55 +265,164 @@ async def _insert_body_image(page, image_path: str) -> None:
     await btn.wait_for(state="visible", timeout=10_000)
     before = await page.locator(".ProseMirror img").count()
 
-    async with page.expect_file_chooser(timeout=15_000) as fc_info:
-        await btn.click(timeout=10_000)
-    chooser = await fc_info.value
-    await chooser.set_files(image_path)
+    await btn.click(timeout=10_000)
+    await asyncio.sleep(0.5)
+    file_input = page.locator(".upload_wrap #upload_input, .upload_wrap input[type='file']").first
+    await file_input.wait_for(state="attached", timeout=15_000)
+    await file_input.set_input_files(image_path)
 
+    insert_btn = page.locator(".upload_wrap .btn_confirm").first
     for _ in range(90):
         if "usercenter" in page.url.lower():
             raise EastmoneyPublishError("上传配图后跳转到登录页")
+        cls = await insert_btn.get_attribute("class") or ""
+        if "disabled" not in cls:
+            break
+        await asyncio.sleep(1)
+    else:
+        raise EastmoneyPublishError(f"正文图片上传超时: {image_path}")
+
+    await insert_btn.click(timeout=10_000)
+
+    for _ in range(30):
         after = await page.locator(".ProseMirror img").count()
         if after > before:
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(0.5)
             return
         await asyncio.sleep(1)
-    raise EastmoneyPublishError(f"正文图片上传失败: {image_path}")
+    raise EastmoneyPublishError(f"正文图片插入失败: {image_path}")
+
+
+async def _dismiss_draft_banner(page) -> None:
+    """忽略「未编辑草稿」提示，使用当前自动化填写的新稿。"""
+    banner = page.get_by_text("是否继续编辑", exact=False)
+    if await banner.count():
+        close = page.locator(".el-message-box__close, .draft-tip-close, .close").first
+        if await close.count():
+            await close.click(timeout=3000)
+        else:
+            await page.keyboard.press("Escape")
+
+
+async def _cover_is_set(page) -> bool:
+    if await page.locator(".cover_edit_replace").count():
+        return True
+    if await page.locator(".cover_img_wrap img, .cover_img_part img").count():
+        return True
+    part = page.locator(".cover_img_part").first
+    if await part.count():
+        text = await part.inner_text()
+        if "替换" in text or "编辑" in text:
+            return True
+    return False
 
 
 async def _upload_cover(page, cover_path: str) -> None:
+    if await _cover_is_set(page):
+        return
     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     await asyncio.sleep(0.5)
-    await page.locator(".select-cover-img").first.scroll_into_view_if_needed()
-    await page.locator(".select-cover-img").first.click(timeout=10_000)
+    cover = page.locator(".select-cover-img").first
+    await cover.wait_for(state="visible", timeout=15_000)
+    await cover.scroll_into_view_if_needed()
+    await cover.click(timeout=10_000)
     inp = page.locator("#upload_input")
     await inp.wait_for(state="attached", timeout=15_000)
     await inp.set_input_files(cover_path)
-    await asyncio.sleep(2)
-    wrap = page.locator(".cover_img_wrap img, .cover_img_part img")
-    for _ in range(30):
-        if await wrap.count():
+    for _ in range(45):
+        if await _cover_is_set(page):
+            await asyncio.sleep(1)
             return
         await asyncio.sleep(1)
     raise EastmoneyPublishError("封面上传后未检测到预览图")
 
 
 async def _set_source_personal(page) -> None:
-    for text in ("个人观点",):
-        loc = page.get_by_text(text, exact=True)
-        if await loc.count():
-            await loc.first.click(timeout=3000)
-            return
+    radio = page.locator(".el-radio").filter(has_text="个人观点").first
+    if await radio.count():
+        await radio.scroll_into_view_if_needed()
+        await radio.click(timeout=5000)
+        return
+    loc = page.get_by_text("个人观点", exact=True)
+    if await loc.count():
+        await loc.first.click(timeout=3000)
+
+
+async def _dismiss_dialogs(page) -> None:
+    for _ in range(3):
+        btn = page.locator(
+            ".dialog_wrapper .btn_confirm, .dialog_wrapper button, "
+            ".el-message-box__btns .el-button--primary"
+        ).filter(has_text="确定")
+        if await btn.count():
+            await btn.first.click(timeout=3000, force=True)
+            await asyncio.sleep(0.5)
+            continue
+        close = page.locator(".dialog_wrapper .close, .el-dialog__close").first
+        if await close.count():
+            await close.click(timeout=2000, force=True)
+            await asyncio.sleep(0.5)
+            continue
+        break
 
 
 async def _agree_terms(page) -> None:
-    label = page.get_by_text("已阅读并同意", exact=False)
-    if await label.count():
-        await label.first.click(timeout=5000)
-        return
-    cb = page.locator(".el-checkbox").first
-    if await cb.count():
-        await cb.click(timeout=5000)
+    await _dismiss_dialogs(page)
+    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    icon = page.locator("footer.read_item .check-icon, .read_item .check-icon").first
+    if await icon.count():
+        cls = await icon.get_attribute("class") or ""
+        if "on" not in cls.split():
+            await icon.click(timeout=5000, force=True)
+            await asyncio.sleep(0.3)
+        cls = await icon.get_attribute("class") or ""
+        if "on" not in cls.split():
+            await page.evaluate(
+                """() => {
+                  const el = document.querySelector('footer.read_item .check-icon');
+                  if (el && !el.classList.contains('on')) el.click();
+                }"""
+            )
+
+
+async def _click_publish(page) -> None:
+    await _dismiss_dialogs(page)
+    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    await _set_source_personal(page)
+    await _agree_terms(page)
+    await asyncio.sleep(0.5)
+    pub = page.locator(".button_publish, .editor-main-btn").filter(has_text="发布").first
+    if not await pub.count():
+        pub = page.get_by_text("发布", exact=True).last
+    await pub.scroll_into_view_if_needed()
+    await pub.click(timeout=15_000, force=True)
+    for _ in range(20):
+        await asyncio.sleep(1)
+        url = page.url.lower()
+        if "articlelist" in url or "success" in url:
+            return
+        if await page.get_by_text("发布成功", exact=False).count():
+            return
+        if await page.get_by_text("提交成功", exact=False).count():
+            return
+        if await page.get_by_text("发布文章成功", exact=False).count():
+            view = page.get_by_text("查看我的文章", exact=False)
+            if await view.count():
+                await view.first.click(timeout=5000, force=True)
+            return
+        warn = page.get_by_text("请同意", exact=False)
+        if await warn.count():
+            await _dismiss_dialogs(page)
+            await _agree_terms(page)
+            await pub.click(timeout=10_000, force=True)
+            continue
+        confirm = page.locator(
+            ".dialog_wrapper .btn_confirm, .el-message-box__btns .el-button--primary"
+        ).filter(has_text="确定")
+        if await confirm.count():
+            await confirm.first.click(timeout=3000, force=True)
+            continue
+    await asyncio.sleep(2)
 
 
 async def publish_forum_pack(
@@ -333,6 +453,7 @@ async def publish_forum_pack(
             if "usercenter" in url or "login" in url:
                 raise EastmoneyPublishError("未登录，请先 ./eastmoney-login.sh")
 
+            await _dismiss_draft_banner(page)
             await _fill_title(page, data["title"])
             await _upload_cover(page, data["cover"])
             await _fill_body_sections(page, data["sections"])
@@ -346,9 +467,7 @@ async def publish_forum_pack(
                     await preview.click(timeout=10_000)
                     await asyncio.sleep(2)
             else:
-                pub = page.get_by_role("button", name="发布", exact=True)
-                await pub.click(timeout=15_000)
-                await asyncio.sleep(3)
+                await _click_publish(page)
 
             await context.storage_state(path=str(cookie))
             return {

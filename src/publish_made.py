@@ -13,6 +13,7 @@ from publish_pipeline import (
     archive_publish_bundle,
     generate_forum_pack,
     log,
+    publish_eastmoney,
     publish_tiktok,
     publish_youtube,
     rel,
@@ -52,23 +53,38 @@ def main() -> int:
 
         youtube_url = publish_youtube(video, script, dry_run=args.dry_run)
         tiktok_url = publish_tiktok(video, script, dry_run=args.dry_run)
-        print_manual_publish_pack(
-            script,
-            video,
-            youtube_url=youtube_url,
-            tiktok_url=tiktok_url,
-        )
+        eastmoney_title = ""
 
         if args.dry_run:
+            forum_preview = video.parent / video.stem
+            if forum_preview.is_dir() and (forum_preview / "post.md").is_file():
+                eastmoney_title = publish_eastmoney(forum_preview, dry_run=True)
+            print_manual_publish_pack(
+                script,
+                video,
+                youtube_url=youtube_url,
+                tiktok_url=tiktok_url,
+                eastmoney_title=eastmoney_title,
+            )
             ok += 1
             continue
 
         append_history_from_script(script)
         archived = archive_publish_bundle(video, date_tag=datetime.now().strftime("%Y%m%d"))
+        if archived.get("forum"):
+            eastmoney_title = publish_eastmoney(archived["forum"], dry_run=False)
+        print_manual_publish_pack(
+            script,
+            archived["video"],
+            youtube_url=youtube_url,
+            tiktok_url=tiktok_url,
+            eastmoney_title=eastmoney_title,
+        )
         m["published"] = True
         m["video"] = rel(archived["video"])
         m["youtube_url"] = youtube_url
         m["tiktok_url"] = tiktok_url
+        m["eastmoney_title"] = eastmoney_title
         log(f"已归档：{rel(archived['video'])}")
         if archived.get("forum"):
             log(f"  论坛图文：{rel(archived['forum'])}/")

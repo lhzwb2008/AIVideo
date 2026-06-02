@@ -12,7 +12,7 @@ if [[ ! -x "$SAU_PY" ]]; then
   SAU_PY="python3"
 fi
 
-if ! "$SAU_PY" "$ROOT/src/eastmoney_session.py" --check 2>/dev/null; then
+if ! "$SAU_PY" "$ROOT/src/eastmoney_session.py" --check --account "${EASTMONEY_ACCOUNT:-main}" 2>/dev/null; then
   echo "未登录，请先运行: ./eastmoney-login.sh" >&2
   exit 1
 fi
