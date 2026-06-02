@@ -301,93 +301,24 @@ def _quote_block(text: str) -> str:
     return f"```\n{text.rstrip()}\n```\n\n"
 
 
-def _build_readme_publish_sections(script: dict, forum_body: str) -> str:
-    """各平台发布用标题/标签/简介，写入 README 便于归档后一键复制。"""
+def _build_readme_publish_sections(script: dict) -> str:
+    """视频平台通用发布文案（抖音/小红书/视频号等同），写入 README 便于归档后一键复制。"""
     from douyin_caption import build_sau_fields
-    from social_caption import build_social_fields
-    from tiktok_caption import build_tiktok_fields
-    from youtube_caption import build_youtube_fields
 
     dy = build_sau_fields(script)
-    xhs = build_social_fields(script, "xiaohongshu")
-    tx = build_social_fields(script, "tencent")
-    yt = build_youtube_fields(script)
-    tk = build_tiktok_fields(script)
-
     dy_tags = (dy.get("tags") or "").strip()
     dy_hashtags = " ".join(f"#{t.strip()}" for t in dy_tags.split(",") if t.strip())
     dy_desc = (dy.get("desc") or "").strip()
     if dy_hashtags:
         dy_desc = f"{dy_desc}\n\n{dy_hashtags}".strip()
 
-    raw_hashtags = script.get("hashtags") or []
-    forum_tags = "、".join(
-        str(t).strip() for t in raw_hashtags if str(t).strip()
-    )
-    if not forum_tags:
-        forum_tags = dy_tags.replace(",", "、")
-
-    sections: list[str] = ["## 发布文案（可直接复制）\n"]
-
-    forum_title = _sanitize_forum_title(str(script.get("title") or dy["title"]).strip())
-    forum_bits = [
-        f"**标题**\n\n{_quote_block(forum_title)}",
-    ]
-    if forum_tags:
-        forum_bits.append(f"**标签 / 话题**\n\n{_quote_block(forum_tags)}")
-    if forum_body.strip():
-        forum_bits.append(
-            f"**正文**（不含标题行；配图位置见 **【插入配图 N】**）\n\n"
-            f"{_quote_block(forum_body)}"
-        )
-    sections.append(
-        "### 论坛图文（雪球 / 东方财富）\n\n"
-        + "".join(forum_bits)
-        + "上传 `cover.jpg`；雪球首页推荐位可用 `cover_landscape.jpg`。\n"
-    )
-
-    sections.append(
+    return (
+        "## 发布文案（可直接复制）\n\n"
         "### 抖音\n\n"
         f"**标题**\n\n{_quote_block(dy['title'])}"
         f"**标签**（逗号分隔，发布时选话题）\n\n{_quote_block(dy_tags)}"
         f"**简介 + 话题**（整段复制）\n\n{_quote_block(dy_desc)}"
     )
-
-    xhs_tags = " ".join(f"#{t}" for t in xhs.get("tags") or [])
-    sections.append(
-        "### 小红书\n\n"
-        f"**标题**（≤20 字）\n\n{_quote_block(xhs['title'])}"
-        f"**标签**\n\n{_quote_block('、'.join(xhs.get('tags') or []))}"
-        f"**正文**\n\n{_quote_block(xhs['desc'])}"
-        + (f"行内话题：{xhs_tags}\n\n" if xhs_tags else "")
-    )
-
-    tx_tags = "、".join(tx.get("tags") or [])
-    sections.append(
-        "### 视频号\n\n"
-        f"**短标题**（6–16 字）\n\n{_quote_block(tx['short_title'])}"
-        f"**描述**\n\n{_quote_block(tx['desc'])}"
-        f"**标签**\n\n{_quote_block(tx_tags)}"
-    )
-
-    yt_tags = ", ".join(yt.get("tags") or [])
-    yt_hash = " ".join(f"#{t}" for t in yt.get("tags") or [])
-    yt_desc = (yt.get("description") or "").strip()
-    if yt_hash and yt_hash not in yt_desc:
-        yt_desc = f"{yt_desc}\n\n{yt_hash}".strip()
-    sections.append(
-        "### YouTube Shorts\n\n"
-        f"**标题**\n\n{_quote_block(yt['title'])}"
-        f"**标签**\n\n{_quote_block(yt_tags)}"
-        f"**描述**\n\n{_quote_block(yt_desc)}"
-    )
-
-    sections.append(
-        "### TikTok\n\n"
-        f"**文案**（含 # 话题，整段复制到 App）\n\n{_quote_block(tk['title'])}"
-    )
-
-    return "\n".join(sections)
 
 
 def _write_landscape_cover(src: Path, out_dir: Path) -> Path | None:
@@ -468,40 +399,10 @@ def build_forum_pack(
     post_text = "\n".join(lines)
     post_md.write_text(post_text, encoding="utf-8")
 
-    # post.md 首行为 # 标题，论坛正文从第二段起复制
-    forum_body = post_text
-    if forum_body.startswith("# "):
-        forum_body = re.sub(r"^# [^\n]+\n+", "", forum_body, count=1)
+    publish_sections = _build_readme_publish_sections(script)
+    readme = f"""# 发布文案 · {video_path.name}
 
-    img_lines = "\n".join(f"- images/{p.name}" for p in image_paths) or "- （无）"
-    cover_lines = []
-    if cover_path:
-        cover_lines.append("- `cover.jpg`（竖封面 / 默认上传）")
-    if landscape_path:
-        cover_lines.append(
-            "- `cover_landscape.jpg`（16:9 横封面，雪球首页推荐裁剪用）"
-        )
-    cover_block = "\n".join(cover_lines) if cover_lines else "- （未生成）"
-    publish_sections = _build_readme_publish_sections(script, forum_body)
-    readme = f"""# 发布素材 · {video_path.name}
-
-与视频 `{video_path.name}` 同级目录下的同名文件夹；归档后会与 mp4 一起进入 `archive/published/日期/`。
-
-{publish_sections}
-
----
-
-## 素材清单
-
-1. 封面：
-{cover_block}
-2. 论坛排版正文：`post.md`（与上方「论坛图文」正文一致，含 Markdown 标题行）
-3. 配图：见 **【插入配图 N】**，上传 `images/0N.jpg`
-
-{img_lines}
-
-脚本：`{script_path.name}`
-"""
+{publish_sections}"""
     (out_dir / "README.md").write_text(readme, encoding="utf-8")
 
     return {
