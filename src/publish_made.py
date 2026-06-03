@@ -13,6 +13,7 @@ from publish_pipeline import (
     archive_publish_bundle,
     generate_forum_pack,
     log,
+    publish_bilibili,
     publish_eastmoney,
     publish_tiktok,
     publish_youtube,
@@ -53,6 +54,7 @@ def main() -> int:
 
         youtube_url = publish_youtube(video, script, dry_run=args.dry_run)
         tiktok_url = publish_tiktok(video, script, dry_run=args.dry_run)
+        bilibili_title = publish_bilibili(video, script, dry_run=args.dry_run)
         eastmoney_title = ""
 
         if args.dry_run:
@@ -64,6 +66,7 @@ def main() -> int:
                 video,
                 youtube_url=youtube_url,
                 tiktok_url=tiktok_url,
+                bilibili_title=bilibili_title,
                 eastmoney_title=eastmoney_title,
             )
             ok += 1
@@ -78,12 +81,14 @@ def main() -> int:
             archived["video"],
             youtube_url=youtube_url,
             tiktok_url=tiktok_url,
+            bilibili_title=bilibili_title,
             eastmoney_title=eastmoney_title,
         )
         m["published"] = True
         m["video"] = rel(archived["video"])
         m["youtube_url"] = youtube_url
         m["tiktok_url"] = tiktok_url
+        m["bilibili_title"] = bilibili_title
         m["eastmoney_title"] = eastmoney_title
         log(f"已归档：{rel(archived['video'])}")
         if archived.get("forum"):

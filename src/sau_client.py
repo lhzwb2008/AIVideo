@@ -56,6 +56,14 @@ def douyin_account() -> str:
     return _env("SAU_DOUYIN_ACCOUNT", "main")
 
 
+def bilibili_account() -> str:
+    return _env("SAU_BILIBILI_ACCOUNT", "main")
+
+
+def bilibili_cookie_path(*, root: Path | None = None) -> Path:
+    return sau_home(root) / "cookies" / f"bilibili_{bilibili_account()}.json"
+
+
 def run_sau(
     args: list[str],
     *,
@@ -96,3 +104,57 @@ def check_douyin_session(*, root: Path | None = None) -> None:
     raise SauError(
         f"抖音 cookie 无效。请运行: ./douyin-login.sh\n{out or f'exit {proc.returncode}'}"
     )
+
+
+def check_bilibili_session(*, root: Path | None = None) -> None:
+    cookie = bilibili_cookie_path(root=root)
+    if not cookie.is_file():
+        raise SauError(
+            f"B 站账号文件不存在: {cookie}\n请先运行: ./bilibili-login.sh"
+        )
+    proc = run_sau(
+        ["bilibili", "check", "--account", bilibili_account()],
+        root=root,
+        check=False,
+    )
+    out = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode == 0 and "valid" in out.lower():
+        return
+    raise SauError(
+        f"B 站登录态无效。请运行: ./bilibili-login.sh\n{out or f'exit {proc.returncode}'}"
+    )
+
+
+def publish_bilibili_video(
+    video: Path,
+    *,
+    title: str,
+    desc: str,
+    tags: str,
+    tid: int,
+    root: Path | None = None,
+) -> str:
+    """通过 sau + biliup 上传视频，成功返回标题（作发布记录）。"""
+    args = [
+        "bilibili",
+        "upload-video",
+        "--account",
+        bilibili_account(),
+        "--file",
+        str(video.resolve()),
+        "--title",
+        title,
+        "--desc",
+        desc,
+        "--tid",
+        str(tid),
+    ]
+    if tags.strip():
+        args.extend(["--tags", tags])
+    proc = run_sau(args, root=root, check=False)
+    out = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode != 0:
+        raise SauError(
+            f"B 站上传失败 (exit {proc.returncode}):\n{out or '无输出'}"
+        )
+    return title

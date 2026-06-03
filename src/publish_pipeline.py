@@ -14,6 +14,7 @@ from pathlib import Path
 
 from paths import ROOT
 from publish_caption import (
+    bilibili_enabled,
     eastmoney_enabled,
     print_manual_publish_pack,
     tiktok_enabled,
@@ -26,6 +27,21 @@ from research import run_article_research
 
 def log(message: str) -> None:
     print(message, flush=True)
+
+
+def _auto_publish_platforms_label() -> str:
+    names: list[str] = []
+    if youtube_enabled():
+        names.append("YouTube")
+    if tiktok_enabled():
+        names.append("TikTok")
+    if bilibili_enabled():
+        names.append("B站")
+    if eastmoney_enabled():
+        names.append("东方财富")
+    if xueqiu_enabled():
+        names.append("雪球")
+    return " / ".join(names) if names else ""
 
 
 def rel(path: Path) -> str:
@@ -89,6 +105,21 @@ def publish_youtube_api(video: Path, script_path: Path, *, dry_run: bool) -> str
     if dry_run:
         return ""
     return _read_last_publish_url("last_youtube_publish.json", "shorts_url", "url")
+
+
+def publish_bilibili_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    cmd = [
+        str(ROOT / "scripts" / "publish-bilibili.sh"),
+        rel(video),
+        "--script",
+        rel(script_path),
+    ]
+    if dry_run:
+        cmd.append("--dry-run")
+    run(cmd, label="发布B站")
+    if dry_run:
+        return ""
+    return _read_last_publish_url("last_bilibili_publish.json", "title")
 
 
 def publish_tiktok_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
@@ -214,6 +245,19 @@ def publish_tiktok(video: Path, script_path: Path, *, dry_run: bool) -> str:
         return url
 
     return _publish_with_retry(_do, label="TikTok", dry_run=dry_run)
+
+
+def publish_bilibili(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    if not bilibili_enabled():
+        return ""
+
+    def _do() -> str:
+        title = publish_bilibili_api(video, script_path, dry_run=dry_run)
+        if title:
+            log(f"  [B站] 已提交: {title}")
+        return title
+
+    return _publish_forum_with_retry(_do, label="B站", dry_run=dry_run)
 
 
 def _publish_forum_with_retry(do_fn, *, label: str, dry_run: bool) -> str:
@@ -350,6 +394,7 @@ def pipeline_after_script(
 
     youtube_url = ""
     tiktok_url = ""
+    bilibili_title = ""
     eastmoney_title = ""
     xueqiu_title = ""
 
@@ -357,6 +402,7 @@ def pipeline_after_script(
         log(f"\n=== [{index}/{target}] 预演 API 发布 ===")
         youtube_url = publish_youtube(video, script_path, dry_run=True)
         tiktok_url = publish_tiktok(video, script_path, dry_run=True)
+        bilibili_title = publish_bilibili(video, script_path, dry_run=True)
         forum_preview = video.parent / video.stem
         if forum_preview.is_dir() and (forum_preview / "post.md").is_file():
             eastmoney_title = publish_eastmoney(forum_preview, dry_run=True)
@@ -366,6 +412,7 @@ def pipeline_after_script(
             video,
             youtube_url=youtube_url,
             tiktok_url=tiktok_url,
+            bilibili_title=bilibili_title,
             eastmoney_title=eastmoney_title,
             xueqiu_title=xueqiu_title,
             skip_auto_note=True,
@@ -377,14 +424,23 @@ def pipeline_after_script(
             "published": False,
             "youtube_url": youtube_url,
             "tiktok_url": tiktok_url,
+            "bilibili_title": bilibili_title,
             "eastmoney_title": eastmoney_title,
             "xueqiu_title": xueqiu_title,
         }
 
-    if youtube_enabled() or tiktok_enabled() or eastmoney_enabled() or xueqiu_enabled():
-        log(f"\n=== [{index}/{target}] API 自动发布（YouTube / TikTok / 东方财富 / 雪球）===")
+    if (
+        youtube_enabled()
+        or tiktok_enabled()
+        or bilibili_enabled()
+        or eastmoney_enabled()
+        or xueqiu_enabled()
+    ):
+        label = _auto_publish_platforms_label()
+        log(f"\n=== [{index}/{target}] API 自动发布（{label}）===")
     youtube_url = publish_youtube(video, script_path, dry_run=False)
     tiktok_url = publish_tiktok(video, script_path, dry_run=False)
+    bilibili_title = publish_bilibili(video, script_path, dry_run=False)
 
     append_history_fn(script_path)
     date_tag = datetime.now().strftime("%Y%m%d")
@@ -401,6 +457,7 @@ def pipeline_after_script(
         archived["video"],
         youtube_url=youtube_url,
         tiktok_url=tiktok_url,
+        bilibili_title=bilibili_title,
         eastmoney_title=eastmoney_title,
         xueqiu_title=xueqiu_title,
     )
@@ -410,9 +467,12 @@ def pipeline_after_script(
         "video": rel(archived["video"]),
         "forum": rel(archived["forum"]) if archived.get("forum") else "",
         "script": rel(script_path),
-        "published": bool(youtube_url or tiktok_url or eastmoney_title or xueqiu_title),
+        "published": bool(
+            youtube_url or tiktok_url or bilibili_title or eastmoney_title or xueqiu_title
+        ),
         "youtube_url": youtube_url,
         "tiktok_url": tiktok_url,
+        "bilibili_title": bilibili_title,
         "eastmoney_title": eastmoney_title,
         "xueqiu_title": xueqiu_title,
     }

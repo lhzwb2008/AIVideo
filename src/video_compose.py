@@ -69,14 +69,45 @@ def cover_duration_s() -> float:
 
 
 def cold_open_duration_s(text: str, audio_path: Path | None = None) -> float:
-    """冷开场时长：跟 TTS 长度走，限制在 min~max 秒。"""
+    """冷开场时长：已有 TTS 时按真实音频走，避免裁掉尾字。"""
     min_s = max(1.5, _env_float("AIVIDEO_COLD_OPEN_MIN_S", 2.5))
     max_s = max(min_s, _env_float("AIVIDEO_COLD_OPEN_MAX_S", 4.5))
     if audio_path and audio_path.is_file():
         dur = ffprobe_duration(audio_path)
-        return max(min_s, min(max_s, dur + 0.12))
+        audio_max_s = max(max_s, _env_float("AIVIDEO_COLD_OPEN_AUDIO_MAX_S", 8.0))
+        return max(min_s, min(audio_max_s, dur + 0.25))
     n = len((text or "").strip())
     return max(min_s, min(max_s, n / 4.5))
+
+
+_COLD_OPEN_FX_POOL = ("zoom_punch", "news_flash", "impact")
+
+
+def cold_open_fx_mode() -> str:
+    """冷开场动效：off | zoom_punch | news_flash | impact | zoom_punch_fade | kenburns | auto。"""
+    raw = os.environ.get("AIVIDEO_COLD_OPEN_FX", "zoom_punch").strip().lower()
+    if raw in ("0", "off", "none", "false", "no"):
+        return "off"
+    if raw in ("1", "on", "yes", "true", "default"):
+        return "auto"
+    if raw in ("auto", "random"):
+        return "auto"
+    if raw in _COLD_OPEN_FX_POOL or raw == "zoom_punch_fade":
+        return raw
+    if raw == "kenburns":
+        return "kenburns"
+    return "auto"
+
+
+def pick_cold_open_fx_mode(script_stem: str = "") -> str:
+    mode = cold_open_fx_mode()
+    if mode == "off":
+        return "off"
+    if mode != "auto":
+        return mode
+    seed = hashlib.sha1(f"cold_open_fx|{script_stem}".encode("utf-8")).digest()
+    return _COLD_OPEN_FX_POOL[seed[0] % len(_COLD_OPEN_FX_POOL)]
+
 
 # ============================================================
 # 栏目品牌：AI财知道
@@ -478,17 +509,33 @@ def compose_cold_open_clip(
     out_path: Path,
     cold_open_text: str = "",
     work_dir: Path,
+    subtitle_delay_s: float = 0.0,
+    script_stem: str = "",
 ) -> Path:
-    """冷开场：沿用标准封面画面 + cold_open 口播，字幕跟读（与正文段相同逻辑）。"""
+    """冷开场：封面动效 + 底部分句字幕跟读。
+
+    subtitle_delay_s：片头若干秒只播口播、不叠字幕（默认跟 AIVIDEO_COVER_DURATION_S，
+    供抖音等平台从前 0.8s 取干净封面帧）。
+    """
     duration = cold_open_duration_s(cold_open_text, audio_path)
     text = (cold_open_text or "").strip()
     phrases = split_narration(text) or [text[:18] if text else "…"]
     spans = allocate_phrase_times(phrases, duration)
+    delay = max(0.0, subtitle_delay_s)
+    fx_mode = pick_cold_open_fx_mode(script_stem)
 
     work_dir.mkdir(parents=True, exist_ok=True)
     font = font_path()
-    filters: list[str] = [_kenburns_filter(0, duration)]
+
+    if fx_mode == "off":
+        filters: list[str] = [_kenburns_filter(0, duration)]
+    else:
+        filters = [_cold_open_video_filter(duration, fx_mode)]
+
     for idx, (phrase, (start, end)) in enumerate(zip(phrases, spans)):
+        sub_start = max(start, delay)
+        if sub_start >= end - 0.02:
+            continue
         tf = _make_phrase_textfile(phrase, work_dir / f"cold_phrase_{idx:02d}.txt")
         filters.append(
             _drawtext_filter(
@@ -496,7 +543,7 @@ def compose_cold_open_clip(
                 font=font,
                 fontsize=54,
                 y=SUBTITLE_Y,
-                start=start,
+                start=sub_start,
                 end=end,
             )
         )
@@ -743,6 +790,72 @@ def ffprobe_duration(path: Path) -> float:
         "-of", "default=noprint_wrappers=1:nokey=1", str(path),
     ]).decode().strip()
     return float(out)
+
+
+def _cold_open_zoompan_filter(duration: float, fps: int = 30) -> str:
+    """冷开场快推镜：前 ~0.45s 快速放大，后段缓慢漂移。"""
+    n = max(2, int(round(duration * fps)))
+    punch_frames = min(20, max(10, int(0.45 * fps)))
+    zp = (
+        f"z='if(lt(on,{punch_frames}),1+on*0.0065,min(1.14,pzoom+0.00022))'"
+        ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+    )
+    return (
+        f"scale=2160:3840:flags=lanczos,"
+        f"zoompan={zp}:d={n}:s={CANVAS_W}x{CANVAS_H}:fps={fps}"
+    )
+
+
+def _cold_open_news_flash_filter(duration: float, fps: int = 30) -> str:
+    """新闻快报感：暗场闪入 + 快速清晰 + 稳定推进。"""
+    n = max(2, int(round(duration * fps)))
+    settle_frames = min(24, max(12, int(0.55 * fps)))
+    zp = (
+        f"z='if(lt(on,{settle_frames}),1.10-on*0.0025,min(1.06,pzoom+0.00012))'"
+        ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+    )
+    return (
+        f"scale=2160:3840:flags=lanczos,"
+        f"zoompan={zp}:d={n}:s={CANVAS_W}x{CANVAS_H}:fps={fps},"
+        "eq=brightness='if(lt(t,0.16),-0.32+t*2.0,0)'"
+        ":contrast='if(lt(t,0.45),1.22-t*0.25,1.10)'"
+        ":saturation=1.08,"
+        "unsharp=5:5:0.8:3:3:0.2,"
+        "fade=t=in:st=0:d=0.120"
+    )
+
+
+def _cold_open_impact_filter(duration: float, fps: int = 30) -> str:
+    """强冲击版：原色调快推回弹 + 短促抖动，仍不叠额外文字。"""
+    n = max(2, int(round(duration * fps)))
+    punch_frames = min(12, max(6, int(0.26 * fps)))
+    rebound_frames = min(28, max(punch_frames + 6, int(0.70 * fps)))
+    zp = (
+        f"z='if(lt(on,{punch_frames}),1+on*0.020,"
+        f"if(lt(on,{rebound_frames}),1.22-(on-{punch_frames})*0.006,min(1.10,pzoom+0.00010)))'"
+        ":x='iw/2-(iw/zoom/2)+if(lt(on,10),sin(on*2.7)*10,0)'"
+        ":y='ih/2-(ih/zoom/2)+if(lt(on,10),cos(on*2.4)*8,0)'"
+    )
+    return (
+        f"scale=2160:3840:flags=lanczos,"
+        f"zoompan={zp}:d={n}:s={CANVAS_W}x{CANVAS_H}:fps={fps},"
+        "unsharp=5:5:0.55:3:3:0.15"
+    )
+
+
+def _cold_open_video_filter(duration: float, mode: str, fps: int = 30) -> str:
+    if mode == "kenburns":
+        base = _kenburns_filter(0, duration, fps=fps)
+    elif mode == "news_flash":
+        base = _cold_open_news_flash_filter(duration, fps=fps)
+    elif mode == "impact":
+        base = _cold_open_impact_filter(duration, fps=fps)
+    else:
+        base = _cold_open_zoompan_filter(duration, fps=fps)
+    if mode == "zoom_punch_fade":
+        fade_d = min(0.35, max(0.12, duration * 0.12))
+        base = f"{base},fade=t=in:st=0:d={fade_d:.3f}"
+    return base
 
 
 def _kenburns_filter(direction: int, duration: float, fps: int = 30) -> str:
@@ -1116,7 +1229,20 @@ def compose_video(
             ai_cover_path=ai_cover_path,
             hero_path=hero_path,
         )
-        print("  封面保持原标题样式，钩子走底部字幕", file=sys.stderr)
+        subtitle_delay_s = cover_duration_s()
+        fx_mode = pick_cold_open_fx_mode(script_file.stem)
+        if fx_mode == "off":
+            fx_note = "动效关"
+        else:
+            fx_note = f"动效 {fx_mode}"
+        if subtitle_delay_s > 0:
+            print(
+                f"  封面保持原标题样式；前 {subtitle_delay_s:.2f}s 画面动效无字幕，"
+                f"之后底部分句字幕跟读（{fx_note}）",
+                file=sys.stderr,
+            )
+        else:
+            print(f"  封面保持原标题样式，底部分句字幕跟读（{fx_note}）", file=sys.stderr)
         audio_cold = work_dir / "audio_cold_open.mp3"
         cold_phrase_dir = work_dir / "cold_phrases"
         if not skip_tts or not audio_cold.is_file():
@@ -1129,10 +1255,12 @@ def compose_video(
             out_path=cold_mp4,
             cold_open_text=cold_open_text,
             work_dir=cold_phrase_dir,
+            subtitle_delay_s=subtitle_delay_s,
+            script_stem=script_file.stem,
         )
         clips.append(cold_mp4)
         dur = cold_open_duration_s(cold_open_text, audio_cold)
-        print(f"  冷开场 {dur:.2f}s（封面不变 + 字幕跟读）", file=sys.stderr)
+        print(f"  冷开场 {dur:.2f}s", file=sys.stderr)
     elif title_text:
         print(f"[cover] 准备封面：{title_text}", file=sys.stderr)
         build_cover_png(

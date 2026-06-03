@@ -20,6 +20,11 @@ VIDEO_MANUAL_PLATFORMS: list[tuple[str, str, str]] = [
         "标题用上面「标题」，简介贴「简介」，话题加上「话题」（≤5 个）",
     ),
     (
+        "B站",
+        "https://member.bilibili.com/platform/upload/video/frame",
+        "标题/简介/标签见上方；分区默认「知识·财经商业」(tid=207)",
+    ),
+    (
         "小红书",
         "https://creator.xiaohongshu.com/publish/publish?from=homepage",
         "标题≤20 字带钩子，正文贴「简介」，行内加「话题」",
@@ -59,6 +64,7 @@ def print_manual_publish_pack(
     *,
     youtube_url: str = "",
     tiktok_url: str = "",
+    bilibili_title: str = "",
     eastmoney_title: str = "",
     xueqiu_title: str = "",
     skip_auto_note: bool = False,
@@ -118,6 +124,7 @@ def print_manual_publish_pack(
         has_forum=has_forum,
         youtube_url=youtube_url,
         tiktok_url=tiktok_url,
+        bilibili_title=bilibili_title,
         eastmoney_title=eastmoney_title,
         xueqiu_title=xueqiu_title,
         skip_auto_note=skip_auto_note,
@@ -132,6 +139,7 @@ def _print_todo_checklist(
     has_forum: bool,
     youtube_url: str,
     tiktok_url: str,
+    bilibili_title: str,
     eastmoney_title: str,
     xueqiu_title: str,
     skip_auto_note: bool,
@@ -165,12 +173,28 @@ def _print_todo_checklist(
                 print(f"  [✓] 雪球已提交: {xueqiu_title}", flush=True)
             else:
                 print("  [!] 雪球未发布或失败，可手动: ./scripts/publish-xueqiu.sh", flush=True)
+        if bilibili_enabled():
+            if bilibili_title:
+                print(f"  [✓] B站已提交: {bilibili_title}", flush=True)
+            else:
+                print(
+                    "  [!] B站未发布或失败，可手动: ./scripts/publish-bilibili.sh"
+                    " 或先 ./bilibili-login.sh",
+                    flush=True,
+                )
 
-    # 2) 手动发布视频（抖音/小红书/视频号）
+    # 2) 手动发布视频（抖音/小红书/视频号；B站已自动则跳过）
     src_hint = f"（上传成片 {video_rel}）" if video_rel else ""
     print(f"\n— 手动发布·视频 {src_hint}—", flush=True)
     print("  复制上面「标题 / 简介 / 话题」，按各平台习惯微调：", flush=True)
     for name, url, tip in VIDEO_MANUAL_PLATFORMS:
+        if name == "B站" and bilibili_enabled() and bilibili_title:
+            print(f"  [✓] {name}: 已自动发布", flush=True)
+            continue
+        if name == "B站" and not bilibili_enabled():
+            print(f"  [ ] {name}: {url}", flush=True)
+            print("        未开启自动发布：.env 设 AIVIDEO_PUBLISH_BILIBILI=1 并先 ./bilibili-login.sh", flush=True)
+            continue
         print(f"  [ ] {name}: {url}", flush=True)
         print(f"        {tip}", flush=True)
 
@@ -230,6 +254,13 @@ def eastmoney_enabled() -> bool:
 
 def xueqiu_enabled() -> bool:
     value = os.environ.get("AIVIDEO_PUBLISH_XUEQIU")
+    if value is None or value.strip() == "":
+        return False
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def bilibili_enabled() -> bool:
+    value = os.environ.get("AIVIDEO_PUBLISH_BILIBILI")
     if value is None or value.strip() == "":
         return False
     return value.strip().lower() in ("1", "true", "yes", "on")

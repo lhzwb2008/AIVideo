@@ -196,7 +196,8 @@ src/
 1. 生图 → 合成
 2. **YouTube API** 自动发布（`AIVIDEO_PUBLISH_YOUTUBE=1`，默认开）
 3. **TikTok API** 自动发布（`AIVIDEO_PUBLISH_TIKTOK=1`，默认关）
-4. 终端打印**一份**通用文案 + 创作者后台链接
+4. **B站 biliup** 自动投稿（`AIVIDEO_PUBLISH_BILIBILI=1`，默认关；需 `./bilibili-login.sh`）
+5. 终端打印**一份**通用文案 + 创作者后台链接
 5. 归档（`--no-publish` 时不发布、不归档）
 
 国内平台（抖音/小红书/视频号，及雪球/东方财富图文）**仅手动发布**，勿用浏览器脚本自动发帖。
@@ -226,11 +227,24 @@ src/
 
 开关：`AIVIDEO_PUBLISH_TIKTOK=0`。记录：`logs/last_tiktok_publish.json`。
 
+### B站（主流程可选，biliup）
+
+```bash
+./setup-sau.sh
+./bilibili-login.sh
+# .env: AIVIDEO_PUBLISH_BILIBILI=1
+./make-and-publish.sh
+./scripts/publish-bilibili.sh output/xxx.mp4 --script logs/xxx.json
+```
+
+创作中心：[member.bilibili.com](https://member.bilibili.com/platform/home)。默认分区 `BILIBILI_TID=207`（知识·财经商业）。记录：`logs/last_bilibili_publish.json`。
+
 ### 国内平台（手动）
 
 | 平台 | 创作者后台 |
 |------|------------|
 | 抖音 | https://creator.douyin.com/creator-micro/content/upload |
+| B站 | https://member.bilibili.com/platform/upload/video/frame（`AIVIDEO_PUBLISH_BILIBILI=1` 可自动） |
 | 小红书 | https://creator.xiaohongshu.com/publish/publish?from=homepage |
 | 视频号 | https://channels.weixin.qq.com/platform/post/create |
 | 雪球（图文） | https://xueqiu.com/ |
