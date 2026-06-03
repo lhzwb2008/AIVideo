@@ -18,6 +18,7 @@ from publish_caption import (
     eastmoney_enabled,
     print_manual_publish_pack,
     tiktok_enabled,
+    wechat_enabled,
     xueqiu_enabled,
     youtube_enabled,
 )
@@ -41,6 +42,8 @@ def _auto_publish_platforms_label() -> str:
         names.append("东方财富")
     if xueqiu_enabled():
         names.append("雪球")
+    if wechat_enabled():
+        names.append("微信公众号")
     return " / ".join(names) if names else ""
 
 
@@ -85,6 +88,17 @@ def _read_last_publish_url(log_name: str, *keys: str) -> str:
         data = json.loads(log_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return ""
+    if not keys:
+        return ""
+    if len(keys) >= 2 and isinstance(data.get(keys[0]), dict):
+        cur: object = data
+        for key in keys:
+            if not isinstance(cur, dict):
+                cur = None
+                break
+            cur = cur.get(key)
+        if cur is not None:
+            return str(cur or "").strip()
     for key in keys:
         value = str(data.get(key) or "").strip()
         if value:
@@ -107,13 +121,21 @@ def publish_youtube_api(video: Path, script_path: Path, *, dry_run: bool) -> str
     return _read_last_publish_url("last_youtube_publish.json", "shorts_url", "url")
 
 
-def publish_bilibili_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
+def publish_bilibili_api(
+    video: Path,
+    script_path: Path,
+    *,
+    dry_run: bool,
+    forum_dir: Path | None = None,
+) -> str:
     cmd = [
         str(ROOT / "scripts" / "publish-bilibili.sh"),
         rel(video),
         "--script",
         rel(script_path),
     ]
+    if forum_dir and (forum_dir / "post.md").is_file():
+        cmd += ["--forum", rel(forum_dir)]
     if dry_run:
         cmd.append("--dry-run")
     run(cmd, label="发布B站")
@@ -161,6 +183,18 @@ def publish_xueqiu_api(forum_dir: Path, *, dry_run: bool) -> str:
         cmd.append("--publish")
     run(cmd, label="发布雪球")
     return _read_last_publish_url("last_xueqiu_publish.json", "title")
+
+
+def publish_wechat_api(forum_dir: Path, *, dry_run: bool) -> str:
+    cmd = [
+        str(ROOT / "scripts" / "publish-wechat.sh"),
+        rel(forum_dir),
+    ]
+    if dry_run:
+        cmd.append("--dry-run")
+    # 默认仅存草稿箱（WECHAT_DRAFT_ONLY=1）；需 API/浏览器发表时手动加 --publish
+    run(cmd, label="发布微信公众号")
+    return _read_last_publish_url("last_wechat_publish.json", "title")
 
 
 def _retry_config() -> tuple[int, int]:
@@ -247,14 +281,38 @@ def publish_tiktok(video: Path, script_path: Path, *, dry_run: bool) -> str:
     return _publish_with_retry(_do, label="TikTok", dry_run=dry_run)
 
 
-def publish_bilibili(video: Path, script_path: Path, *, dry_run: bool) -> str:
+def publish_bilibili(
+    video: Path,
+    script_path: Path,
+    *,
+    dry_run: bool,
+    forum_dir: Path | None = None,
+) -> str:
     if not bilibili_enabled():
         return ""
 
     def _do() -> str:
-        title = publish_bilibili_api(video, script_path, dry_run=dry_run)
+        title = publish_bilibili_api(
+            video, script_path, dry_run=dry_run, forum_dir=forum_dir
+        )
         if title:
-            log(f"  [B站] 已提交: {title}")
+            log(f"  [B站] 视频已提交: {title}")
+            article_url = _read_last_publish_url(
+                "last_bilibili_publish.json", "article", "url"
+            )
+            if article_url:
+                log_path = ROOT / "logs" / "last_bilibili_publish.json"
+                published = False
+                if log_path.is_file():
+                    try:
+                        art = json.loads(log_path.read_text(encoding="utf-8")).get(
+                            "article"
+                        ) or {}
+                        published = bool(art.get("published"))
+                    except (OSError, json.JSONDecodeError):
+                        pass
+                label = "专栏已发布" if published else "专栏草稿"
+                log(f"  [B站] {label}: {article_url}")
         return title
 
     return _publish_forum_with_retry(_do, label="B站", dry_run=dry_run)
@@ -323,6 +381,38 @@ def publish_eastmoney(forum_dir: str | Path, *, dry_run: bool) -> str:
         return title
 
     return _publish_forum_with_retry(_do, label="东方财富", dry_run=dry_run)
+
+
+def publish_wechat(forum_dir: str | Path, *, dry_run: bool) -> str:
+    if not wechat_enabled():
+        return ""
+    path = Path(forum_dir)
+    if not path.is_absolute():
+        path = ROOT / path
+    if not (path / "post.md").is_file():
+        log(f"  ↳ [微信公众号] 跳过：无论坛包 {rel(path)}")
+        return ""
+
+    def _do() -> str:
+        title = publish_wechat_api(path, dry_run=dry_run)
+        if title:
+            log_path = ROOT / "logs" / "last_wechat_publish.json"
+            published = False
+            note = ""
+            if log_path.is_file():
+                try:
+                    payload = json.loads(log_path.read_text(encoding="utf-8"))
+                    published = bool(payload.get("published"))
+                    note = str(payload.get("publish_note") or "")
+                except (OSError, json.JSONDecodeError):
+                    pass
+            label = "已发表" if published else "草稿"
+            log(f"  [微信公众号] {label}: {title}")
+            if note and not published:
+                log(f"  ↳ {note}")
+        return title
+
+    return _publish_forum_with_retry(_do, label="微信公众号", dry_run=dry_run)
 
 
 def archive_video(video: Path, *, date_tag: str) -> Path:
@@ -397,12 +487,20 @@ def pipeline_after_script(
     bilibili_title = ""
     eastmoney_title = ""
     xueqiu_title = ""
+    wechat_title = ""
 
     if dry_run:
         log(f"\n=== [{index}/{target}] 预演 API 发布 ===")
         youtube_url = publish_youtube(video, script_path, dry_run=True)
         tiktok_url = publish_tiktok(video, script_path, dry_run=True)
-        bilibili_title = publish_bilibili(video, script_path, dry_run=True)
+        forum_for_bili = video.parent / video.stem
+        if not (forum_for_bili / "post.md").is_file():
+            forum_for_bili = None
+        bilibili_title = publish_bilibili(
+            video, script_path, dry_run=True, forum_dir=forum_for_bili
+        )
+        if forum_for_bili:
+            wechat_title = publish_wechat(forum_for_bili, dry_run=True)
         forum_preview = video.parent / video.stem
         if forum_preview.is_dir() and (forum_preview / "post.md").is_file():
             eastmoney_title = publish_eastmoney(forum_preview, dry_run=True)
@@ -415,6 +513,7 @@ def pipeline_after_script(
             bilibili_title=bilibili_title,
             eastmoney_title=eastmoney_title,
             xueqiu_title=xueqiu_title,
+            wechat_title=wechat_title,
             skip_auto_note=True,
         )
         return {
@@ -427,12 +526,14 @@ def pipeline_after_script(
             "bilibili_title": bilibili_title,
             "eastmoney_title": eastmoney_title,
             "xueqiu_title": xueqiu_title,
+            "wechat_title": wechat_title,
         }
 
     if (
         youtube_enabled()
         or tiktok_enabled()
         or bilibili_enabled()
+        or wechat_enabled()
         or eastmoney_enabled()
         or xueqiu_enabled()
     ):
@@ -440,7 +541,14 @@ def pipeline_after_script(
         log(f"\n=== [{index}/{target}] API 自动发布（{label}）===")
     youtube_url = publish_youtube(video, script_path, dry_run=False)
     tiktok_url = publish_tiktok(video, script_path, dry_run=False)
-    bilibili_title = publish_bilibili(video, script_path, dry_run=False)
+    forum_for_bili = video.parent / video.stem
+    if not (forum_for_bili / "post.md").is_file():
+        forum_for_bili = None
+    bilibili_title = publish_bilibili(
+        video, script_path, dry_run=False, forum_dir=forum_for_bili
+    )
+    if forum_for_bili:
+        wechat_title = publish_wechat(forum_for_bili, dry_run=False)
 
     append_history_fn(script_path)
     date_tag = datetime.now().strftime("%Y%m%d")
@@ -460,6 +568,7 @@ def pipeline_after_script(
         bilibili_title=bilibili_title,
         eastmoney_title=eastmoney_title,
         xueqiu_title=xueqiu_title,
+        wechat_title=wechat_title,
     )
 
     return {
@@ -468,11 +577,17 @@ def pipeline_after_script(
         "forum": rel(archived["forum"]) if archived.get("forum") else "",
         "script": rel(script_path),
         "published": bool(
-            youtube_url or tiktok_url or bilibili_title or eastmoney_title or xueqiu_title
+            youtube_url
+            or tiktok_url
+            or bilibili_title
+            or wechat_title
+            or eastmoney_title
+            or xueqiu_title
         ),
         "youtube_url": youtube_url,
         "tiktok_url": tiktok_url,
         "bilibili_title": bilibili_title,
+        "wechat_title": wechat_title,
         "eastmoney_title": eastmoney_title,
         "xueqiu_title": xueqiu_title,
     }
@@ -505,6 +620,8 @@ def process_topic(
         "cold_open": topic.get("cold_open"),
         "theme_cluster": topic.get("theme_cluster"),
         "angle": topic.get("angle"),
+        "direction": topic.get("direction"),
+        "category": topic.get("category"),
     }
     script, _ = run_article_research(
         output=script_path,

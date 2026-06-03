@@ -277,7 +277,7 @@ def append_history(item: dict) -> None:
         "title": title,
         "made_at": datetime.now(timezone.utc).isoformat(),
     }
-    for key in ("script_title", "article_title", "question_title"):
+    for key in ("script_title", "article_title", "question_title", "category", "direction", "topic_slot"):
         value = str(item.get(key) or "").strip()
         if value:
             record[key] = value
@@ -324,6 +324,10 @@ def append_history_from_script(script_path: Path, video: Path | None = None) -> 
         "question_title": article.get("question_title") or "",
         "cold_open": str(script.get("cold_open") or "").strip(),
         "theme_cluster": theme_cluster,
+        "category": str(script.get("category") or "").strip(),
+        "topic_slot": (
+            (data.get("article") or {}).get("_topic_plan") or {}
+        ).get("direction") or str(script.get("topic_slot") or "").strip(),
     }
     append_history({k: v for k, v in record.items() if v})
 

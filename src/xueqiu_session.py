@@ -77,10 +77,6 @@ async def verify_editor(*, account: str | None = None) -> bool:
     _ensure_patchright()
     from patchright.async_api import async_playwright
 
-    try:
-        cookie = cookie_path(account=account)
-    except XueqiuPublishError:
-        return False
     launch: dict = {
         "headless": True,
         "args": ["--disable-blink-features=AutomationControlled", "--lang=zh-CN"],
@@ -90,6 +86,30 @@ async def verify_editor(*, account: str | None = None) -> bool:
         launch["executable_path"] = chrome
     else:
         launch["channel"] = "chrome"
+
+    profile = profile_dir(account=account)
+    if profile.is_dir() and any(profile.iterdir()):
+        async with async_playwright() as p:
+            context = await p.chromium.launch_persistent_context(
+                str(profile),
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+                viewport={"width": 1440, "height": 900},
+                **launch,
+            )
+            try:
+                page = context.pages[0] if context.pages else await context.new_page()
+                await page.goto(EDITOR_URL, wait_until="domcontentloaded", timeout=90_000)
+                from xueqiu_publisher import _editor_ready
+
+                return await _editor_ready(page)
+            finally:
+                await context.close()
+
+    try:
+        cookie = cookie_path(account=account)
+    except XueqiuPublishError:
+        return False
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(**launch)

@@ -8,6 +8,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from forum_pack_format import body_to_plaintext, format_headline_plain, split_body_blocks
+
 _PASTE_KEY = "Meta+V" if sys.platform == "darwin" else "Control+V"
 
 
@@ -137,6 +139,27 @@ async def paste_text(page, text: str) -> None:
     await move_cursor_to_end(page)
 
 
+async def paste_paragraphs(page, paragraphs: list[str]) -> None:
+    """逐段粘贴，确保编辑器保留段落边界。"""
+    for para in paragraphs:
+        text = para.strip()
+        if not text:
+            continue
+        await focus_editor_end(page)
+        await paste_text(page, text)
+        await page.keyboard.press("Enter")
+        await asyncio.sleep(0.15)
+
+
+async def paste_body_blocks(page, body: str) -> None:
+    for block in split_body_blocks(body):
+        if "\n" in block:
+            lines = [ln.strip() for ln in block.splitlines() if ln.strip() and ln.strip() != "---"]
+            await paste_paragraphs(page, lines)
+        else:
+            await paste_paragraphs(page, [block])
+
+
 def strip_eastmoney_cta(text: str) -> str:
     """财富号合规：去掉视频口播里的互动引导。"""
     text = re.sub(r"如果是你[^。！？]*[。！？]?", "", text)
@@ -156,13 +179,28 @@ def format_eastmoney_paragraph(text: str) -> str:
 
 
 def format_eastmoney_block(headline: str, body: str) -> str:
-    body = strip_eastmoney_cta(body)
-    parts = []
+    body = strip_eastmoney_cta(body_to_plaintext(body))
+    parts: list[str] = []
     if headline.strip():
-        parts.append(format_eastmoney_paragraph(headline.strip()))
-    if body.strip():
-        parts.append(format_eastmoney_paragraph(body.strip()))
+        parts.append(format_eastmoney_paragraph(format_headline_plain(headline)))
+    for block in split_body_blocks(body):
+        if "\n" in block:
+            for ln in block.splitlines():
+                ln = ln.strip()
+                if ln and ln != "---":
+                    parts.append(format_eastmoney_paragraph(ln))
+        else:
+            para = format_eastmoney_paragraph(block)
+            if para:
+                parts.append(para)
     return "\n".join(parts)
+
+
+def format_eastmoney_caption(text: str) -> str:
+    flat = re.sub(r"\s+", "", text.strip())
+    if not flat:
+        return ""
+    return "\u3000\u3000" + flat
 
 
 def tweak_eastmoney_text(text: str, pack_dir: Path, salt: int = 0) -> str:
@@ -203,16 +241,26 @@ async def fill_eastmoney_body_sections(
         body = tweak_eastmoney_text((sec.get("body") or "").strip(), pack_dir, idx * 3 + 1)
         block = format_eastmoney_block(headline, body)
         if block:
-            await focus_editor_end(page)
-            if wrote:
-                await page.keyboard.press("Enter")
-            await paste_text(page, block)
-            wrote = True
+            paras = [p for p in block.split("\n") if p.strip()]
+            if paras:
+                await focus_editor_end(page)
+                if wrote:
+                    await page.keyboard.press("Enter")
+                await paste_paragraphs(page, paras)
+                wrote = True
 
         img = sec.get("image")
         if img:
             await move_cursor_to_end(page)
             await insert_image(page, prepare_image_upload(img))
+            wrote = True
+
+        caption = (sec.get("caption") or "").strip()
+        if caption:
+            await focus_editor_end(page)
+            if wrote:
+                await page.keyboard.press("Enter")
+            await paste_text(page, format_eastmoney_caption(caption))
             wrote = True
 
     if disclaimer.strip():
@@ -238,20 +286,31 @@ async def fill_body_sections(
 
     wrote = False
     for sec in sections:
-        headline = (sec.get("headline") or "").strip()
-        body = (sec.get("body") or "").strip()
-        chunks = [c for c in (headline, body) if c]
-        if chunks:
+        headline = format_headline_plain((sec.get("headline") or "").strip())
+        body = body_to_plaintext((sec.get("body") or "").strip())
+
+        if headline:
             await focus_editor_end(page)
             if wrote:
                 await page.keyboard.press("Enter")
-            await paste_text(page, "\n\n".join(chunks))
+            await paste_paragraphs(page, [headline])
+            wrote = True
+
+        if body:
+            await focus_editor_end(page)
+            await paste_body_blocks(page, body)
             wrote = True
 
         img = sec.get("image")
         if img:
             await move_cursor_to_end(page)
             await insert_image(page, prepare_image_upload(img))
+            wrote = True
+
+        caption = (sec.get("caption") or "").strip()
+        if caption:
+            await focus_editor_end(page)
+            await paste_paragraphs(page, [caption])
             wrote = True
 
     if disclaimer.strip():

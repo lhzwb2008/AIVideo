@@ -85,7 +85,7 @@ _COLD_OPEN_FX_POOL = ("zoom_punch", "news_flash", "impact")
 
 def cold_open_fx_mode() -> str:
     """冷开场动效：off | zoom_punch | news_flash | impact | zoom_punch_fade | kenburns | auto。"""
-    raw = os.environ.get("AIVIDEO_COLD_OPEN_FX", "zoom_punch").strip().lower()
+    raw = os.environ.get("AIVIDEO_COLD_OPEN_FX", "impact").strip().lower()
     if raw in ("0", "off", "none", "false", "no"):
         return "off"
     if raw in ("1", "on", "yes", "true", "default"):

@@ -162,20 +162,84 @@ EXA_QUERIES_FINANCE = [
     "最新 中概股 财报 分析 阿里 腾讯 百度 京东 拼多多 网易 理想 蔚来 小鹏",
 ]
 
-# A股「爆品」专用：目标是吸引眼球、能引爆评论区的热点，不一定是最优质内容。
-# 偏向题材爆炒、涨停潮、妖股、游资、人气榜、龙虎榜、风口概念、产业链异动。
-EXA_QUERIES_ASTOCK = [
-    "A股 今日 涨停潮 题材 概念 板块 异动 资金抢筹 龙虎榜",
+# A股个股专用：目标是吸引眼球、能引爆评论区的热点，不一定是最优质内容。
+# 偏向个股异动、涨停/跌停、妖股、游资、人气榜、龙虎榜、业绩/公告突发。
+EXA_QUERIES_ASTOCK_STOCK = [
     "A股 妖股 连板 游资 抱团 炒作 风口 人气股 热度榜",
     "财联社 A股 电报 异动 涨停 突发 龙虎榜 主力资金",
     "东方财富 股吧 人气股 热度榜 散户 抢筹 热门个股",
-    "同花顺 强势股 题材归因 北向资金 主力净流入 概念板块",
     "雪球 热门 A股 个股 讨论 大涨 大跌 业绩暴雷 黑马",
+    "A股 个股 公告 利好 利空 业绩预增 业绩暴雷 重组 并购 减持",
+    "A股 今日 个股 异动 涨停 跌停 龙虎榜 资金抢筹",
+]
+
+# A股板块/大盘专用：第二槽位才使用，避免第一条个股分析被板块热点稀释。
+EXA_QUERIES_ASTOCK_SECTOR = [
+    "A股 今日 涨停潮 题材 概念 板块 异动 资金抢筹",
+    "同花顺 强势板块 题材归因 北向资金 主力净流入 概念板块",
     "A股 半导体 AI算力 机器人 算力 国产替代 大涨 龙头 炒作",
     "A股 上市 IPO 新股 暴涨 业绩预增 重组 并购 概念 爆发",
-    "A股 大跌 暴跌 闪崩 退市 风险 监管 问询函 减持 利空",
-    "sina.com.cn OR cls.cn OR eastmoney.com A股 今日热点 行情 解读",
+    "A股 大盘 指数 沪指 深成指 创业板 成交额 北向资金 行情 解读",
+    "sina.com.cn OR cls.cn OR eastmoney.com A股 板块 大盘 今日热点 行情 解读",
 ]
+
+EXA_QUERIES_ASTOCK = EXA_QUERIES_ASTOCK_STOCK + EXA_QUERIES_ASTOCK_SECTOR
+
+EXA_QUERIES_HKUS_STOCK = [
+    "latest earnings analysis Magnificent Seven stocks revenue guidance stock reaction",
+    "latest earnings analysis Chinese ADR Alibaba Tencent Baidu JD PDD NetEase Bilibili XPeng Li Auto NIO",
+    "US stock market individual stock earnings reaction Nvidia Microsoft Meta Alphabet Amazon Tesla",
+    "Hong Kong US listed Chinese stocks earnings stock reaction latest analysis",
+]
+
+EXA_QUERIES_AI_NEWS = [
+    "most discussed AI product launch model release this week analysis",
+    "OpenAI Anthropic Google DeepMind Meta AI latest model product news analysis",
+    "AI industry major funding partnership regulation product launch latest",
+    "大模型 最新发布 AI 产品 产业 资讯 解读",
+]
+
+EXA_QUERIES_MACRO = [
+    "Federal Reserve rates inflation jobs dollar yields market analysis latest",
+    "global financial markets macro analysis central bank rates oil gold dollar latest",
+    "international finance market analysis Fed ECB BOJ inflation bonds currencies",
+    "美联储 降息 通胀 美债 美元 全球市场 国际金融 形势 分析",
+]
+
+EXA_TOPIC_SEARCH_TEMPLATES: dict[str, dict] = {
+    "astock": {
+        "label": "A股个股分析",
+        "queries": EXA_QUERIES_ASTOCK_STOCK,
+        "language": "zh",
+        "source_type": "exa:astock",
+        "days_cap": 3,
+    },
+    "sector": {
+        "label": "A股板块和大盘",
+        "queries": EXA_QUERIES_ASTOCK_SECTOR,
+        "language": "zh",
+        "source_type": "exa:astock",
+        "days_cap": 3,
+    },
+    "hkus": {
+        "label": "港美股个股分析",
+        "queries": EXA_QUERIES_HKUS_STOCK,
+        "language": "en",
+        "source_type": "exa:finance",
+    },
+    "ai": {
+        "label": "AI资讯",
+        "queries": EXA_QUERIES_AI_NEWS,
+        "language": "en",
+        "source_type": "exa:finance",
+    },
+    "macro": {
+        "label": "国际金融形势分析",
+        "queries": EXA_QUERIES_MACRO,
+        "language": "en",
+        "source_type": "exa:finance",
+    },
+}
 
 # 兼容旧名字（外部不再使用）
 EXA_QUERIES = EXA_QUERIES_EN
@@ -391,6 +455,7 @@ def find_articles(
     recent_topics: list[str] | None = None,
     source: str = "exa",
     fresh_hours: int = 24,
+    focus_directions: list[str] | tuple[str, ...] | None = None,
 ) -> tuple[list[dict], str | None]:
     """获取候选文章。默认固定信息源最近 24h；Exa 保留为兜底。"""
     if source == "feeds":
@@ -437,31 +502,57 @@ def find_articles(
         print(f"  ✓ 固定信息源候选：{len(candidates)} 篇（近 {fresh_hours} 小时，含财经补源）")
         return candidates, agent_id
 
-    pool = _exa_search_pool(
-        days=days,
-        exclude_urls=exclude_urls,
-        queries=EXA_QUERIES_FINANCE + EXA_QUERIES_EN + EXA_QUERIES_ZH,
-    )
-    valid = [_exa_result_to_candidate(r, language="en") for r in pool]
+    focus = [str(x).strip().lower() for x in (focus_directions or []) if str(x).strip()]
+    templates = [
+        EXA_TOPIC_SEARCH_TEMPLATES[key]
+        for key in focus
+        if key in EXA_TOPIC_SEARCH_TEMPLATES
+    ]
+    if not templates:
+        templates = [
+            {
+                "label": "通用财经/AI",
+                "queries": EXA_QUERIES_FINANCE + EXA_QUERIES_EN + EXA_QUERIES_ZH,
+                "language": "en",
+                "source_type": "exa:finance",
+            },
+            {
+                "label": "A股爆点",
+                "queries": EXA_QUERIES_ASTOCK,
+                "language": "zh",
+                "source_type": "exa:astock",
+                "days_cap": 3,
+            },
+        ]
 
-    # A股 爆点池：单独用更短的时间窗（题材炒作时效性强）+ 中文标记。
-    seen_urls = {str(c.get("url") or "").strip() for c in valid}
-    try:
-        astock_pool = _exa_search_pool(
-            days=max(1, min(days, 3)),
+    valid: list[dict] = []
+    seen_urls: set[str] = set()
+    for tpl in templates:
+        tpl_days = days
+        if tpl.get("days_cap"):
+            tpl_days = max(1, min(days, int(tpl["days_cap"])))
+        print(f"  ▶ 搜索模板：{tpl['label']}")
+        pool = _exa_search_pool(
+            days=tpl_days,
             exclude_urls=exclude_urls,
-            queries=EXA_QUERIES_ASTOCK,
+            queries=list(tpl["queries"]),
         )
-        astock_valid = [
-            _exa_result_to_candidate(r, language="zh", source_type="exa:astock")
-            for r in astock_pool
+        rows = [
+            _exa_result_to_candidate(
+                r,
+                language=str(tpl.get("language") or "en"),
+                source_type=str(tpl.get("source_type") or "exa:finance"),
+            )
+            for r in pool
             if str(r.get("url") or "").strip() not in seen_urls
         ]
-        if astock_valid:
-            print(f"  ✓ Exa A股爆点：{len(astock_valid)} 篇")
-            valid.extend(astock_valid)
-    except Exception as exc:  # noqa: BLE001
-        print(f"  ⚠️  Exa A股搜索失败：{exc}", file=sys.stderr)
+        for row in rows:
+            url = str(row.get("url") or "").strip()
+            if url:
+                seen_urls.add(url)
+        if rows:
+            print(f"  ✓ {tpl['label']}候选：{len(rows)} 篇")
+            valid.extend(rows)
 
     if not valid:
         raise RuntimeError("Exa 候选文章均不合规")
@@ -1789,6 +1880,7 @@ def run_article_research(
         "agent_id": agent_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "article": article,
+        "research_details": details,
         "script": script,
     }
     out_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")

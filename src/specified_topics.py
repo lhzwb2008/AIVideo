@@ -175,8 +175,13 @@ def _relevance_score(cand: dict, keys: set[str]) -> int:
     return score
 
 
-def _exa_queries_for_topic(title_hint: str) -> list[str]:
+def _exa_queries_for_topic(title_hint: str, entity_name: str | None = None) -> list[str]:
+    entity = re.sub(r"\s+", "", str(entity_name or "").strip())
     base = [title_hint]
+    if entity and entity not in title_hint:
+        base.insert(0, f"{entity} {title_hint}")
+    elif entity:
+        base.insert(0, f"{entity} 最新 消息 分析")
     if _looks_like_science(title_hint):
         base += [
             f"{title_hint} 通俗 科普 解释",
@@ -190,19 +195,19 @@ def _exa_queries_for_topic(title_hint: str) -> list[str]:
     return base
 
 
-def _search_candidates(title_hint: str, *, days: int) -> list[dict]:
+def _search_candidates(title_hint: str, *, days: int, entity_name: str | None = None) -> list[dict]:
     try:
         pool = research._exa_search_pool(
             days=days,
             exclude_urls=None,
-            queries=_exa_queries_for_topic(title_hint),
+            queries=_exa_queries_for_topic(title_hint, entity_name=entity_name),
         )
     except Exception as exc:  # noqa: BLE001
         print(f"  ⚠️  Exa 搜索「{title_hint}」失败：{exc}", file=sys.stderr)
         return []
     cands = [research._exa_result_to_candidate(r) for r in pool]
     # 先按"是否真的讲这个话题"打相关度分，避免取到一篇只是日期最新、实质无关的文章。
-    keys = _topic_keywords(title_hint)
+    keys = _topic_keywords(f"{entity_name or ''} {title_hint}")
     for c in cands:
         c["_relevance"] = _relevance_score(c, keys)
     if keys:
@@ -306,7 +311,7 @@ def build_topic_research(
     science = _looks_like_science(title_hint)
     fresh_days = float(os.environ.get("AIVIDEO_TOPIC_FRESH_DAYS", "2"))
     print(f"  🔍 「{title_hint}」联网搜索热门文章…")
-    candidates = _search_candidates(title_hint, days=days)
+    candidates = _search_candidates(title_hint, days=days, entity_name=topic.get("entity_name"))
 
     # 新闻/财报型：指定话题默认是"今天的热点"，必须足够新。
     # 若搜到的最新一篇也偏旧（超过 fresh_days），不硬套旧数据，转为综合多篇材料 + 模型最新认知自写。

@@ -10,6 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from bilibili_caption import build_bilibili_fields
+from bilibili_publisher import (
+    BilibiliArticleError,
+    bilibili_article_enabled,
+    publish_forum_pack as publish_bilibili_article_pack,
+)
 from paths import ROOT
 from publish_resolve import load_script, resolve_script_for_video
 from research import load_env
@@ -56,6 +61,15 @@ def main() -> int:
     parser.add_argument("--tid", type=int, help="覆盖分区 tid（默认 207=财经商业）")
     parser.add_argument("--dry-run", action="store_true", help="只打印参数，不实际上传")
     parser.add_argument("--check", action="store_true", help="发布前先校验登录态")
+    parser.add_argument(
+        "--forum",
+        help="论坛图文包目录（含 post.md）；默认取视频同名的文件夹",
+    )
+    parser.add_argument(
+        "--no-article",
+        action="store_true",
+        help="只发视频，不同步专栏长文",
+    )
     args = parser.parse_args()
 
     try:
@@ -77,6 +91,17 @@ def main() -> int:
         print(f"分区 tid: {tid}")
 
         if args.dry_run:
+            if not args.no_article and bilibili_article_enabled():
+                candidate = None
+                if args.forum:
+                    candidate = Path(args.forum)
+                    if not candidate.is_absolute():
+                        candidate = ROOT / candidate
+                elif (video_path.parent / video_path.stem / "post.md").is_file():
+                    candidate = video_path.parent / video_path.stem
+                if candidate and (candidate / "post.md").is_file():
+                    preview = publish_bilibili_article_pack(candidate, dry_run=True)
+                    print(f"[dry-run] 专栏: {preview['title']}（{preview['sections']} 段）")
             return 0
 
         if args.check:
@@ -96,27 +121,67 @@ def main() -> int:
 
         log_path = ROOT / "logs" / "last_bilibili_publish.json"
         log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        article_result: dict | None = None
+        forum_dir: Path | None = None
+        if not args.no_article and bilibili_article_enabled():
+            if args.forum:
+                forum_dir = Path(args.forum)
+                if not forum_dir.is_absolute():
+                    forum_dir = ROOT / forum_dir
+            else:
+                candidate = video_path.parent / video_path.stem
+                if (candidate / "post.md").is_file():
+                    forum_dir = candidate
+            if forum_dir and (forum_dir / "post.md").is_file():
+                print(f"同步专栏长文：{forum_dir}", flush=True)
+                article_result = publish_bilibili_article_pack(forum_dir)
+                if article_result.get("published"):
+                    print(f"  专栏已提交发布 aid={article_result['aid']}")
+                else:
+                    ctype = article_result.get("content_type", 3)
+                    chars = article_result.get("content_chars", 0)
+                    print(
+                        f"  专栏草稿已保存 aid={article_result['aid']}"
+                        f"（type={ctype}，正文约 {chars} 字符）"
+                    )
+                    print(f"  编辑/发布: {article_result['url']}")
+                    note = article_result.get("publish_note") or ""
+                    if note:
+                        print(f"  （{note}）")
+                    else:
+                        print(
+                            "  （视频已自动投稿；专栏未发布成功，请检查 logs 或 .env 中 BILIBILI_ARTICLE_*）"
+                        )
+            else:
+                print("  未找到论坛图文包，跳过专栏（需 post.md + cover.jpg）", flush=True)
+
+        log_payload = {
+            "method": "biliup",
+            "account": bilibili_account(),
+            "video": str(video_path),
+            "title": title,
+            "desc": desc,
+            "tags": tags,
+            "tid": tid,
+            "published_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if article_result:
+            log_payload["article"] = article_result
+
         log_path.write_text(
-            json.dumps(
-                {
-                    "method": "biliup",
-                    "account": bilibili_account(),
-                    "video": str(video_path),
-                    "title": title,
-                    "desc": desc,
-                    "tags": tags,
-                    "tid": tid,
-                    "published_at": datetime.now(timezone.utc).isoformat(),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps(log_payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        print("B 站稿件已提交（审核期间通常仅自己可见）")
         print(f"  记录: {log_path}")
         return 0
-    except (SauError, BilibiliPublishError, RuntimeError, FileNotFoundError) as exc:
+    except (
+        SauError,
+        BilibiliPublishError,
+        BilibiliArticleError,
+        RuntimeError,
+        FileNotFoundError,
+    ) as exc:
         print(str(exc), file=__import__("sys").stderr)
         return 1
 

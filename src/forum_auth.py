@@ -21,11 +21,17 @@ LOGIN_MARKERS = (
     "请先 ./",
     "未找到 cookie",
     "未进入长文编辑器",
+    "wechat-login",
 )
 
 
 def is_login_error(exc: BaseException) -> bool:
     text = str(exc).lower()
+    # Playwright 选器超时多为页面改版，不应反复弹登录
+    if "locator.wait_for" in text or "timeout" in text and "exceeded" in text:
+        return False
+    if "人机验证" in text or "unhuman" in text or "captcha" in text:
+        return True
     return any(marker.lower() in text for marker in LOGIN_MARKERS)
 
 
@@ -62,7 +68,10 @@ def ensure_logged_in_sync(
     label: str | None = None,
 ) -> None:
     """未登录或 cookie 失效时打开浏览器等待扫码，直到登录成功。"""
-    label = label or {"eastmoney": "东方财富", "xueqiu": "雪球"}.get(platform, platform)
+    label = label or {
+        "eastmoney": "东方财富",
+        "xueqiu": "雪球",
+    }.get(platform, platform)
     if _verify_sync(platform, account=account):
         return
 
@@ -92,7 +101,10 @@ def run_with_relogin(
     interactive_login: bool = True,
 ) -> T:
     """执行发布；遇登录失效则提示并等待扫码后自动重试，不退出进程。"""
-    label = label or {"eastmoney": "东方财富", "xueqiu": "雪球"}.get(platform, platform)
+    label = label or {
+        "eastmoney": "东方财富",
+        "xueqiu": "雪球",
+    }.get(platform, platform)
     if interactive_login:
         ensure_logged_in_sync(platform=platform, account=account, label=label)
 

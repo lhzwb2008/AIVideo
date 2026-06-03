@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# 发布单条视频到 B 站（biliup，需先 ./bilibili-login.sh）
-# 用法: scripts/publish-bilibili.sh [output/xxx.mp4] [--script logs/xxx.json] [--dry-run] [--check]
+# 发布论坛图文到微信公众号（API 草稿 + 浏览器发表兜底）
+# 用法: scripts/publish-wechat.sh archive/published/20260603/20260603_151151 [--publish]
+# 默认仅存草稿箱（WECHAT_DRAFT_ONLY=1）；需自动发表时加 --publish
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -12,4 +13,4 @@ if [[ ! -x "$SAU_PY" ]]; then
   SAU_PY="python3"
 fi
 
-exec "$SAU_PY" "$ROOT/src/publish_bilibili.py" "$@"
+exec "$SAU_PY" "$ROOT/src/publish_wechat.py" "$@"

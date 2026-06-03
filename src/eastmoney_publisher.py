@@ -15,6 +15,7 @@ from forum_editor_fill import (
     move_cursor_to_end,
     prepare_image_upload,
 )
+from forum_pack_format import extract_caption, is_caption_line, join_forum_paragraphs
 from paths import ROOT
 
 
@@ -160,22 +161,25 @@ def parse_forum_pack(pack_dir: Path) -> dict:
     current_head = ""
     current_paras: list[str] = []
     pending_image: str | None = None
+    pending_caption: str = ""
     in_footer = False
 
     def flush_section() -> None:
-        nonlocal current_head, current_paras, pending_image
-        body = "\n\n".join(dedupe_body_paragraphs(current_paras))
-        if body or pending_image or current_head:
-            sections.append(
-                {
-                    "headline": current_head,
-                    "body": body.strip(),
-                    "image": pending_image,
-                }
-            )
+        nonlocal current_head, current_paras, pending_image, pending_caption
+        body = join_forum_paragraphs(dedupe_body_paragraphs(current_paras))
+        if body or pending_image or current_head or pending_caption:
+            sec: dict = {
+                "headline": current_head,
+                "body": body.strip(),
+                "image": pending_image,
+            }
+            if pending_caption:
+                sec["caption"] = pending_caption
+            sections.append(sec)
         current_head = ""
         current_paras = []
         pending_image = None
+        pending_caption = ""
 
     for line in lines[1:]:
         s = line.strip()
@@ -195,14 +199,19 @@ def parse_forum_pack(pack_dir: Path) -> dict:
             disclaimer_lines.append(s)
             continue
         m = re.match(r"\*\*【插入配图\s*(\d+)】\*\*\s*`([^`]+)`", s)
+        if not m:
+            m = re.match(r"\*\*【插入配图\s*(\d+)】\*\*\s+(\S+)", s)
         if m:
-            rel = m.group(2).strip()
+            rel = m.group(2).strip().strip("`")
             img = pack_dir / rel
             if not img.is_file():
                 raise EastmoneyPublishError(f"配图不存在: {img}")
             pending_image = str(img.resolve())
             continue
         if s.startswith("**【插入配图") or s.startswith("【插入配图"):
+            continue
+        if is_caption_line(s):
+            pending_caption = extract_caption(s)
             continue
         if not s:
             continue
@@ -515,24 +524,16 @@ async def _upload_cover(page, cover_path: str) -> None:
     raise EastmoneyPublishError("封面上传后未检测到预览图")
 
 
-async def _set_source_personal(page) -> None:
-    radio = page.locator(".el-radio").filter(has_text="个人观点").first
-    if await radio.count():
-        await radio.scroll_into_view_if_needed()
-        await radio.click(timeout=5000)
-        return
-    loc = page.get_by_text("个人观点", exact=True)
-    if await loc.count():
-        await loc.first.click(timeout=3000)
-
-
 async def _dismiss_dialogs(page) -> None:
-    for _ in range(3):
+    for _ in range(5):
         clicked = False
         for sel in (
             ".dialog_btn_confirm",
             ".dialog_wrapper .btn_confirm",
             ".el-message-box__btns .el-button--primary",
+            ".prompt_wrapper .btn_confirm",
+            ".prompt_wrapper .dialog_btn_confirm",
+            ".prompt_wrapper button",
         ):
             btn = page.locator(sel).first
             try:
@@ -543,6 +544,18 @@ async def _dismiss_dialogs(page) -> None:
                     break
             except Exception:
                 continue
+        prompt = page.locator(".prompt_wrapper").first
+        try:
+            if await prompt.is_visible(timeout=300):
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.3)
+                close = prompt.locator(".close, .el-dialog__close, [class*='close']").first
+                if await close.count():
+                    await close.click(timeout=2000, force=True)
+                    clicked = True
+                    await asyncio.sleep(0.3)
+        except Exception:
+            pass
         if clicked:
             continue
         close = page.locator(".dialog_wrapper .close, .el-dialog__close").first
@@ -554,6 +567,18 @@ async def _dismiss_dialogs(page) -> None:
         except Exception:
             pass
         break
+
+
+async def _set_source_personal(page) -> None:
+    await _dismiss_dialogs(page)
+    radio = page.locator(".el-radio").filter(has_text="个人观点").first
+    if await radio.count():
+        await radio.scroll_into_view_if_needed()
+        await radio.click(timeout=8000, force=True)
+        return
+    loc = page.get_by_text("个人观点", exact=True)
+    if await loc.count():
+        await loc.first.click(timeout=3000, force=True)
 
 
 async def _agree_terms(page) -> None:

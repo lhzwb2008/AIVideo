@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 
 from paths import ROOT
+from research import extract_json, load_env
+from text_client import chat_complete
 
 DISCLAIMER = (
     "【风险提示】以上内容仅供学习交流，不构成任何投资建议。"
@@ -80,6 +82,14 @@ def _load_script(path: Path) -> dict:
     if not isinstance(script, dict):
         raise ValueError(f"无效脚本: {path}")
     return script
+
+
+def _load_script_meta(path: Path) -> tuple[dict, dict]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    script = data.get("script") or data
+    if not isinstance(script, dict):
+        raise ValueError(f"无效脚本: {path}")
+    return script, data if isinstance(data, dict) else {}
 
 
 def _sanitize_forum_title(title: str) -> str:
@@ -323,6 +333,392 @@ def _build_readme_publish_sections(script: dict) -> str:
     )
 
 
+FORUM_ARTICLE_SYSTEM = """你是「AI财知道」的专业财经图文编辑。
+
+任务：根据短视频脚本，单独写一篇适合雪球/东方财富发布的深度专业图文稿。它不是口播稿转写，必须像研究型文章。
+
+写作要求：
+1. 正文 1500-2200 字；信息密度高，必须显著长于视频口播。
+2. 写成财经研究文章，不要短视频口吻；不要用口播式比喻、互动结尾或账号运营话术。
+3. 不要逐页改写视频脚本。请从脚本里抽取事实、数字、时间线和核心矛盾，重新组织为完整文章。
+4. 结构清晰：核心结论、事件复盘、上涨逻辑、下跌触发因素、基本面验证、交易结构/情绪、后续观察、风险提示。
+5. 对 A股/港美股/宏观内容保持合规：不荐股、不喊单、不预测具体买卖点，不使用“必涨/抄底/梭哈/能不能买/追不追”等表述。
+6. 保留专业判断，但用“可能、需要观察、取决于、尚需验证”等审慎表达。
+7. 每节 body 写 2-4 段自然段，每段 90-180 字；不要把视频每页 narration 原样搬过来，不要复用口播比喻。
+8. 输出 JSON，不要 markdown。
+"""
+
+FORUM_ARTICLE_USER = """请基于以下研究材料生成专业长文。优先使用【深读材料】和【文章来源】，视频脚本只作为选题角度参考。
+
+【标题】
+{title}
+
+【栏目】
+{category}
+
+【冷开场】
+{cold_open}
+
+【文章来源】
+{article_json}
+
+【深读材料：outline / 数字 / 引语 / 机构 / 术语 / 叙事节奏】
+{details_json}
+
+【视频脚本 JSON】
+{script_json}
+
+输出格式：
+{{
+  "title": "适合雪球/东方财富的标题，稳健专业，不标题党",
+  "sections": [
+    {{
+      "headline": "小标题",
+      "body": "2-4段正文，用\\n\\n分段"
+    }}
+  ]
+}}
+"""
+
+
+def _script_digest(script: dict) -> dict:
+    slides = []
+    for slide in (script.get("slides") or [])[:8]:
+        if not isinstance(slide, dict):
+            continue
+        slides.append(
+            {
+                "headline": slide.get("headline"),
+                "concept": slide.get("concept"),
+                "narration": slide.get("narration"),
+                "on_image_text": slide.get("on_image_text"),
+            }
+        )
+    return {
+        "title": script.get("title"),
+        "category": script.get("category"),
+        "keyword": script.get("keyword"),
+        "cold_open": script.get("cold_open"),
+        "hashtags": script.get("hashtags"),
+        "slides": slides,
+    }
+
+
+def _details_digest(details: dict | None) -> dict:
+    if not isinstance(details, dict):
+        return {}
+    return {
+        "outline": (details.get("outline") or [])[:16],
+        "all_numbers": (details.get("all_numbers") or [])[:24],
+        "all_quotes": (details.get("all_quotes") or [])[:12],
+        "people": (details.get("people") or [])[:12],
+        "companies_or_institutions": (details.get("companies_or_institutions") or [])[:16],
+        "key_terms": (details.get("key_terms") or [])[:16],
+        "concrete_scenes": (details.get("concrete_scenes") or [])[:10],
+        "narrative_beats": (details.get("narrative_beats") or [])[:12],
+        "author_stance": details.get("author_stance"),
+        "actual_opening": details.get("actual_opening"),
+        "actual_ending": details.get("actual_ending"),
+    }
+
+
+def _article_digest(article: dict | None) -> dict:
+    if not isinstance(article, dict):
+        return {}
+    return {
+        "title": article.get("title"),
+        "url": article.get("url"),
+        "site": article.get("site"),
+        "published_at": article.get("published_at"),
+        "summary_zh": article.get("summary_zh"),
+        "thesis": article.get("thesis"),
+        "key_facts": (article.get("key_facts") or [])[:12],
+        "narrative_arc": article.get("narrative_arc"),
+    }
+
+
+def _details_for_forum(script_meta: dict) -> dict | None:
+    details = script_meta.get("research_details") or script_meta.get("details")
+    if isinstance(details, dict) and details:
+        return details
+    fallback = ROOT / "logs" / "last_article_details.json"
+    if fallback.is_file():
+        try:
+            data = json.loads(fallback.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else None
+        except (OSError, json.JSONDecodeError):
+            return None
+    return None
+
+
+def _normalize_forum_sections(rows: list[dict], slides: list[dict], image_paths: list[Path]) -> list[dict]:
+    sections: list[dict] = []
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        headline = str(row.get("headline") or "").strip()
+        body = str(row.get("body") or "").strip()
+        if not headline and i < len(slides):
+            headline = str(slides[i].get("headline") or "").strip()
+        if not body:
+            continue
+        sections.append(
+            {
+                "headline": headline,
+                "body": body,
+                "image": image_paths[i] if i < len(image_paths) else None,
+            }
+        )
+    return sections
+
+
+def _plain_text_len(text: str) -> int:
+    return len(re.sub(r"\s+", "", text or ""))
+
+
+def _validate_professional_sections(title: str, sections: list[dict]) -> None:
+    body = "\n".join(str(s.get("body") or "") for s in sections)
+    total_len = _plain_text_len(body)
+    min_chars = int(os.environ.get("AIVIDEO_FORUM_ARTICLE_MIN_CHARS", "1200"))
+    if total_len < min_chars:
+        raise RuntimeError(f"专业长文字数不足：{total_len} 字，要求至少 {min_chars} 字")
+    if len(sections) < 4:
+        raise RuntimeError(f"专业长文章节不足：{len(sections)} 节，要求至少 4 节")
+    short_sections = [
+        str(s.get("headline") or f"第{i + 1}节")
+        for i, s in enumerate(sections)
+        if _plain_text_len(str(s.get("body") or "")) < 180
+    ]
+    if short_sections:
+        raise RuntimeError(f"专业长文章节过短：{', '.join(short_sections[:3])}")
+
+
+def _generate_professional_forum_sections(
+    script: dict,
+    *,
+    slides: list[dict],
+    image_paths: list[Path],
+    article: dict | None = None,
+    details: dict | None = None,
+) -> tuple[str, list[dict]]:
+    load_env()
+    base_user = FORUM_ARTICLE_USER.format(
+        title=str(script.get("title") or ""),
+        category=str(script.get("category") or ""),
+        cold_open=str(script.get("cold_open") or ""),
+        article_json=json.dumps(_article_digest(article), ensure_ascii=False, indent=2),
+        details_json=json.dumps(_details_digest(details), ensure_ascii=False, indent=2),
+        script_json=json.dumps(_script_digest(script), ensure_ascii=False, indent=2),
+    )
+    last_err: Exception | None = None
+    user = base_user
+    attempts = int(os.environ.get("AIVIDEO_FORUM_ARTICLE_RETRIES", "2"))
+    for attempt in range(max(1, attempts)):
+        raw = chat_complete(
+            system=FORUM_ARTICLE_SYSTEM,
+            user=user,
+            max_tokens=int(os.environ.get("AIVIDEO_FORUM_ARTICLE_TOKENS", "6500")),
+            response_format_json=True,
+        )
+        try:
+            data = extract_json(raw)
+            title = _sanitize_forum_title(str(data.get("title") or script.get("title") or "未命名"))
+            rows = data.get("sections") or data.get("paragraphs") or []
+            if not rows and isinstance(data.get("body"), str) and data["body"].strip():
+                rows = [{"headline": title, "body": data["body"].strip()}]
+            sections = _normalize_forum_sections(rows, slides, image_paths)
+            if not sections:
+                preview = (raw or "").strip().replace("\n", " ")[:240]
+                raise RuntimeError(
+                    f"专业长文生成结果为空（模型返回无有效 sections）"
+                    + (f"；片段: {preview}…" if preview else "")
+                )
+            _validate_professional_sections(title, sections)
+            return title, sections
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            user = (
+                f"{base_user}\n\n【上一版不合格，必须重写】\n"
+                f"问题：{exc}\n"
+                "请重新输出一篇真正的研究型长文：1500-2200字，至少4节，禁止口播比喻和互动引导。"
+            )
+            print(f"[forum] 专业长文第 {attempt + 1} 次不合格，准备重试：{exc}")
+    raise RuntimeError(f"专业长文生成多次不合格：{last_err}") from last_err
+
+
+def _fallback_forum_sections(slides: list[dict], image_paths: list[Path]) -> list[dict]:
+    sections: list[dict] = []
+    for i, slide in enumerate(slides, start=1):
+        h = (slide.get("headline") or "").strip()
+        body = _expand_forum_section(slide)
+        sections.append(
+            {
+                "headline": h,
+                "body": body,
+                "image": image_paths[i - 1] if i <= len(image_paths) else None,
+            }
+        )
+    return sections
+
+
+REPORT_FIGURE_SPECS: tuple[tuple[str, str], ...] = (
+    (
+        "图1：电子板块成交集中度",
+        "Professional financial research chart on clean white background, 16:9 landscape. "
+        "Left: rising bar chart labeled in Chinese '月度成交额' with trend '连续20个月超2万亿'. "
+        "Right: donut chart with 28% slice highlighted labeled '占A股成交近28%'. "
+        "Subtitle in small Chinese: '2026年5月 15.98万亿'. "
+        "Corporate blue-gray palette, crisp vector infographic, Bloomberg-style data visualization. "
+        "No hand-drawn doodles, no graph paper, no page numbers, no cartoon style.",
+    ),
+    (
+        "图2：AI算力产业链传导",
+        "Professional horizontal flow diagram, 16:9 landscape, clean white background. "
+        "Left to right in Chinese: '大模型训练推理' -> '云端算力基础设施' -> "
+        "'算力芯片/存储' -> 'PCB/先进封装' -> 'A股电子产业链'. "
+        "Minimal blue arrows, flat vector business diagram, research report style. "
+        "No hand-drawn style, no kitchen metaphors, no page numbers.",
+    ),
+    (
+        "图3：景气与拥挤度矩阵",
+        "Professional 2x2 quadrant matrix chart, 16:9 landscape, white background. "
+        "X-axis Chinese '基本面兑现程度', Y-axis Chinese '交易拥挤度'. "
+        "Highlight one dot in top-right quadrant labeled '电子板块'. "
+        "Quadrant labels: high/low combinations in Chinese. "
+        "Clean corporate infographic, blue accent, no doodles, no page numbers.",
+    ),
+)
+
+
+def generate_report_figures(out_dir: Path, *, max_figures: int = 3) -> list[Path]:
+    """为深度报告生成横版信息图（与短视频白板图分离）。"""
+    from image_client import generate_image, save_b64_image
+
+    load_env()
+    images_dir = out_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    size = os.environ.get("AIVIDEO_REPORT_IMAGE_SIZE", "1536x1024")
+    paths: list[Path] = []
+    for i, (caption, prompt) in enumerate(REPORT_FIGURE_SPECS[:max_figures], start=1):
+        print(f"[forum] 报告配图 {i}/{max_figures}：{caption}…")
+        result = generate_image(prompt, size=size)
+        dst = images_dir / f"{i:02d}.jpg"
+        if result.get("b64_json"):
+            save_b64_image(result["b64_json"], dst)
+        elif result.get("url"):
+            import urllib.request
+
+            urllib.request.urlretrieve(result["url"], dst)
+        if dst.is_file():
+            paths.append(dst)
+            print(f"[forum]   ✓ {dst.name} ({result.get('elapsed_s')}s)")
+    return paths
+
+
+def _parse_md_table(lines: list[str], start: int) -> tuple[list[list[str]], int]:
+    rows: list[list[str]] = []
+    i = start
+    while i < len(lines) and lines[i].strip().startswith("|"):
+        row = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+        if row and not all(set(c) <= {"-", ":"} for c in row):
+            rows.append(row)
+        i += 1
+    return rows, i
+
+
+def write_docx_from_post_md(post_md: Path, out_docx: Path, *, pack_dir: Path) -> Path:
+    """把 post.md 转为 Word，表格与配图内嵌，便于复制发布。"""
+    from docx import Document
+    from docx.shared import Inches, Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    text = post_md.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "PingFang SC"
+    style.font.size = Pt(11)
+
+    i = 0
+    fig_idx = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped:
+            i += 1
+            continue
+        if stripped.startswith("# "):
+            h = doc.add_heading(stripped[2:].strip(), level=0)
+            h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            i += 1
+            continue
+        if stripped.startswith("## "):
+            doc.add_heading(stripped[3:].strip(), level=2)
+            i += 1
+            continue
+        if stripped.startswith("|"):
+            rows, i = _parse_md_table(lines, i)
+            if rows:
+                table = doc.add_table(rows=len(rows), cols=len(rows[0]))
+                table.style = "Table Grid"
+                for r, row in enumerate(rows):
+                    for c, cell in enumerate(row):
+                        table.rows[r].cells[c].text = cell
+                doc.add_paragraph("")
+            continue
+        if stripped.startswith("**【插入配图"):
+            m = re.search(r"`([^`]+)`", stripped)
+            if m:
+                rel = m.group(1)
+                img_path = pack_dir / rel
+                if img_path.is_file():
+                    fig_idx += 1
+                    p = doc.add_paragraph()
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    run = p.add_run()
+                    run.add_picture(str(img_path), width=Inches(6.2))
+                    cap = doc.add_paragraph(f"图{fig_idx}")
+                    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            i += 1
+            continue
+        if stripped.startswith("---"):
+            i += 1
+            continue
+        para_lines = [stripped]
+        i += 1
+        while i < len(lines) and lines[i].strip() and not lines[i].strip().startswith(("#", "|", "**【", "---")):
+            para_lines.append(lines[i].strip())
+            i += 1
+        doc.add_paragraph("\n".join(para_lines))
+
+    out_docx.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(out_docx))
+    return out_docx
+
+
+def _render_forum_markdown(title: str, sections: list[dict]) -> str:
+    lines = [f"# {title}", ""]
+    has_risk_section = any(
+        "风险" in str(sec.get("headline") or "") for sec in sections
+    )
+    for i, sec in enumerate(sections, start=1):
+        h = str(sec.get("headline") or "").strip()
+        body = str(sec.get("body") or "").strip()
+        image = sec.get("image")
+        if h:
+            lines.append(f"## {h}")
+            lines.append("")
+        if body:
+            lines.append(body)
+            lines.append("")
+        if image:
+            lines.append(f"**【插入配图 {i}】** `images/{i:02d}.jpg`")
+            lines.append("")
+    if not has_risk_section:
+        lines.extend(["---", "", DISCLAIMER, ""])
+    return "\n".join(lines)
+
+
 def _write_landscape_cover(src: Path, out_dir: Path) -> Path | None:
     """16:9 横封面（雪球首页推荐等），从竖封面居中偏上裁剪。"""
     if not src.is_file():
@@ -367,7 +763,7 @@ def build_forum_pack(
     video_path: Path,
     out_dir: Path | None = None,
 ) -> dict:
-    script = _load_script(script_path)
+    script, script_meta = _load_script_meta(script_path)
     title = _sanitize_forum_title((script.get("title") or "未命名").strip())
     slides = script.get("slides") or []
     out_dir = out_dir or forum_dir_for_video(video_path)
@@ -381,24 +777,31 @@ def build_forum_pack(
         _write_landscape_cover(landscape_src, out_dir) if landscape_src else None
     )
 
-    lines = [f"# {title}", ""]
-    for i, slide in enumerate(slides, start=1):
-        h = (slide.get("headline") or "").strip()
-        body = _expand_forum_section(slide)
-        if h:
-            lines.append(f"## {h}")
-            lines.append("")
-        if body:
-            lines.append(body)
-            lines.append("")
-        if i <= len(image_paths):
-            lines.append(f"**【插入配图 {i}】** `images/{i:02d}.jpg`")
-            lines.append("")
-
-    lines.extend(["---", "", DISCLAIMER, ""])
+    if os.environ.get("AIVIDEO_FORUM_PRO_ARTICLE", "1").strip().lower() in ("0", "false", "no"):
+        sections = _fallback_forum_sections(slides, image_paths)
+    else:
+        try:
+            title, sections = _generate_professional_forum_sections(
+                script,
+                slides=slides,
+                image_paths=image_paths,
+                article=script_meta.get("article") or script.get("article"),
+                details=_details_for_forum(script_meta),
+            )
+        except Exception as exc:  # noqa: BLE001
+            allow_fallback = os.environ.get("AIVIDEO_FORUM_ALLOW_FALLBACK", "0").strip().lower()
+            if allow_fallback in ("1", "true", "yes"):
+                print(f"[forum] 专业长文生成失败，按配置回退口播扩展稿：{exc}")
+                sections = _fallback_forum_sections(slides, image_paths)
+            else:
+                raise RuntimeError(
+                    "专业长文生成失败，已停止生成论坛图文，避免发布口播短稿。"
+                    "如需临时回退旧稿，设置 AIVIDEO_FORUM_ALLOW_FALLBACK=1。"
+                    f"原因：{exc}"
+                ) from exc
 
     post_md = out_dir / "post.md"
-    post_text = "\n".join(lines)
+    post_text = _render_forum_markdown(title, sections)
     post_md.write_text(post_text, encoding="utf-8")
 
     publish_sections = _build_readme_publish_sections(script)
@@ -407,10 +810,21 @@ def build_forum_pack(
 {publish_sections}"""
     (out_dir / "README.md").write_text(readme, encoding="utf-8")
 
+    docx_path: Path | None = None
+    if post_md.is_file():
+        try:
+            docx_path = write_docx_from_post_md(
+                post_md, out_dir / "article.docx", pack_dir=out_dir,
+            )
+            print(f"[forum] Word 文稿：{docx_path}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[forum] Word 导出跳过: {exc}")
+
     return {
         "title": title,
         "out_dir": str(out_dir),
         "post_md": str(post_md),
+        "article_docx": str(docx_path) if docx_path else "",
         "cover": str(cover_path) if cover_path else "",
         "cover_landscape": str(landscape_path) if landscape_path else "",
         "images": [str(p) for p in image_paths],

@@ -113,6 +113,16 @@ async def _launch_context(p, *, headless: bool, account: str | None):
     profile = profile_dir(account=account)
     profile.mkdir(parents=True, exist_ok=True)
 
+    if profile.is_dir() and any(profile.iterdir()):
+        context = await p.chromium.launch_persistent_context(
+            str(profile),
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
+            viewport={"width": 1440, "height": 1000},
+            **launch,
+        )
+        return context, cookie
+
     if cookie.is_file() and cookie.stat().st_size > 64:
         browser = await p.chromium.launch(**launch)
         context = await browser.new_context(
@@ -121,16 +131,6 @@ async def _launch_context(p, *, headless: bool, account: str | None):
             timezone_id="Asia/Shanghai",
             viewport={"width": 1440, "height": 1000},
             permissions=["clipboard-read", "clipboard-write"],
-        )
-        return context, cookie
-
-    if profile.is_dir() and any(profile.iterdir()):
-        context = await p.chromium.launch_persistent_context(
-            str(profile),
-            locale="zh-CN",
-            timezone_id="Asia/Shanghai",
-            viewport={"width": 1440, "height": 1000},
-            **launch,
         )
         return context, cookie
 

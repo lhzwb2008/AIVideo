@@ -227,7 +227,12 @@ src/
 
 开关：`AIVIDEO_PUBLISH_TIKTOK=0`。记录：`logs/last_tiktok_publish.json`。
 
-### B站（主流程可选，biliup）
+### B站（主流程可选，biliup 视频 + 专栏长文）
+
+B 站支持**视频投稿**和**专栏长文**（创作中心 → 专栏）。开启 `AIVIDEO_PUBLISH_BILIBILI=1` 后，主流程会：
+
+1. 用 biliup 上传成片（与论坛包同名的 `output/xxx/` 目录）
+2. 若存在论坛图文包（`post.md` + `cover.jpg` + `images/`），自动同步专栏并**浏览器提交发布**（含封面与分段配图）
 
 ```bash
 ./setup-sau.sh
@@ -235,9 +240,10 @@ src/
 # .env: AIVIDEO_PUBLISH_BILIBILI=1
 ./make-and-publish.sh
 ./scripts/publish-bilibili.sh output/xxx.mp4 --script logs/xxx.json
+# 仅视频、不发专栏：加 --no-article
 ```
 
-创作中心：[member.bilibili.com](https://member.bilibili.com/platform/home)。默认分区 `BILIBILI_TID=207`（知识·财经商业）。记录：`logs/last_bilibili_publish.json`。
+创作中心：[member.bilibili.com](https://member.bilibili.com/platform/home)。视频默认分区 `BILIBILI_TID=207`（知识·财经商业）。专栏默认自动发布（`BILIBILI_ARTICLE_AUTO_PUBLISH=0` 仅保存草稿）。记录：`logs/last_bilibili_publish.json`。
 
 ### 国内平台（手动）
 
@@ -249,6 +255,7 @@ src/
 | 视频号 | https://channels.weixin.qq.com/platform/post/create |
 | 雪球（图文） | https://xueqiu.com/ |
 | 东方财富（股吧/财富号·图文） | https://mpservice.eastmoney.com/ |
+| 知乎专栏（长文） | https://zhuanlan.zhihu.com/write（仅手动复制 post.md） |
 
 独立调试（不进主流程，有封号风险）：`./scripts/publish-douyin.sh`、`./scripts/publish-xiaohongshu.sh` 等。
 
@@ -333,7 +340,7 @@ archive/published/20260531/
   20260531_192557/
 ```
 
-合成后自动生成图文包（`AIVIDEO_FORUM_POST=0` 可关闭）。YouTube/TikTok 走 API；抖音/小红书/视频号及雪球/东财等请从归档目录手动发布。
+合成后自动生成图文包（`AIVIDEO_FORUM_POST=0` 可关闭）。YouTube/TikTok/B站 走 API；雪球/东财长文可设 `AIVIDEO_PUBLISH_*=1` 自动填表发布；抖音/小红书/视频号/知乎请从归档目录手动发布。
 
 ## 环境变量
 
