@@ -8,7 +8,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from forum_pack_format import body_to_plaintext, format_headline_plain, split_body_blocks
+from forum_pack_format import (
+    body_to_opus_lines,
+    body_to_plaintext,
+    format_headline_plain,
+    split_body_blocks,
+)
 
 _PASTE_KEY = "Meta+V" if sys.platform == "darwin" else "Control+V"
 
@@ -268,6 +273,59 @@ async def fill_eastmoney_body_sections(
         if wrote:
             await page.keyboard.press("Enter")
         await paste_text(page, format_eastmoney_paragraph(disclaimer.strip()))
+
+    await asyncio.sleep(0.5)
+
+
+async def fill_xueqiu_body_sections(
+    page,
+    sections: list[dict],
+    *,
+    disclaimer: str = "",
+    insert_image,
+) -> None:
+    """雪球：不用东财段首空两格；小节标题与表格分行粘贴。"""
+    await page.locator(".ProseMirror.cfh_editor_area, .ProseMirror").first.wait_for(
+        state="attached", timeout=30_000
+    )
+    await clear_editor(page)
+
+    wrote = False
+    for sec in sections:
+        headline = format_headline_plain((sec.get("headline") or "").strip())
+
+        if headline:
+            await focus_editor_end(page)
+            if wrote:
+                await page.keyboard.press("Enter")
+            await paste_paragraphs(page, [headline])
+            await page.keyboard.press("Enter")
+            wrote = True
+
+        if body:
+            await focus_editor_end(page)
+            paras = body_to_opus_lines((sec.get("body") or "").strip())
+            if paras:
+                await paste_paragraphs(page, paras)
+            wrote = True
+
+        img = sec.get("image")
+        if img:
+            await move_cursor_to_end(page)
+            await insert_image(page, prepare_image_upload(img))
+            wrote = True
+
+        caption = (sec.get("caption") or "").strip()
+        if caption:
+            await focus_editor_end(page)
+            await paste_paragraphs(page, [caption])
+            wrote = True
+
+    if disclaimer.strip():
+        await focus_editor_end(page)
+        if wrote:
+            await page.keyboard.press("Enter")
+        await paste_text(page, disclaimer.strip())
 
     await asyncio.sleep(0.5)
 

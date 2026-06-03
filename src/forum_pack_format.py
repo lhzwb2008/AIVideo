@@ -161,6 +161,11 @@ def markdown_table_to_compact_lines(table_md: str) -> list[str]:
     return out
 
 
+def body_to_xueqiu_plaintext(body: str) -> str:
+    """雪球正文：表格每行压成一条，避免手机端多行指标糊成一段。"""
+    return "\n\n".join(body_to_opus_lines(body))
+
+
 def body_to_opus_lines(body: str) -> list[str]:
     """B 站 opus 正文：普通段落保留，表格转紧凑单行列表。"""
     out: list[str] = []

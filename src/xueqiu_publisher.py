@@ -10,11 +10,15 @@ from pathlib import Path
 from eastmoney_publisher import (
     _chrome_path,
     _ensure_patchright,
-    _fill_body_sections,
     parse_forum_pack,
     sau_home,
 )
-from forum_editor_fill import focus_editor_end, move_cursor_to_end, prepare_image_upload
+from forum_editor_fill import (
+    fill_xueqiu_body_sections,
+    focus_editor_end,
+    move_cursor_to_end,
+    prepare_image_upload,
+)
 from paths import ROOT
 
 
@@ -256,10 +260,9 @@ async def publish_forum_pack(
 
             await _fill_title(page, data["title"])
             await _upload_cover(page, data["cover"])
-            await _fill_body_sections(
+            await fill_xueqiu_body_sections(
                 page,
                 data["sections"],
-                pack_dir=pack_dir,
                 disclaimer=data.get("disclaimer") or "",
                 insert_image=_insert_body_image,
             )
