@@ -940,7 +940,7 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
   "slides": [
     {
       "headline": "6-14字上屏标题",
-      "narration": "50-180字口播",
+      "narration": "口播：第1页40-120字，其余页50-180字",
       "image_prompt": "English diagram prompt",
       "on_image_text": ["中文标签1", "中文标签2", "中文标签3"]
     }
@@ -960,7 +960,7 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
   - **宁可用大家都在搜的大词，也不要自己造没人搜的窄词**（如「赛事生意」「体育超级月」这种自创短语就别用，换成「世界杯」「NBA总决赛」这种通用热词）。
   - **不要写品牌频道名（如 AI财知道）**当标签——新号自创话题没人搜，纯属浪费坑位，发布程序也不会再补品牌标签。
   - 每个一般 2-8 字（英文公司名/赛事名可稍长），不带 # 号，宁少勿多、不要凑无关泛词。例：讲 A股 电力股涨停写 ["A股","电力股","涨停"]；讲英伟达财报写 ["英伟达","美股","财报"]；讲三大体育决赛扎堆写 ["世界杯","欧冠","NBA总决赛","体育经济"]。
-- slides 3-4 页（最多 4 页）；第 1 页是封面正文页（非冷开场），最后一页是结论/影响/警示。
+- slides 3-4 页（最多 4 页）；第 1 页是封面正文页（非冷开场），封面 narration 必须 40-120 字；其余页 narration 50-180 字；最后一页是结论/影响/警示。
 - 最后一页的 narration 收尾时，要**先根据这个话题自然抛出一个开放式问题**引导观众去评论区讨论（结合本期具体内容，不要套「你怎么看」这种空话，要有具体钩子），**再**引导互动：**必须明确提到「收藏」**（财经类收藏权重高），例如「觉得有用就收藏下来，对照看盘用」；可顺带提关注，但**不要只喊点赞**；不要生硬。
 - title 必须是问句，优先使用「什么是 X？」「X 为什么火了？」「X 到底意味着什么？」「X 财报到底好不好？」「X 为什么大涨/大跌？」这类搜索友好标题。
 - 不要输出 source、article、layout、lead_in、chapter_title、concept；这些由程序自动补。
@@ -994,6 +994,33 @@ def _trim_to(s: str, max_chars: int) -> str:
             if len(cut) >= max_chars // 2:
                 break
     return cut.rstrip("，。、：；—,.")
+
+
+def _trim_narration_to(s: str, max_chars: int, *, min_chars: int) -> str:
+    """按句子收口口播，避免模型轻微超长导致整篇脚本失败。"""
+    s = re.sub(r"\s+", "", (s or "").strip())
+    if len(s) <= max_chars:
+        return s
+
+    sentences = [x for x in re.findall(r"[^。！？!?；;]+[。！？!?；;]?", s) if x.strip()]
+    out = ""
+    for sent in sentences:
+        sent = sent.strip()
+        if not sent:
+            continue
+        if len(out) + len(sent) > max_chars:
+            break
+        out += sent
+    if len(out) >= min_chars:
+        return out.rstrip("，、；;：:") or s[:max_chars].rstrip("，、；;：:")
+
+    cut = s[:max_chars]
+    for tail in ("。", "！", "？", "；", "，", "、"):
+        if tail in cut:
+            candidate = cut.rsplit(tail, 1)[0].strip()
+            if len(candidate) >= min_chars:
+                return candidate.rstrip("，、；;：:")
+    return cut.rstrip("，、；;：:")
 
 
 def _compact_title(s: str, max_chars: int = 24) -> str:
@@ -1085,6 +1112,12 @@ def soft_sanitize_script(data: dict) -> dict:
         for _f in ("headline", "narration", "subtitle", "lead_in", "concept"):
             if isinstance(slide.get(_f), str):
                 slide[_f] = _strip_stock_codes(slide[_f])
+        if isinstance(slide.get("narration"), str):
+            slide["narration"] = _trim_narration_to(
+                slide["narration"],
+                120 if i == 0 else 220,
+                min_chars=40 if i == 0 else 50,
+            )
         headline = str(slide.get("headline") or f"第{i + 1}页").strip()
         slide["headline"] = _trim_to(headline, 14)
         if not str(slide.get("chapter_title") or "").strip():
@@ -1455,7 +1488,7 @@ ADAPT_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重�
 - 每页有 chapter_title / concept / headline / narration / image_prompt / on_image_text
 - 必须忠实于已选定文章原文（URL: {url}），不虚构事实
 - 口播必须像「AI财知道」自己的财经解读，不要说「文章认为」「作者指出」「文中提到」「某某的观点」；来源只作内部依据。
-- cold_open 必须生活化入口+反差，禁止纯术语；须输出 theme_cluster + angle；封面 narration 勿重复 cold_open；最后一页引导「收藏」。
+- cold_open 必须生活化入口+反差，禁止纯术语；须输出 theme_cluster + angle；封面 narration 勿重复 cold_open 且控制在 40-120 字；最后一页引导「收藏」。
 - 【合规红线】：标题/口播/上屏文字/hashtags 都严禁出现任何股票代码（A股6位、港股带.HK、美股字母代码等），也严禁荐股、喊单、目标价、买卖点、仓位建议、「稳赚/必涨/翻倍/收益率/内幕/买入/卖出」等字眼，只做客观信息梳理与原理解释。
 """
 
