@@ -315,7 +315,10 @@ def publish_bilibili(
             skip_video=skip_video,
         )
         if title:
-            log(f"  [B站] 视频已提交: {title}")
+            if _bilibili_skip_video():
+                log(f"  [B站] 已同步专栏/跳过视频上传: {title}")
+            else:
+                log(f"  [B站] 视频已提交: {title}")
             article_url = _read_last_publish_url(
                 "last_bilibili_publish.json", "article", "url"
             )

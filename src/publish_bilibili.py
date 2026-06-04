@@ -187,6 +187,10 @@ def main() -> int:
                     note = article_result.get("publish_note") or ""
                     if note:
                         print(f"  （{note}）")
+                    elif video_skipped:
+                        print(
+                            "  （已跳过视频上传；专栏未发布成功时请检查 BILIBILI_ARTICLE_*）"
+                        )
                     else:
                         print(
                             "  （视频已自动投稿；专栏未发布成功，请检查 logs 或 .env 中 BILIBILI_ARTICLE_*）"

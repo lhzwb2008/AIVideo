@@ -25,6 +25,8 @@ class EastmoneyPublishError(RuntimeError):
 
 EDITOR_URL = "https://mp.eastmoney.com/collect/pc_article/index.html#/"
 ACCOUNT_ENV = "EASTMONEY_ACCOUNT"
+DEFAULT_TOPIC_ENV = "EASTMONEY_DEFAULT_TOPIC"
+DEFAULT_TOPIC_NAME = "社区牛人计划"
 
 
 def _env(name: str, default: str = "") -> str:
@@ -506,6 +508,114 @@ async def _cover_is_set(page) -> bool:
     return False
 
 
+def _default_topic_name() -> str:
+    raw = _env(DEFAULT_TOPIC_ENV, DEFAULT_TOPIC_NAME)
+    if not raw:
+        return ""
+    name = raw.strip().strip("#")
+    return name
+
+
+async def _editor_has_topic_module(page, topic: str) -> bool:
+    if not topic:
+        return False
+    try:
+        return bool(
+            await page.evaluate(
+                """
+                (topic) => Array.from(
+                  document.querySelectorAll('.module.module_topic')
+                ).some((el) => (el.innerText || '').includes(topic))
+                """,
+                topic,
+            )
+        )
+    except Exception:
+        return False
+
+
+async def _move_topic_module_to_top(page) -> bool:
+    """把已插入的 module_topic 段落挪到正文最上方（话题栏）。"""
+    try:
+        return bool(
+            await page.evaluate(
+                """
+                () => {
+                  const root = document.querySelector('.ProseMirror.cfh_editor_area')
+                    || document.querySelector('.ProseMirror');
+                  if (!root) return false;
+                  const topic = root.querySelector('.module.module_topic');
+                  if (!topic) return false;
+                  const hostP = topic.closest('p');
+                  if (!hostP || hostP === root.firstElementChild) return true;
+                  const slot = hostP.cloneNode(true);
+                  hostP.remove();
+                  root.insertBefore(slot, root.firstChild);
+                  return true;
+                }
+                """
+            )
+        )
+    except Exception:
+        return False
+
+
+async def _select_topic_from_panel(page, topic: str) -> bool:
+    # 光标在正文内时话题面板常不出现；先点到标题栏再开「话题」。
+    title = page.locator('input[placeholder*="标题"]').first
+    await title.click(timeout=5000)
+    await asyncio.sleep(0.2)
+
+    btn = page.locator("button.em_icon_topic, .em_icon_topic").first
+    await btn.wait_for(state="visible", timeout=10_000)
+    await btn.click(timeout=10_000)
+    await asyncio.sleep(0.8)
+
+    panel = page.locator(".mention_suggest.topic_text").first
+    try:
+        await panel.wait_for(state="visible", timeout=10_000)
+    except Exception:
+        return False
+
+    activity_tab = panel.get_by_text("活动", exact=True).first
+    if await activity_tab.count():
+        await activity_tab.click(timeout=5000)
+        await asyncio.sleep(0.8)
+
+    item = panel.get_by_text(topic, exact=True).first
+    if not await item.count():
+        await page.keyboard.type(topic)
+        await asyncio.sleep(1.2)
+        item = panel.get_by_text(topic, exact=True).first
+
+    if not await item.count():
+        await page.keyboard.press("Escape")
+        return False
+
+    await item.click(timeout=5000)
+    await asyncio.sleep(0.5)
+    return True
+
+
+async def _add_default_topic(page) -> None:
+    """长文发布：在话题栏（正文上方独立 module_topic）挂上活动话题。"""
+    topic = _default_topic_name()
+    if not topic:
+        return
+    if await _editor_has_topic_module(page, topic):
+        return
+
+    if not await _select_topic_from_panel(page, topic):
+        print(f"  东方财富话题栏: 未能选择 #{topic}#", flush=True)
+        return
+
+    if not await _move_topic_module_to_top(page):
+        print(f"  东方财富话题栏: 已选 #{topic}#（未能移到顶部）", flush=True)
+        return
+
+    print(f"  东方财富话题栏: #{topic}#", flush=True)
+
+
 async def _upload_cover(page, cover_path: str) -> None:
     if await _cover_is_set(page):
         return
@@ -721,6 +831,7 @@ async def publish_forum_pack(
                 disclaimer=data.get("disclaimer") or "",
                 cover_image=data.get("cover"),
             )
+            await _add_default_topic(page)
             await _upload_cover(page, data["cover"])
             await ensure_expected_account(page, account=account)
             await _set_source_personal(page)
