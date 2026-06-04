@@ -1314,7 +1314,7 @@ def douyin_pre_publish_scan(script: dict) -> tuple[list[str], list[str]]:
         for p in _DOUYIN_SENSITIVE_WARN:
             if p in txt:
                 warnings.append(f"{label} 含敏感词「{p}」（易触发平台限流）")
-        for p in _RECO_BANNED:
+        for p in _reco_banned_for(script=script):
             if p in txt:
                 errors.append(f"{label} 含违规词「{p}」")
         for pat in _STOCK_CODE_PATTERNS:
@@ -1372,12 +1372,39 @@ _STOCK_CODE_PATTERNS = (
 )
 
 # 荐股/喊单/收益承诺类违规词（口播、标题、上屏文字都不许出现）
-_RECO_BANNED = (
+_RECO_BANNED_STRICT = (
     "荐股", "喊单", "带单", "跟我买", "带你赚", "目标价", "买入评级", "卖出评级",
     "满仓", "加仓", "减仓", "抄底", "梭哈", "全仓", "买点", "卖点", "买入信号",
     "稳赚", "包赚", "稳赢", "必涨", "必跌", "翻倍", "收益率", "内幕消息", "内部消息",
     "买入", "卖出", "保证收益", "稳赚不赔", "躺赚", "月入", "免费荐股", "涨停板预测",
 )
+# Cursor 新流水线：允许客观叙述里的「买入」「卖出」（如资金卖出、抛售），仍禁喊单荐股短语
+_RECO_BANNED_RELAXED = tuple(
+    x for x in _RECO_BANNED_STRICT if x not in ("买入", "卖出")
+)
+_RECO_BANNED = _RECO_BANNED_STRICT  # 兼容旧引用
+
+
+def compliance_relaxed(*, article: dict | None = None, script: dict | None = None) -> bool:
+    """新流水线（make-and-publish-new）用宽松合规：不单禁「买入/卖出」二字。"""
+    flag = os.environ.get("AIVIDEO_COMPLIANCE_RELAXED", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if os.environ.get("AIVIDEO_SOURCE", "").strip().lower() == "cursor":
+        return True
+    for obj in (article, script):
+        if isinstance(obj, dict) and obj.get("_compliance_relaxed"):
+            return True
+        art = (obj or {}).get("article") if isinstance(obj, dict) else None
+        if isinstance(art, dict) and art.get("_compliance_relaxed"):
+            return True
+    return False
+
+
+def _reco_banned_for(*, article: dict | None = None, script: dict | None = None) -> tuple[str, ...]:
+    if compliance_relaxed(article=article, script=script):
+        return _RECO_BANNED_RELAXED
+    return _RECO_BANNED_STRICT
 
 # 抖音预审/灵犬常见敏感表达（发布前扫描，命中则警告或拦截）
 _DOUYIN_SENSITIVE_WARN = (
@@ -1447,7 +1474,7 @@ def validate_article_script(data: dict, article: dict) -> dict:
         raise ValueError(
             f"cold_open 勿以纯财经术语开场，请改成生活场景+反差: {cold_open!r}"
         )
-    for p in _RECO_BANNED:
+    for p in _reco_banned_for(article=article):
         if p in cold_open:
             raise ValueError(f"cold_open 含违规词「{p}」")
     for pat in _STOCK_CODE_PATTERNS:
@@ -1460,7 +1487,7 @@ def validate_article_script(data: dict, article: dict) -> dict:
         raise ValueError(f"title 过短，当前 {len(title)}: {title!r}")
     if len(title) > 30:
         data["title"] = title[:30].rstrip("，。！？,.!? ")
-    for p in _RECO_BANNED:
+    for p in _reco_banned_for(article=article):
         if p in title:
             raise ValueError(f"title 含荐股/违规词「{p}」（合规红线）")
     for pat in _STOCK_CODE_PATTERNS:
@@ -1535,7 +1562,7 @@ def validate_article_script(data: dict, article: dict) -> dict:
             for p in _BANNED_PHRASES:
                 if p in txt:
                     raise ValueError(f"第 {page} 页含禁用词「{p}」")
-            for p in _RECO_BANNED:
+            for p in _reco_banned_for(article=article):
                 if p in txt:
                     raise ValueError(f"第 {page} 页含荐股/违规词「{p}」（合规红线，不许出现）")
             for pat in _STOCK_CODE_PATTERNS:
@@ -1601,8 +1628,14 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
         + json.dumps(details, ensure_ascii=False, indent=2)
     )
     topic_block = _topic_plan_block(article)
+    relaxed_note = ""
+    if compliance_relaxed(article=article):
+        relaxed_note = (
+            "\n【合规说明·Cursor 新流水线】客观复盘里可以使用「买入」「卖出」等中性表述"
+            "（如资金卖出、抛售、买入意愿），但不要写成荐股喊单（跟我买、目标价、必涨、买卖点建议等）。\n"
+        )
     return (
-        f"{topic_block}{meta_block}\n\n{details_block}\n\n"
+        f"{topic_block}{meta_block}\n\n{details_block}\n{relaxed_note}\n"
         "请严格根据上面的「原文深读细节」改编。输出字段须含 title / keyword / cold_open / "
         "cold_open_type / theme_cluster / angle / hashtags / slides；"
         "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
@@ -1618,12 +1651,35 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
     )
 
 
+def _resolve_fixed_video_title(article: dict) -> str:
+    fixed = str(article.get("_fixed_video_title") or "").strip()
+    if fixed:
+        return fixed
+    plan = article.get("_topic_plan")
+    if isinstance(plan, dict):
+        return str(plan.get("fixed_video_title") or "").strip()
+    return ""
+
+
+def _apply_fixed_video_title(script: dict, article: dict) -> dict:
+    """大盘报盘等槽位：标题固定，不让 Opus 改成问句。"""
+    fixed = _resolve_fixed_video_title(article)
+    if fixed:
+        script["title"] = fixed
+        if not str(script.get("keyword") or "").strip():
+            script["keyword"] = "A股大盘"
+    return script
+
+
 def _topic_plan_block(article: dict) -> str:
     plan = article.get("_topic_plan")
     if not isinstance(plan, dict):
         return ""
     parts = []
-    if plan.get("title_hint"):
+    fixed = str(plan.get("fixed_video_title") or "").strip()
+    if fixed:
+        parts.append(f"- 视频标题（必须一字不改）: {fixed}")
+    elif plan.get("title_hint"):
         parts.append(f"- 选题问句: {plan['title_hint']}")
     if plan.get("cold_open"):
         parts.append(
