@@ -76,10 +76,7 @@ def profile_dir(root: Path | None = None, account: str | None = None) -> Path:
 
 
 def _collect_images(pack_dir: Path, data: dict) -> list[str]:
-    """图文笔记轮播顺序：严格按 post.md 分镜图 01→02→…（首图=笔记封面）。
-
-    cover.jpg 仅用于视频封面/公众号头图，不插入小红书轮播（避免把配图 1 挤到第 2 张）。
-    """
+    """图文笔记轮播顺序：cover.jpg → post.md 分镜图 01→02→…。"""
     ordered: list[str] = []
     seen: set[str] = set()
 
@@ -91,6 +88,12 @@ def _collect_images(pack_dir: Path, data: dict) -> list[str]:
             return
         seen.add(key)
         ordered.append(key)
+
+    cover = data.get("cover")
+    if cover:
+        add(Path(cover))
+    else:
+        add(pack_dir / "cover.jpg")
 
     for sec in data.get("sections") or []:
         raw = sec.get("image")
@@ -109,16 +112,20 @@ def _forum_body_for_note(data: dict, *, max_chars: int = 900) -> str:
     """图文笔记正文区有字数上限，取摘要 + 前两段要点。"""
     parts: list[str] = []
     summary = ""
-    for sec in data.get("sections") or []:
+    summary_idx: int | None = None
+    for idx, sec in enumerate(data.get("sections") or []):
         head = (sec.get("headline") or "").strip()
         if head == "摘要" or not summary:
             body = (sec.get("body") or "").strip()
             if body:
                 summary = body_to_plaintext(body)
+                summary_idx = idx
                 break
     if summary:
         parts.append(summary[:400])
-    for sec in data.get("sections") or []:
+    for idx, sec in enumerate(data.get("sections") or []):
+        if summary_idx is not None and idx == summary_idx:
+            continue
         head = (sec.get("headline") or "").strip()
         if head in ("", "摘要"):
             continue
@@ -188,7 +195,45 @@ async def _wait_note_editor(page) -> None:
     )
 
 
-async def _upload_images(page, image_paths: list[str]) -> None:
+async def _count_uploaded_images(page) -> int:
+    return await page.evaluate(
+        """() => {
+          const previewSources = new Set();
+          for (const img of document.querySelectorAll('img.preview, .format-img img, [class*="format-img"] img')) {
+            const rect = img.getBoundingClientRect();
+            const src = img.currentSrc || img.src || '';
+            if (rect.width < 40 || rect.height < 40) continue;
+            if (!src || !src.startsWith('blob:')) continue;
+            previewSources.add(src);
+          }
+          if (previewSources.size) return previewSources.size;
+
+          const body = document.body.innerText || '';
+          const editMatch = body.match(/图片编辑\\s*(\\d+)\\s*\\/\\s*(\\d+)/);
+          if (editMatch) return Number(editMatch[1] || 0);
+          const previewMatch = body.match(/笔记预览[\\s\\S]*?(\\d+)\\s*\\/\\s*(\\d+)/);
+          if (previewMatch) return Number(previewMatch[2] || 0);
+          return 0;
+        }"""
+    )
+
+
+async def _wait_uploaded_images(page, expected: int) -> int:
+    """小红书会先进入编辑器，再异步补齐图片；保存前必须等够数量。"""
+    last_count = 0
+    for _ in range(120):
+        last_count = await _count_uploaded_images(page)
+        if last_count >= expected:
+            await asyncio.sleep(1.0)
+            return await _count_uploaded_images(page)
+        await asyncio.sleep(1)
+    raise XhsArticlePublishError(
+        f"图片上传未完成：期望 {expected} 张，页面仅检测到 {last_count} 张。"
+        " 请用 ./scripts/publish-xhs-article.sh <包> --headed 查看上传区"
+    )
+
+
+async def _upload_images(page, image_paths: list[str]) -> int:
     timeout_ms = int(_env("AIVIDEO_XHS_GOTO_TIMEOUT_MS", "90000") or "90000")
     await page.goto(
         NOTE_PUBLISH_URL,
@@ -210,6 +255,12 @@ async def _upload_images(page, image_paths: list[str]) -> None:
     await upload_input.wait_for(state="attached", timeout=60_000)
     await upload_input.set_input_files(image_paths)
     await _wait_note_editor(page)
+    uploaded = await _wait_uploaded_images(page, len(image_paths))
+    if uploaded < len(image_paths):
+        raise XhsArticlePublishError(
+            f"图片上传数量不足：期望 {len(image_paths)} 张，实际 {uploaded} 张"
+        )
+    return uploaded
 
 
 def _title_snippet(title: str, *, n: int = 14) -> str:
@@ -417,6 +468,48 @@ async def _image_draft_count_in_modal(page) -> int:
     return 0
 
 
+async def _delete_drafts_by_title(page, title: str) -> int:
+    if not await _open_draft_box(page):
+        return 0
+    snippet = _title_snippet(title)
+    if not snippet:
+        return 0
+
+    deleted = 0
+    for _ in range(8):
+        action = await page.evaluate(
+            """(snippet) => {
+              const rows = [...document.querySelectorAll('div, li, article')];
+              for (const el of rows) {
+                const t = (el.innerText || '');
+                if (t.length > 450 || !t.includes(snippet) || !t.includes('保存于')) continue;
+                el.scrollIntoView({ block: 'center', inline: 'nearest' });
+                const controls = [...el.querySelectorAll('button, a, span, div')];
+                const del = controls.find((b) => /^(删除|移除)$/.test((b.innerText || '').trim()));
+                if (del) { del.click(); return 'delete'; }
+                const more = controls.find((b) => /^(更多|\\.\\.\\.|···)$/.test((b.innerText || '').trim()));
+                if (more) { more.click(); return 'more'; }
+                return 'blocked';
+              }
+              return 'done';
+            }""",
+            snippet,
+        )
+        if action == "done":
+            break
+        if action == "blocked":
+            break
+        await asyncio.sleep(0.6)
+        for label in ("删除", "确定", "确认"):
+            btn = page.get_by_role("button", name=label).first
+            if await btn.count():
+                await btn.click(timeout=10_000)
+                deleted += 1
+                await asyncio.sleep(1.2)
+                break
+    return deleted
+
+
 async def _launch_context(p, *, headless: bool, account: str | None):
     """始终用持久化浏览器配置，草稿才能留在本机同一 Profile 里。"""
     chrome = _chrome_path()
@@ -490,6 +583,41 @@ async def open_creator_browser(*, account: str | None = None) -> None:
             await context.close()
 
 
+async def clear_forum_draft(
+    pack_dir: Path,
+    *,
+    headless: bool | None = None,
+    account: str | None = None,
+    script: dict | None = None,
+) -> dict:
+    _ensure_patchright()
+    from patchright.async_api import async_playwright
+
+    pack_dir = Path(pack_dir).resolve()
+    data = parse_forum_pack(pack_dir)
+    title = _note_title(data, script)
+    if headless is None:
+        headless = _headless()
+
+    async with async_playwright() as p:
+        context, cookie = await _launch_context(
+            p, headless=headless, account=account
+        )
+        try:
+            page = context.pages[0] if context.pages else await context.new_page()
+            deleted = await _delete_drafts_by_title(page, title)
+            await context.storage_state(path=str(cookie))
+            return {
+                "title": title,
+                "original_title": data["title"],
+                "pack_dir": data["pack_dir"],
+                "deleted": deleted,
+                "url": PUBLISH_HOME,
+            }
+        finally:
+            await context.close()
+
+
 async def publish_forum_pack(
     pack_dir: Path,
     *,
@@ -541,11 +669,17 @@ async def publish_forum_pack(
                     "message": "草稿箱已有同标题图文草稿，跳过（--force 可在原稿上覆盖更新）",
                 }
 
+            if force:
+                await _delete_drafts_by_title(page, title)
+                await page.goto(NOTE_PUBLISH_URL, wait_until="domcontentloaded", timeout=90_000)
+                await asyncio.sleep(1)
+
             mode = "new"
-            if await _open_draft_by_title(page, title):
+            uploaded_image_count: int | None = None
+            if not force and await _open_draft_by_title(page, title):
                 mode = "draft"
             else:
-                await _upload_images(page, image_paths)
+                uploaded_image_count = await _upload_images(page, image_paths)
 
             await _fill_title(page, title)
             await _fill_desc(page, body, tags_line)
@@ -571,6 +705,8 @@ async def publish_forum_pack(
                 "skipped": False,
                 "editor_mode": mode,
                 "images": image_paths,
+                "uploaded_image_count": uploaded_image_count,
+                "expected_image_count": len(image_paths),
                 "url": PUBLISH_HOME,
                 "draft_hint": DRAFT_HINT,
                 "browser_profile": profile_rel,

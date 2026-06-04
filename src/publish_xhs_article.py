@@ -16,6 +16,7 @@ from paths import ROOT
 from xhs_article_publisher import (
     DRAFT_HINT,
     XhsArticlePublishError,
+    clear_forum_draft,
     cookie_path,
     open_creator_browser,
     parse_forum_pack,
@@ -106,6 +107,35 @@ def publish_pack(
     )
 
 
+def clear_pack(
+    pack: Path,
+    *,
+    headless: bool,
+    account: str,
+    script: dict | None = None,
+    interactive_login: bool = True,
+) -> dict:
+    def attempt() -> dict:
+        return asyncio.run(
+            clear_forum_draft(
+                pack,
+                headless=headless,
+                account=account,
+                script=script,
+            )
+        )
+
+    if not interactive_login:
+        return attempt()
+    return run_with_relogin(
+        attempt,
+        platform="xiaohongshu",
+        account=account,
+        label="小红书图文",
+        interactive_login=True,
+    )
+
+
 def publish_forum_dir(
     forum_dir: Path | str,
     *,
@@ -163,6 +193,7 @@ def main() -> int:
         action="store_true",
         help="草稿箱无同标题时新建；已有则点「编辑」覆盖更新（不另起一篇）",
     )
+    parser.add_argument("--clear-draft", action="store_true", help="删除同标题图文草稿后退出")
     parser.add_argument("--account", default=os.environ.get("SAU_XHS_ACCOUNT", "main"))
     args = parser.parse_args()
 
@@ -181,6 +212,14 @@ def main() -> int:
         return 1
 
     try:
+        if args.clear_draft:
+            result = clear_pack(
+                pack,
+                headless=not args.headed,
+                account=args.account,
+            )
+            print(f"已清理小红书同标题草稿 {result.get('deleted', 0)} 篇：{result['title']}")
+            return 0
         if args.dry_run:
             if not _cookie_ok(args.account):
                 raise XhsArticlePublishError("未登录")

@@ -464,7 +464,7 @@ def publish_xhs_article(
     def _do() -> str:
         from publish_xhs_article import publish_forum_dir
 
-        title = publish_forum_dir(path, dry_run=dry_run, script=script)
+        title = publish_forum_dir(path, dry_run=dry_run, script=script, force=True)
         if title:
             log(f"  [小红书图文] 草稿: {title}")
         return title

@@ -13,7 +13,12 @@ from pathlib import Path
 
 from forum_auth import run_with_relogin
 from paths import ROOT
-from zhihu_publisher import ZhihuPublishError, parse_forum_pack, publish_forum_pack
+from zhihu_publisher import (
+    ZhihuPublishError,
+    clear_forum_draft,
+    parse_forum_pack,
+    publish_forum_pack,
+)
 
 
 def load_env() -> None:
@@ -96,6 +101,29 @@ def publish_pack(
     )
 
 
+def clear_pack(
+    pack: Path,
+    *,
+    headless: bool,
+    account: str,
+    interactive_login: bool = True,
+) -> dict:
+    def attempt() -> dict:
+        return asyncio.run(
+            clear_forum_draft(pack, headless=headless, account=account)
+        )
+
+    if not interactive_login:
+        return attempt()
+    return run_with_relogin(
+        attempt,
+        platform="zhihu",
+        account=account,
+        label="知乎专栏",
+        interactive_login=True,
+    )
+
+
 def publish_forum_dir(
     forum_dir: Path | str,
     *,
@@ -125,6 +153,7 @@ def main() -> int:
     parser.add_argument("pack_dir", nargs="?", help="论坛包目录")
     parser.add_argument("--headed", action="store_true", help="有头浏览器")
     parser.add_argument("--dry-run", action="store_true", help="仅校验登录与素材")
+    parser.add_argument("--clear-draft", action="store_true", help="删除同标题草稿后退出")
     parser.add_argument("--account", default=os.environ.get("ZHIHU_ACCOUNT", "main"))
     args = parser.parse_args()
 
@@ -135,6 +164,14 @@ def main() -> int:
         return 1
 
     try:
+        if args.clear_draft:
+            result = clear_pack(
+                pack,
+                headless=not args.headed,
+                account=args.account,
+            )
+            print(f"已清理知乎同标题草稿 {result.get('deleted', 0)} 篇：{result['title']}")
+            return 0
         if args.dry_run:
             result = _dry_run_check(pack, account=args.account)
         else:

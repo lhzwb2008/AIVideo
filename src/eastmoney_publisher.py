@@ -357,6 +357,7 @@ async def _fill_body_sections(
     pack_dir: Path,
     disclaimer: str = "",
     insert_image=None,
+    cover_image: str | None = None,
 ) -> None:
     await fill_eastmoney_body_sections(
         page,
@@ -364,6 +365,7 @@ async def _fill_body_sections(
         pack_dir=pack_dir,
         disclaimer=disclaimer,
         insert_image=insert_image or _insert_body_image,
+        cover_image=cover_image,
     )
 
 
@@ -717,6 +719,7 @@ async def publish_forum_pack(
                 data["sections"],
                 pack_dir=pack_dir,
                 disclaimer=data.get("disclaimer") or "",
+                cover_image=data.get("cover"),
             )
             await _upload_cover(page, data["cover"])
             await ensure_expected_account(page, account=account)
@@ -738,7 +741,10 @@ async def publish_forum_pack(
                 "original_title": data["title"],
                 "pack_dir": data["pack_dir"],
                 "cover": data["cover"],
-                "images": [s.get("image") for s in data["sections"] if s.get("image")],
+                "images": [
+                    data.get("cover"),
+                    *[s.get("image") for s in data["sections"] if s.get("image")],
+                ],
                 "draft_only": draft_only,
                 "url": page.url,
             }

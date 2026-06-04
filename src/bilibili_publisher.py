@@ -192,6 +192,15 @@ def forum_pack_to_html(
     """将论坛包转为专栏 HTML；配图上传后嵌入 <img>。"""
     parts: list[str] = []
     image_urls: list[str] = []
+    uploaded_by_path: dict[str, str] = {}
+
+    cover = data.get("cover")
+    if cover and upload_images:
+        cover_path = Path(cover)
+        cover_url = upload_article_image(cover_path, cred)
+        uploaded_by_path[str(cover_path.resolve())] = cover_url
+        image_urls.append(cover_url)
+        parts.append(_bili_img_html(cover_url))
 
     for sec in data.get("sections") or []:
         headline = (sec.get("headline") or "").strip()
@@ -203,8 +212,13 @@ def forum_pack_to_html(
 
         img = sec.get("image")
         if img and upload_images:
-            url = upload_article_image(Path(img), cred)
-            image_urls.append(url)
+            path = Path(img)
+            key = str(path.resolve())
+            url = uploaded_by_path.get(key)
+            if not url:
+                url = upload_article_image(path, cred)
+                uploaded_by_path[key] = url
+                image_urls.append(url)
             parts.append(_bili_img_html(url))
 
         caption = (sec.get("caption") or "").strip()
@@ -230,6 +244,34 @@ def forum_pack_to_opus_content(
     """创作中心新版：content 为 JSON 字符串（type=3）。"""
     ops: list[dict] = []
     image_urls: list[str] = []
+    uploaded_by_path: dict[str, str] = {}
+
+    def append_image(path: Path, url: str) -> None:
+        w, h, size = _image_size(path)
+        ops.append(
+            {
+                "attributes": {"class": "normal-img"},
+                "insert": {
+                    "native-image": {
+                        "alt": "read-normal-img",
+                        "url": url,
+                        "width": w,
+                        "height": h,
+                        "size": size,
+                        "status": "loaded",
+                    }
+                },
+            }
+        )
+        ops.append({"insert": "\n"})
+
+    cover = data.get("cover")
+    if cover and upload_images:
+        cover_path = Path(cover)
+        cover_url = upload_article_image(cover_path, cred)
+        uploaded_by_path[str(cover_path.resolve())] = cover_url
+        image_urls.append(cover_url)
+        append_image(cover_path, cover_url)
 
     for sec in data.get("sections") or []:
         headline = (sec.get("headline") or "").strip()
@@ -245,25 +287,13 @@ def forum_pack_to_opus_content(
         img = sec.get("image")
         if img and upload_images:
             path = Path(img)
-            url = upload_article_image(path, cred)
-            image_urls.append(url)
-            w, h, size = _image_size(path)
-            ops.append(
-                {
-                    "attributes": {"class": "normal-img"},
-                    "insert": {
-                        "native-image": {
-                            "alt": "read-normal-img",
-                            "url": url,
-                            "width": w,
-                            "height": h,
-                            "size": size,
-                            "status": "loaded",
-                        }
-                    },
-                }
-            )
-            ops.append({"insert": "\n"})
+            key = str(path.resolve())
+            url = uploaded_by_path.get(key)
+            if not url:
+                url = upload_article_image(path, cred)
+                uploaded_by_path[key] = url
+                image_urls.append(url)
+            append_image(path, url)
 
         caption = (sec.get("caption") or "").strip()
         if caption:

@@ -265,6 +265,7 @@ async def publish_forum_pack(
                 data["sections"],
                 disclaimer=data.get("disclaimer") or "",
                 insert_image=_insert_body_image,
+                cover_image=data.get("cover"),
             )
 
             await asyncio.sleep(2)
@@ -281,7 +282,10 @@ async def publish_forum_pack(
                 "title": data["title"],
                 "pack_dir": data["pack_dir"],
                 "cover": data["cover"],
-                "images": [s.get("image") for s in data["sections"] if s.get("image")],
+                "images": [
+                    data.get("cover"),
+                    *[s.get("image") for s in data["sections"] if s.get("image")],
+                ],
                 "draft_only": draft_only,
                 "url": page.url,
             }

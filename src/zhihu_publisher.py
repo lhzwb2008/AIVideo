@@ -228,6 +228,27 @@ async def _insert_body_image(page, image_path: str) -> None:
     raise ZhihuPublishError(f"正文图片插入失败: {image_path}")
 
 
+async def _editor_image_count(page) -> int:
+    from forum_editor_fill import ZHIHU_EDITOR_LOCATOR
+
+    return await page.locator(
+        f"{ZHIHU_EDITOR_LOCATOR} img, .DraftEditor-root img"
+    ).count()
+
+
+async def _wait_editor_image_count(page, expected: int) -> int:
+    last_count = 0
+    for _ in range(60):
+        last_count = await _editor_image_count(page)
+        if last_count >= expected:
+            await asyncio.sleep(1.0)
+            return await _editor_image_count(page)
+        await asyncio.sleep(1)
+    raise ZhihuPublishError(
+        f"知乎正文图片数量不足：期望 {expected} 张，编辑器仅检测到 {last_count} 张"
+    )
+
+
 async def _save_draft(page) -> None:
     for label in ("保存草稿", "存草稿", "暂存草稿"):
         btn = page.get_by_role("button", name=label).first
@@ -244,6 +265,82 @@ async def _save_draft(page) -> None:
     await asyncio.sleep(2)
 
 
+async def _delete_draft_by_title(page, title: str) -> int:
+    await page.goto(DRAFTS_URL, wait_until="domcontentloaded", timeout=90_000)
+    await asyncio.sleep(2)
+    if "login" in page.url.lower():
+        raise ZhihuPublishError("未登录知乎草稿箱，无法清除草稿")
+    snippet = title.strip()[:24]
+    if not snippet:
+        return 0
+
+    deleted = 0
+    for _ in range(8):
+        action = await page.evaluate(
+            """(snippet) => {
+              const rows = [...document.querySelectorAll('div, li, article')];
+              for (const el of rows) {
+                const t = (el.innerText || '');
+                if (t.length > 900 || !t.includes(snippet)) continue;
+                el.scrollIntoView({ block: 'center', inline: 'nearest' });
+                const controls = [...el.querySelectorAll('button, a, span, div')];
+                const del = controls.find((b) => /删除/.test((b.innerText || '').trim()));
+                if (del) { del.click(); return 'delete'; }
+                const more = controls.find((b) => /更多|\\.\\.\\.|···/.test((b.innerText || '').trim()));
+                if (more) { more.click(); return 'more'; }
+                return 'blocked';
+              }
+              return 'done';
+            }""",
+            snippet,
+        )
+        if action == "done":
+            break
+        if action == "blocked":
+            break
+        await asyncio.sleep(0.6)
+        for label in ("删除", "确定", "确认"):
+            btn = page.get_by_role("button", name=label).first
+            if await btn.count():
+                await btn.click(timeout=10_000)
+                deleted += 1
+                await asyncio.sleep(1.5)
+                break
+    return deleted
+
+
+async def clear_forum_draft(
+    pack_dir: Path,
+    *,
+    headless: bool | None = None,
+    account: str | None = None,
+) -> dict:
+    _ensure_patchright()
+    from patchright.async_api import async_playwright
+
+    if headless is None:
+        headless = _headless()
+
+    data = parse_forum_pack(pack_dir)
+    cookie_path(account=account)
+    async with async_playwright() as p:
+        context, cookie = await _launch_context(
+            p, headless=headless, account=account
+        )
+        try:
+            page = context.pages[0] if context.pages else await context.new_page()
+            deleted = await _delete_draft_by_title(page, data["title"])
+            await context.storage_state(path=str(cookie))
+            return {
+                "title": data["title"],
+                "pack_dir": data["pack_dir"],
+                "deleted": deleted,
+                "url": DRAFTS_URL,
+            }
+        finally:
+            await context.close()
+
+
 async def publish_forum_pack(
     pack_dir: Path,
     *,
@@ -258,6 +355,13 @@ async def publish_forum_pack(
         headless = _headless()
 
     data = parse_forum_pack(pack_dir)
+    expected_image_paths = []
+    if data.get("cover"):
+        expected_image_paths.append(str(Path(data["cover"]).resolve()))
+    for sec in data["sections"]:
+        if sec.get("image"):
+            expected_image_paths.append(str(Path(sec["image"]).resolve()))
+    expected_images = len(dict.fromkeys(expected_image_paths))
     cookie = cookie_path(account=account)
 
     async with async_playwright() as p:
@@ -277,6 +381,11 @@ async def publish_forum_pack(
                 insert_image=_insert_body_image,
                 cover_image=data.get("cover"),
             )
+            actual_images = await _wait_editor_image_count(page, expected_images)
+            if actual_images < expected_images:
+                raise ZhihuPublishError(
+                    f"知乎正文图片数量不足：期望 {expected_images} 张，实际 {actual_images} 张"
+                )
             await asyncio.sleep(1)
             await _save_draft(page)
 
@@ -291,7 +400,9 @@ async def publish_forum_pack(
                 "published": False,
                 "editor_mode": mode,
                 "url": draft_url,
-                "images": [s.get("image") for s in data["sections"] if s.get("image")],
+                "images": expected_image_paths,
+                "image_count": actual_images,
+                "expected_image_count": expected_images,
             }
         finally:
             await context.close()

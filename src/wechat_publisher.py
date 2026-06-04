@@ -655,6 +655,19 @@ def _body_blocks_to_html(body: str) -> str:
 
 def forum_pack_to_html(data: dict, *, image_urls: dict[str, str]) -> str:
     parts: list[str] = []
+    inserted_images: set[str] = set()
+    cover = data.get("cover")
+    if cover:
+        cover_key = str(cover)
+        url = image_urls.get(cover_key)
+        if url:
+            parts.append(
+                '<p style="margin:16px 0;text-align:center;">'
+                f'<img src="{escape(url)}" style="max-width:100%;height:auto;" />'
+                "</p>"
+            )
+            inserted_images.add(cover_key)
+
     summary = _summary_from_data(data)
     if summary:
         parts.append(_wechat_paragraph(f"【摘要】{summary}"))
@@ -667,13 +680,17 @@ def forum_pack_to_html(data: dict, *, image_urls: dict[str, str]) -> str:
             parts.append(_body_blocks_to_html(body))
         img = sec.get("image")
         if img:
-            url = image_urls.get(str(img))
+            img_key = str(img)
+            if img_key in inserted_images:
+                continue
+            url = image_urls.get(img_key)
             if url:
                 parts.append(
                     '<p style="margin:16px 0;text-align:center;">'
                     f'<img src="{escape(url)}" style="max-width:100%;height:auto;" />'
                     "</p>"
                 )
+                inserted_images.add(img_key)
         caption = (sec.get("caption") or "").strip()
         if caption:
             parts.append(_wechat_caption(caption))
@@ -934,6 +951,9 @@ def publish_forum_pack(
 
     token = get_access_token()
     image_urls: dict[str, str] = {}
+    cover = data.get("cover")
+    if cover:
+        image_urls[str(cover)] = upload_article_image(token, Path(cover))
     for sec in data.get("sections") or []:
         img = sec.get("image")
         if img and str(img) not in image_urls:

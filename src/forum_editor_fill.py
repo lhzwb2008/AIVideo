@@ -234,6 +234,7 @@ async def fill_eastmoney_body_sections(
     pack_dir: Path,
     disclaimer: str = "",
     insert_image,
+    cover_image: str | None = None,
 ) -> None:
     await page.locator(".ProseMirror.cfh_editor_area, .ProseMirror").first.wait_for(
         state="attached", timeout=30_000
@@ -241,6 +242,14 @@ async def fill_eastmoney_body_sections(
     await clear_editor(page)
 
     wrote = False
+    inserted_images: set[str] = set()
+    if cover_image:
+        cover_key = str(Path(cover_image).resolve())
+        await focus_editor_end(page)
+        await insert_image(page, prepare_image_upload(cover_image))
+        inserted_images.add(cover_key)
+        wrote = True
+
     for idx, sec in enumerate(sections):
         headline = tweak_eastmoney_text((sec.get("headline") or "").strip(), pack_dir, idx * 3)
         body = tweak_eastmoney_text((sec.get("body") or "").strip(), pack_dir, idx * 3 + 1)
@@ -256,8 +265,12 @@ async def fill_eastmoney_body_sections(
 
         img = sec.get("image")
         if img:
+            img_key = str(Path(img).resolve())
+            if img_key in inserted_images:
+                continue
             await move_cursor_to_end(page)
             await insert_image(page, prepare_image_upload(img))
+            inserted_images.add(img_key)
             wrote = True
 
         caption = (sec.get("caption") or "").strip()
@@ -370,12 +383,10 @@ async def fill_zhihu_body_sections(
 
     wrote = False
     skip_inline_image: str | None = None
-    # 专栏封面取正文首图（= post.md 配图1），须置顶；勿等第一节写完再插图
-    lead = None
-    if sections:
+    # 专栏封面取正文首图；优先使用 cover.jpg，保证平台默认封面一致。
+    lead = (cover_image or "").strip() or None
+    if not lead and sections:
         lead = (sections[0].get("image") or "").strip() or None
-    if not lead:
-        lead = (cover_image or "").strip() or None
     if lead:
         await _zhihu_focus_editor_end(page)
         await insert_image(page, prepare_image_upload(lead))
@@ -433,6 +444,7 @@ async def fill_xueqiu_body_sections(
     *,
     disclaimer: str = "",
     insert_image,
+    cover_image: str | None = None,
 ) -> None:
     """雪球：不用东财段首空两格；小节标题与表格分行粘贴。"""
     await page.locator(".ProseMirror.cfh_editor_area, .ProseMirror").first.wait_for(
@@ -441,6 +453,14 @@ async def fill_xueqiu_body_sections(
     await clear_editor(page)
 
     wrote = False
+    inserted_images: set[str] = set()
+    if cover_image:
+        cover_key = str(Path(cover_image).resolve())
+        await move_cursor_to_end(page)
+        await insert_image(page, prepare_image_upload(cover_image))
+        inserted_images.add(cover_key)
+        wrote = True
+
     for sec in sections:
         headline = format_headline_plain((sec.get("headline") or "").strip())
 
@@ -462,8 +482,12 @@ async def fill_xueqiu_body_sections(
 
         img = sec.get("image")
         if img:
+            img_key = str(Path(img).resolve())
+            if img_key in inserted_images:
+                continue
             await move_cursor_to_end(page)
             await insert_image(page, prepare_image_upload(img))
+            inserted_images.add(img_key)
             wrote = True
 
         caption = (sec.get("caption") or "").strip()
@@ -487,6 +511,7 @@ async def fill_body_sections(
     *,
     disclaimer: str = "",
     insert_image,
+    cover_image: str | None = None,
 ) -> None:
     await page.locator(".ProseMirror.cfh_editor_area, .ProseMirror").first.wait_for(
         state="attached", timeout=30_000
@@ -494,6 +519,14 @@ async def fill_body_sections(
     await clear_editor(page)
 
     wrote = False
+    inserted_images: set[str] = set()
+    if cover_image:
+        cover_key = str(Path(cover_image).resolve())
+        await move_cursor_to_end(page)
+        await insert_image(page, prepare_image_upload(cover_image))
+        inserted_images.add(cover_key)
+        wrote = True
+
     for sec in sections:
         headline = format_headline_plain((sec.get("headline") or "").strip())
         body = body_to_plaintext((sec.get("body") or "").strip())
@@ -512,8 +545,12 @@ async def fill_body_sections(
 
         img = sec.get("image")
         if img:
+            img_key = str(Path(img).resolve())
+            if img_key in inserted_images:
+                continue
             await move_cursor_to_end(page)
             await insert_image(page, prepare_image_upload(img))
+            inserted_images.add(img_key)
             wrote = True
 
         caption = (sec.get("caption") or "").strip()
