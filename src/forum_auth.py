@@ -32,7 +32,9 @@ LOGIN_MARKERS = (
 def is_login_error(exc: BaseException) -> bool:
     text = str(exc).lower()
     # Playwright 选器超时多为页面改版，不应反复弹登录
-    if "locator.wait_for" in text or "timeout" in text and "exceeded" in text:
+    if "locator.wait_for" in text or ("timeout" in text and "exceeded" in text):
+        return False
+    if "can't be used in 'await' expression" in text or "TypeError" in text:
         return False
     if "人机验证" in text or "unhuman" in text or "captcha" in text:
         return True

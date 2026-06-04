@@ -14,8 +14,10 @@ from pathlib import Path
 from forum_auth import run_with_relogin
 from paths import ROOT
 from xhs_article_publisher import (
+    DRAFT_HINT,
     XhsArticlePublishError,
     cookie_path,
+    open_creator_browser,
     parse_forum_pack,
     publish_forum_pack,
 )
@@ -80,6 +82,7 @@ def publish_pack(
     account: str,
     script: dict | None = None,
     interactive_login: bool = True,
+    force: bool = False,
 ) -> dict:
     def attempt() -> dict:
         return asyncio.run(
@@ -88,6 +91,7 @@ def publish_pack(
                 headless=headless,
                 account=account,
                 script=script,
+                force=force,
             )
         )
 
@@ -108,6 +112,7 @@ def publish_forum_dir(
     dry_run: bool = False,
     account: str | None = None,
     script: dict | None = None,
+    force: bool = False,
 ) -> str:
     load_env()
     account = account or os.environ.get("SAU_XHS_ACCOUNT", "main")
@@ -130,8 +135,11 @@ def publish_forum_dir(
         account=account,
         script=script,
         interactive_login=True,
+        force=force,
     )
     _write_log(result)
+    if result.get("skipped"):
+        print(f"  ↳ {result.get('message', '已跳过')}", flush=True)
     return str(result.get("title") or "")
 
 
@@ -139,10 +147,32 @@ def main() -> int:
     load_env()
     parser = argparse.ArgumentParser(description="小红书图文笔记 · 保存草稿")
     parser.add_argument("pack_dir", nargs="?", help="论坛包目录")
-    parser.add_argument("--headed", action="store_true")
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="有头浏览器（填表失败时建议开启）",
+    )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--open-creator",
+        action="store_true",
+        help="用与脚本相同的浏览器配置打开创作中心（查看本地草稿）",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="草稿箱无同标题时新建；已有则点「编辑」覆盖更新（不另起一篇）",
+    )
     parser.add_argument("--account", default=os.environ.get("SAU_XHS_ACCOUNT", "main"))
     args = parser.parse_args()
+
+    if args.open_creator:
+        try:
+            asyncio.run(open_creator_browser(account=args.account))
+        except XhsArticlePublishError as exc:
+            print(f"打开失败: {exc}", file=sys.stderr)
+            return 1
+        return 0
 
     try:
         pack = resolve_pack(args.pack_dir)
@@ -161,10 +191,21 @@ def main() -> int:
             pack,
             headless=not args.headed,
             account=args.account,
+            force=args.force,
         )
         log_path = _write_log(result)
+        if result.get("skipped"):
+            print(result.get("message") or "已跳过：草稿已存在")
+            print(f"标题: {result['title']}")
+            print(result.get("draft_hint") or DRAFT_HINT)
+            print(f"记录: {log_path}")
+            return 0
         print(f"草稿已保存：{result['title']}")
-        print(f"草稿箱: {result.get('url')}")
+        count = result.get("image_draft_count")
+        if count is not None:
+            print(f"草稿箱图文笔记数: {count}")
+        print(result.get("draft_hint") or DRAFT_HINT)
+        print(f"浏览器配置: {result.get('browser_profile', '')}")
         print(f"记录: {log_path}")
         return 0
     except XhsArticlePublishError as exc:

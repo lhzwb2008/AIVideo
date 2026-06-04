@@ -8,9 +8,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 [[ -f .env ]] && set -a && source .env && set +a
+# 代理仅由 Python 读取 YOUTUBE_HTTP_PROXY，不 export 到环境，避免误伤其它请求
 if [[ -n "${YOUTUBE_HTTP_PROXY:-}" ]]; then
-  export http_proxy="$YOUTUBE_HTTP_PROXY" https_proxy="$YOUTUBE_HTTP_PROXY"
-  [[ -n "${YOUTUBE_ALL_PROXY:-}" ]] && export all_proxy="$YOUTUBE_ALL_PROXY"
+  echo "YouTube: 使用 .env 中的 YOUTUBE_HTTP_PROXY"
 fi
 
 PY="$ROOT/.venv/bin/python3"

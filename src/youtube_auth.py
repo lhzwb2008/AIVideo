@@ -74,6 +74,49 @@ def token_path() -> Path:
     return credentials_dir() / f"{account_name()}_token.json"
 
 
+def http_proxy_url() -> str:
+    """仅当 .env 显式设置 YOUTUBE_HTTP_PROXY 时使用代理；不读系统 https_proxy。"""
+    return _env("YOUTUBE_HTTP_PROXY")
+
+
+def build_requests_session():
+    """直连 Google API；trust_env=False 避免误用终端里的 http_proxy。"""
+    import requests
+
+    sess = requests.Session()
+    sess.trust_env = False
+    proxy = http_proxy_url()
+    if proxy:
+        sess.proxies.update({"http": proxy, "https": proxy})
+    sess.request = _wrap_request_with_timeout(sess.request)  # type: ignore[method-assign]
+    return sess
+
+
+def auth_request():
+    from google.auth.transport.requests import Request
+
+    return Request(session=build_requests_session())
+
+
+def refresh_credentials(creds) -> None:
+    try:
+        creds.refresh(auth_request())
+    except OSError as exc:
+        raise YouTubeAuthError(
+            "刷新 token 失败，无法连接 oauth2.googleapis.com。"
+            " 请检查网络后重试，或运行 ./youtube-login.sh --force"
+        ) from exc
+    except Exception as exc:
+        exc_name = type(exc).__name__
+        if "SSL" in exc_name or "Transport" in exc_name:
+            raise YouTubeAuthError(
+                "刷新 token 时 SSL/网络异常（oauth2.googleapis.com）。"
+                " 请确认本机可直连 Google；勿在终端设置 http_proxy。"
+                " 仅在国内无法访问时再于 .env 设置 YOUTUBE_HTTP_PROXY。"
+            ) from exc
+        raise
+
+
 def _load_credentials():
     try:
         from google.auth.transport.requests import Request
@@ -94,17 +137,7 @@ def _load_credentials():
         return creds
 
     if creds and creds.expired and creds.refresh_token:
-        try:
-            import requests
-
-            req = Request(session=requests.Session())
-            req.session.request = _wrap_request_with_timeout(req.session.request)  # type: ignore[method-assign]
-            creds.refresh(req)
-        except OSError as exc:
-            raise YouTubeAuthError(
-                "刷新 token 失败，本机可能无法访问 Google API。"
-                " 请开代理后重试，或重新运行 ./youtube-login.sh --force"
-            ) from exc
+        refresh_credentials(creds)
         _save_credentials(creds)
         return creds
 
@@ -118,19 +151,11 @@ def _load_credentials():
         )
 
     flow = InstalledAppFlow.from_client_secrets_file(str(secrets), SCOPES)
-    # 走 requests 默认超时，避免国内网络卡住时无限等待
-    try:
-        import requests
-
-        sess = requests.Session()
-        sess.request = _wrap_request_with_timeout(sess.request)  # type: ignore[method-assign]
-        flow.oauth2session.session = sess
-    except Exception:
-        pass
+    flow.oauth2session.session = build_requests_session()
     port_raw = _env("YOUTUBE_OAUTH_PORT", "0")
     port = int(port_raw) if port_raw.isdigit() else 0
     print(
-        "正在打开浏览器授权…（若浏览器已成功但此处超时，请开代理后重跑 ./youtube-login.sh --force）",
+        "正在打开浏览器授权…（若超时请检查网络后重跑 ./youtube-login.sh --force）",
         flush=True,
     )
     creds = flow.run_local_server(port=port, prompt="consent", open_browser=True)
@@ -157,8 +182,7 @@ def run_check() -> int:
     if not path.is_file():
         raise YouTubeAuthError(
             f"未找到 token: {path}\n"
-            "浏览器若已显示授权成功，但终端报错/超时，说明本机连不上 oauth2.googleapis.com。\n"
-            "请开代理后重跑: ./youtube-login.sh --force"
+            "请先运行: ./youtube-login.sh"
         )
     creds = _load_credentials()
     if not creds.valid:
@@ -174,13 +198,7 @@ def _build_http(creds):
     from google_auth_httplib2 import AuthorizedHttp
 
     timeout = _http_timeout()
-    proxy_url = (
-        _env("YOUTUBE_HTTP_PROXY")
-        or _env("https_proxy")
-        or _env("HTTPS_PROXY")
-        or _env("http_proxy")
-        or _env("HTTP_PROXY")
-    )
+    proxy_url = http_proxy_url()
     if proxy_url:
         from urllib.parse import urlparse
 

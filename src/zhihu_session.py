@@ -10,12 +10,12 @@ from pathlib import Path
 
 from paths import ROOT
 from zhihu_publisher import (
-    EDITOR_URL,
+    WRITE_URL,
     ZhihuPublishError,
     _chrome_path,
     _editor_ready,
     _ensure_patchright,
-    _open_editor,
+    _open_new_write,
     cookie_path,
     profile_dir,
     sau_home,
@@ -51,14 +51,14 @@ async def login_interactive(*, account: str | None = None, timeout_s: float = 30
         )
         page = context.pages[0] if context.pages else await context.new_page()
         await page.goto(
-            "https://www.zhihu.com/signin?next=" + EDITOR_URL,
+            "https://www.zhihu.com/signin?next=" + WRITE_URL,
             wait_until="domcontentloaded",
             timeout=90_000,
         )
         print("请在浏览器中完成登录，进入专栏写作页后自动保存…", flush=True)
         for _ in range(int(timeout_s)):
             try:
-                await _open_editor(page)
+                await _open_new_write(page)
             except Exception:
                 pass
             if await _editor_ready(page):
@@ -98,7 +98,7 @@ async def verify_editor(*, account: str | None = None) -> bool:
         )
         page = await context.new_page()
         try:
-            await _open_editor(page)
+            await _open_new_write(page)
             return await _editor_ready(page)
         except Exception:
             return False

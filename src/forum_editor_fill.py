@@ -277,6 +277,156 @@ async def fill_eastmoney_body_sections(
     await asyncio.sleep(0.5)
 
 
+ZHIHU_EDITOR_LOCATOR = (
+    ".public-DraftEditor-content[contenteditable='true'], "
+    ".DraftEditor-editorContainer [contenteditable='true'], "
+    ".DraftEditor-root [contenteditable='true'], "
+    ".RichText.DraftEditor-root [contenteditable='true'], "
+    ".ProseMirror"
+)
+
+
+async def _zhihu_move_cursor_to_end(page) -> None:
+    await page.evaluate(
+        """
+        () => {
+          const root = document.querySelector('.public-DraftEditor-content[contenteditable="true"]')
+            || document.querySelector('.DraftEditor-root [contenteditable="true"]')
+            || document.querySelector('.ProseMirror');
+          if (!root) return;
+          root.focus();
+          const range = document.createRange();
+          range.selectNodeContents(root);
+          range.collapse(false);
+          const sel = window.getSelection();
+          if (!sel) return;
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+        """
+    )
+
+
+async def _zhihu_focus_editor_end(page) -> None:
+    editor = page.locator(ZHIHU_EDITOR_LOCATOR).first
+    await editor.wait_for(state="visible", timeout=60_000)
+    await editor.scroll_into_view_if_needed()
+    await editor.click(timeout=15_000, force=True)
+    await _zhihu_move_cursor_to_end(page)
+
+
+async def _zhihu_clear_editor(page) -> None:
+    ok = await page.evaluate(
+        """
+        () => {
+          const root = document.querySelector('.public-DraftEditor-content[contenteditable="true"]')
+            || document.querySelector('.DraftEditor-root [contenteditable="true"]')
+            || document.querySelector('.ProseMirror');
+          if (!root) return false;
+          root.focus();
+          return true;
+        }
+        """
+    )
+    if not ok:
+        raise RuntimeError("未找到知乎正文编辑器（Draft.js）")
+    await page.keyboard.press("Control+A")
+    await page.keyboard.press("Backspace")
+    await asyncio.sleep(0.2)
+    await _zhihu_move_cursor_to_end(page)
+
+
+async def _zhihu_paste_paragraphs(page, paragraphs: list[str]) -> None:
+    for para in paragraphs:
+        text = para.strip()
+        if not text:
+            continue
+        await _zhihu_focus_editor_end(page)
+        await grant_clipboard(page)
+        await page.evaluate(
+            "async (t) => { await navigator.clipboard.writeText(t); }",
+            text,
+        )
+        await _zhihu_move_cursor_to_end(page)
+        await page.keyboard.press(_PASTE_KEY)
+        await asyncio.sleep(0.35)
+        await page.keyboard.press("Enter")
+        await asyncio.sleep(0.15)
+
+
+async def fill_zhihu_body_sections(
+    page,
+    sections: list[dict],
+    *,
+    disclaimer: str = "",
+    insert_image,
+    cover_image: str | None = None,
+) -> None:
+    """知乎专栏：Draft.js 编辑器，非雪球/东财的 ProseMirror。"""
+    await page.locator(ZHIHU_EDITOR_LOCATOR).first.wait_for(
+        state="visible", timeout=60_000
+    )
+    await _zhihu_clear_editor(page)
+
+    wrote = False
+    skip_inline_image: str | None = None
+    # 专栏封面取正文首图（= post.md 配图1），须置顶；勿等第一节写完再插图
+    lead = None
+    if sections:
+        lead = (sections[0].get("image") or "").strip() or None
+    if not lead:
+        lead = (cover_image or "").strip() or None
+    if lead:
+        await _zhihu_focus_editor_end(page)
+        await insert_image(page, prepare_image_upload(lead))
+        await page.keyboard.press("Enter")
+        await page.keyboard.press("Enter")
+        wrote = True
+        skip_inline_image = str(Path(lead).resolve())
+
+    for sec in sections:
+        headline = format_headline_plain((sec.get("headline") or "").strip())
+        if headline:
+            await _zhihu_focus_editor_end(page)
+            if wrote:
+                await page.keyboard.press("Enter")
+            await _zhihu_paste_paragraphs(page, [headline])
+            wrote = True
+
+        body = (sec.get("body") or "").strip()
+        if body:
+            await _zhihu_focus_editor_end(page)
+            paras = body_to_opus_lines(body)
+            if paras:
+                await _zhihu_paste_paragraphs(page, paras)
+            wrote = True
+
+        img = sec.get("image")
+        if img:
+            img_key = str(Path(img).resolve())
+            if skip_inline_image and img_key == skip_inline_image:
+                continue
+            await _zhihu_focus_editor_end(page)
+            await page.keyboard.press("Enter")
+            await insert_image(page, prepare_image_upload(img))
+            await page.keyboard.press("Enter")
+            wrote = True
+
+        caption = (sec.get("caption") or "").strip()
+        if caption:
+            await _zhihu_focus_editor_end(page)
+            await _zhihu_paste_paragraphs(page, [caption])
+            wrote = True
+
+    if disclaimer.strip():
+        await _zhihu_focus_editor_end(page)
+        if wrote:
+            await page.keyboard.press("Enter")
+        await _zhihu_paste_paragraphs(page, [disclaimer.strip()])
+
+    await asyncio.sleep(0.5)
+
+
 async def fill_xueqiu_body_sections(
     page,
     sections: list[dict],

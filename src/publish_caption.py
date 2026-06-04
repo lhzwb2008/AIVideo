@@ -35,8 +35,13 @@ BILIBILI_VIDEO_UPLOAD_URL = (
     "https://member.bilibili.com/platform/upload/video/frame"
 )
 ZHIHU_DRAFTS_URL = "https://zhuanlan.zhihu.com/creator/manage/drafts"
+# 图文草稿在发布页「草稿箱」（浏览器本地），不是笔记管理里的云端草稿
 XHS_DRAFTS_URL = (
-    "https://creator.xiaohongshu.com/creator/note-manage?tab=draft"
+    "https://creator.xiaohongshu.com/publish/publish?target=image"
+)
+XHS_OPEN_CREATOR_CMD = "./xhs-open-creator.sh"
+XHS_MANUAL_PUBLISH_TIP = (
+    "草稿箱 → 图文笔记 → 编辑 → 左侧滚到底 → 点红色「发布」"
 )
 WECHAT_DRAFTS_URL = "https://mp.weixin.qq.com/cgi-bin/appmsg?begin=0&count=10&type=77&action=list_card"
 
@@ -202,10 +207,13 @@ def _print_todo_checklist(
     for name, url, tip in VIDEO_MANUAL_PLATFORMS:
         print(f"  [ ] {name}: {url}", flush=True)
         print(f"        {tip}", flush=True)
+    if bilibili_enabled() and bilibili_skip_video():
+        print(f"  [ ] B站视频: {BILIBILI_VIDEO_UPLOAD_URL}", flush=True)
+        print("        .env 已设 BILIBILI_SKIP_VIDEO=1，请手动上传成片", flush=True)
 
     # ② 完全自动 · API / Playwright 一键提交（TikTok 收件箱归 ③）
     auto_on = (
-        bilibili_enabled()
+        (bilibili_enabled() and not bilibili_skip_video())
         or eastmoney_enabled()
         or xueqiu_enabled()
         or youtube_enabled()
@@ -214,7 +222,7 @@ def _print_todo_checklist(
         print("\n— ② 完全自动 · 无需再操作 —", flush=True)
         if skip_auto_note:
             print("  [·] 本次未执行（--no-publish / 预演）", flush=True)
-        if bilibili_enabled():
+        if bilibili_enabled() and not bilibili_skip_video():
             if bilibili_title:
                 print(f"  [✓] B站视频: {bilibili_title}", flush=True)
             elif not skip_auto_note:
@@ -273,16 +281,20 @@ def _print_todo_checklist(
                     flush=True,
                 )
         if xhs_article_enabled():
-            url = (
-                _read_last_log_field("last_xhs_article_publish.json", "url")
-                or XHS_DRAFTS_URL
-            )
             if xhs_article_title:
-                print(f"  [→] 小红书图文: {xhs_article_title} — {url}", flush=True)
+                print(
+                    f"  [→] 小红书图文: {xhs_article_title} — {XHS_OPEN_CREATOR_CMD}",
+                    flush=True,
+                )
+                print(f"        发布页: {XHS_DRAFTS_URL}", flush=True)
+                print(f"        {XHS_MANUAL_PUBLISH_TIP}", flush=True)
             elif not skip_auto_note:
                 print(
-                    "  [!] 小红书图文: 失败 — ./scripts/publish-xhs-article.sh"
-                    f" · {XHS_DRAFTS_URL}",
+                    "  [!] 小红书图文: 失败 — ./scripts/publish-xhs-article.sh",
+                    flush=True,
+                )
+                print(
+                    f"        成功后手动发布: {XHS_OPEN_CREATOR_CMD} · {XHS_MANUAL_PUBLISH_TIP}",
                     flush=True,
                 )
         if wechat_enabled():
@@ -350,6 +362,11 @@ def wechat_enabled() -> bool:
     if value is None or value.strip() == "":
         return False
     return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def bilibili_skip_video() -> bool:
+    raw = os.environ.get("BILIBILI_SKIP_VIDEO", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 def bilibili_enabled() -> bool:

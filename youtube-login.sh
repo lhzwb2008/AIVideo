@@ -8,10 +8,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 [[ -f .env ]] && set -a && source .env && set +a
-# 国内访问 Google API 需代理，可在 .env 设 YOUTUBE_HTTP_PROXY=http://127.0.0.1:7897
+# 默认直连；仅当 .env 显式设置 YOUTUBE_HTTP_PROXY 时走代理（勿依赖终端 http_proxy）
 if [[ -n "${YOUTUBE_HTTP_PROXY:-}" ]]; then
-  export http_proxy="$YOUTUBE_HTTP_PROXY" https_proxy="$YOUTUBE_HTTP_PROXY"
-  [[ -n "${YOUTUBE_ALL_PROXY:-}" ]] && export all_proxy="$YOUTUBE_ALL_PROXY"
+  echo "使用 YOUTUBE_HTTP_PROXY=$YOUTUBE_HTTP_PROXY"
 fi
 
 PY="$ROOT/.venv/bin/python3"
