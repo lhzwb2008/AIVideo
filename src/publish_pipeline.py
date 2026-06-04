@@ -19,8 +19,10 @@ from publish_caption import (
     print_manual_publish_pack,
     tiktok_enabled,
     wechat_enabled,
+    xhs_article_enabled,
     xueqiu_enabled,
     youtube_enabled,
+    zhihu_enabled,
 )
 from forum_auth import is_login_error
 from research import run_article_research
@@ -44,6 +46,10 @@ def _auto_publish_platforms_label() -> str:
         names.append("雪球")
     if wechat_enabled():
         names.append("微信公众号")
+    if zhihu_enabled():
+        names.append("知乎专栏")
+    if xhs_article_enabled():
+        names.append("小红书图文")
     return " / ".join(names) if names else ""
 
 
@@ -121,12 +127,18 @@ def publish_youtube_api(video: Path, script_path: Path, *, dry_run: bool) -> str
     return _read_last_publish_url("last_youtube_publish.json", "shorts_url", "url")
 
 
+def _bilibili_skip_video() -> bool:
+    raw = os.environ.get("BILIBILI_SKIP_VIDEO", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def publish_bilibili_api(
     video: Path,
     script_path: Path,
     *,
     dry_run: bool,
     forum_dir: Path | None = None,
+    skip_video: bool = False,
 ) -> str:
     cmd = [
         str(ROOT / "scripts" / "publish-bilibili.sh"),
@@ -136,6 +148,8 @@ def publish_bilibili_api(
     ]
     if forum_dir and (forum_dir / "post.md").is_file():
         cmd += ["--forum", rel(forum_dir)]
+    if skip_video or _bilibili_skip_video():
+        cmd.append("--skip-video")
     if dry_run:
         cmd.append("--dry-run")
     run(cmd, label="发布B站")
@@ -287,13 +301,18 @@ def publish_bilibili(
     *,
     dry_run: bool,
     forum_dir: Path | None = None,
+    skip_video: bool = False,
 ) -> str:
     if not bilibili_enabled():
         return ""
 
     def _do() -> str:
         title = publish_bilibili_api(
-            video, script_path, dry_run=dry_run, forum_dir=forum_dir
+            video,
+            script_path,
+            dry_run=dry_run,
+            forum_dir=forum_dir,
+            skip_video=skip_video,
         )
         if title:
             log(f"  [B站] 视频已提交: {title}")
@@ -315,10 +334,24 @@ def publish_bilibili(
                 log(f"  [B站] {label}: {article_url}")
         return title
 
-    return _publish_forum_with_retry(_do, label="B站", dry_run=dry_run)
+    return _publish_forum_with_retry(
+        _do, label="B站", dry_run=dry_run, non_retryable=_bilibili_non_retryable
+    )
 
 
-def _publish_forum_with_retry(do_fn, *, label: str, dry_run: bool) -> str:
+def _bilibili_non_retryable(exc: BaseException) -> bool:
+    from sau_client import bilibili_video_upload_skippable
+
+    return bilibili_video_upload_skippable(str(exc))
+
+
+def _publish_forum_with_retry(
+    do_fn,
+    *,
+    label: str,
+    dry_run: bool,
+    non_retryable=None,
+) -> str:
     """论坛 Playwright 发布：cookie 失效已在内部等待扫码；其它错误可重试/跳过。"""
     max_attempts, sleep_s = _retry_config()
     attempt = 0
@@ -330,6 +363,9 @@ def _publish_forum_with_retry(do_fn, *, label: str, dry_run: bool) -> str:
             if is_login_error(exc):
                 log(f"  🔐 [{label}] 登录问题：{exc}（应已弹窗等待扫码，正在重试…）")
                 continue
+            if non_retryable and non_retryable(exc):
+                log(f"  ↳ [{label}] 不可重试（{exc}），跳过本平台自动发布。")
+                return ""
             log(f"  ⚠️ [{label}] 第 {attempt} 次发布失败：{exc}")
             if dry_run or (max_attempts > 0 and attempt >= max_attempts):
                 log(f"  ↳ [{label}] 已达重试上限，跳过自动发布（不影响成片/手动发布）。")
@@ -381,6 +417,59 @@ def publish_eastmoney(forum_dir: str | Path, *, dry_run: bool) -> str:
         return title
 
     return _publish_forum_with_retry(_do, label="东方财富", dry_run=dry_run)
+
+
+def publish_zhihu(forum_dir: str | Path, *, dry_run: bool) -> str:
+    if not zhihu_enabled():
+        return ""
+    path = Path(forum_dir)
+    if not path.is_absolute():
+        path = ROOT / path
+    if not (path / "post.md").is_file():
+        log(f"  ↳ [知乎专栏] 跳过：无论坛包 {rel(path)}")
+        return ""
+
+    def _do() -> str:
+        from publish_zhihu import publish_forum_dir
+
+        title = publish_forum_dir(path, dry_run=dry_run)
+        if title:
+            log(f"  [知乎专栏] 草稿: {title}")
+        return title
+
+    return _publish_forum_with_retry(_do, label="知乎专栏", dry_run=dry_run)
+
+
+def publish_xhs_article(
+    forum_dir: str | Path, script_path: Path, *, dry_run: bool
+) -> str:
+    if not xhs_article_enabled():
+        return ""
+    path = Path(forum_dir)
+    if not path.is_absolute():
+        path = ROOT / path
+    if not (path / "post.md").is_file():
+        log(f"  ↳ [小红书图文] 跳过：无论坛包 {rel(path)}")
+        return ""
+
+    script: dict | None = None
+    try:
+        data = json.loads(script_path.read_text(encoding="utf-8"))
+        script = data.get("script", data)
+        if not isinstance(script, dict):
+            script = None
+    except (OSError, json.JSONDecodeError):
+        script = None
+
+    def _do() -> str:
+        from publish_xhs_article import publish_forum_dir
+
+        title = publish_forum_dir(path, dry_run=dry_run, script=script)
+        if title:
+            log(f"  [小红书图文] 草稿: {title}")
+        return title
+
+    return _publish_forum_with_retry(_do, label="小红书图文", dry_run=dry_run)
 
 
 def publish_wechat(forum_dir: str | Path, *, dry_run: bool) -> str:
@@ -488,6 +577,8 @@ def pipeline_after_script(
     eastmoney_title = ""
     xueqiu_title = ""
     wechat_title = ""
+    zhihu_title = ""
+    xhs_article_title = ""
 
     if dry_run:
         log(f"\n=== [{index}/{target}] 预演 API 发布 ===")
@@ -505,6 +596,10 @@ def pipeline_after_script(
         if forum_preview.is_dir() and (forum_preview / "post.md").is_file():
             eastmoney_title = publish_eastmoney(forum_preview, dry_run=True)
             xueqiu_title = publish_xueqiu(forum_preview, dry_run=True)
+            zhihu_title = publish_zhihu(forum_preview, dry_run=True)
+            xhs_article_title = publish_xhs_article(
+                forum_preview, script_path, dry_run=True
+            )
         print_manual_publish_pack(
             script_path,
             video,
@@ -514,6 +609,8 @@ def pipeline_after_script(
             eastmoney_title=eastmoney_title,
             xueqiu_title=xueqiu_title,
             wechat_title=wechat_title,
+            zhihu_title=zhihu_title,
+            xhs_article_title=xhs_article_title,
             skip_auto_note=True,
         )
         return {
@@ -527,6 +624,8 @@ def pipeline_after_script(
             "eastmoney_title": eastmoney_title,
             "xueqiu_title": xueqiu_title,
             "wechat_title": wechat_title,
+            "zhihu_title": zhihu_title,
+            "xhs_article_title": xhs_article_title,
         }
 
     if (
@@ -536,6 +635,8 @@ def pipeline_after_script(
         or wechat_enabled()
         or eastmoney_enabled()
         or xueqiu_enabled()
+        or zhihu_enabled()
+        or xhs_article_enabled()
     ):
         label = _auto_publish_platforms_label()
         log(f"\n=== [{index}/{target}] API 自动发布（{label}）===")
@@ -559,6 +660,10 @@ def pipeline_after_script(
         log(f"  发布文案：{rel(archived['forum'])}/README.md")
         eastmoney_title = publish_eastmoney(archived["forum"], dry_run=False)
         xueqiu_title = publish_xueqiu(archived["forum"], dry_run=False)
+        zhihu_title = publish_zhihu(archived["forum"], dry_run=False)
+        xhs_article_title = publish_xhs_article(
+            archived["forum"], script_path, dry_run=False
+        )
 
     print_manual_publish_pack(
         script_path,
@@ -569,6 +674,8 @@ def pipeline_after_script(
         eastmoney_title=eastmoney_title,
         xueqiu_title=xueqiu_title,
         wechat_title=wechat_title,
+        zhihu_title=zhihu_title,
+        xhs_article_title=xhs_article_title,
     )
 
     return {
@@ -583,6 +690,8 @@ def pipeline_after_script(
             or wechat_title
             or eastmoney_title
             or xueqiu_title
+            or zhihu_title
+            or xhs_article_title
         ),
         "youtube_url": youtube_url,
         "tiktok_url": tiktok_url,
@@ -590,6 +699,8 @@ def pipeline_after_script(
         "wechat_title": wechat_title,
         "eastmoney_title": eastmoney_title,
         "xueqiu_title": xueqiu_title,
+        "zhihu_title": zhihu_title,
+        "xhs_article_title": xhs_article_title,
     }
 
 

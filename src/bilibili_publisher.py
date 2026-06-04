@@ -370,7 +370,7 @@ def _ensure_patchright() -> None:
 
 
 def _article_auto_publish_enabled() -> bool:
-    return _env("BILIBILI_ARTICLE_AUTO_PUBLISH", "1").lower() in (
+    return _env("BILIBILI_ARTICLE_AUTO_PUBLISH", "0").lower() in (
         "1",
         "true",
         "yes",
@@ -394,6 +394,34 @@ def _reuse_article_aid(pack_dir: Path, *, root: Path | None = None) -> int | Non
         return None
     aid = int(article.get("aid") or 0)
     return aid or None
+
+
+async def _prepare_article_publish_ui(editor) -> None:
+    """打开发布设置并尽量选好分类，等待编辑器校验完成。"""
+    for label in ("发布设置", "设置"):
+        tab = editor.locator(f"text={label}").first
+        if await tab.count():
+            try:
+                await tab.click(timeout=5_000)
+                await asyncio.sleep(1)
+            except Exception:
+                pass
+            break
+    cat_labels = ("财经", "科技", "知识", "社会", "生活")
+    for label in cat_labels:
+        opt = editor.locator(f"text={label}").first
+        if await opt.count():
+            try:
+                await opt.click(timeout=3_000)
+                await asyncio.sleep(0.5)
+                break
+            except Exception:
+                continue
+    try:
+        await editor.locator("body").click(position={"x": 200, "y": 200}, timeout=3_000)
+    except Exception:
+        pass
+    await asyncio.sleep(2)
 
 
 async def _publish_article_via_browser_async(aid: int, cred: dict) -> None:
@@ -443,7 +471,21 @@ async def _publish_article_via_browser_async(aid: int, cred: dict) -> None:
             publish_btn = editor.locator("text=发布").last
             if not await publish_btn.count():
                 raise BilibiliArticleError("编辑器内未找到「发布」按钮")
-            await publish_btn.click(timeout=20_000)
+            await _prepare_article_publish_ui(editor)
+            enabled = False
+            for _ in range(90):
+                try:
+                    enabled = await publish_btn.is_enabled()
+                except Exception:
+                    enabled = False
+                if enabled:
+                    break
+                await asyncio.sleep(1)
+            if not enabled:
+                raise BilibiliArticleError(
+                    "「发布」按钮长时间不可用（请检查标题/封面/分类或稍后在创作中心手动发布）"
+                )
+            await publish_btn.click(timeout=30_000)
             await asyncio.sleep(4)
             body = await editor.inner_text("body")
             if "已提交成功" in body or "提交成功" in body:

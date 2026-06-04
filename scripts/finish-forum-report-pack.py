@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""为已有 post.md 补全报告配图 + article.docx（不覆盖正文）。"""
+"""为已有 post.md 补全报告配图 + article.docx（不覆盖正文）。
+
+注意：主流程 build_forum_pack 使用视频分镜图，不会调用本脚本。
+本脚本仅用于手动把 images/ 换成 Bloomberg 风信息图（与漫画分镜叙事易脱节）。
+"""
 
 from __future__ import annotations
 

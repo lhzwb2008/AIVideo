@@ -12,7 +12,7 @@ from publish_resolve import load_script
 from tiktok_caption import build_tiktok_fields
 from youtube_caption import build_youtube_fields
 
-# 国内视频：除 B 站外均需真人上传 (名称, 后台地址, 一句话操作提示)
+# ① 完全手动 · 视频（名称, 后台地址, 操作提示）
 VIDEO_MANUAL_PLATFORMS: list[tuple[str, str, str]] = [
     (
         "抖音",
@@ -20,8 +20,8 @@ VIDEO_MANUAL_PLATFORMS: list[tuple[str, str, str]] = [
         "标题用上面「标题」，简介贴「简介」，话题加上「话题」（≤5 个）",
     ),
     (
-        "小红书",
-        "https://creator.xiaohongshu.com/publish/publish?from=homepage",
+        "小红书视频",
+        "https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video",
         "标题≤20 字带钩子，正文贴「简介」，行内加「话题」",
     ),
     (
@@ -34,7 +34,11 @@ VIDEO_MANUAL_PLATFORMS: list[tuple[str, str, str]] = [
 BILIBILI_VIDEO_UPLOAD_URL = (
     "https://member.bilibili.com/platform/upload/video/frame"
 )
-ZHIHU_COLUMN_URL = "https://zhuanlan.zhihu.com/write"
+ZHIHU_DRAFTS_URL = "https://zhuanlan.zhihu.com/creator/manage/drafts"
+XHS_DRAFTS_URL = (
+    "https://creator.xiaohongshu.com/creator/note-manage?tab=draft"
+)
+WECHAT_DRAFTS_URL = "https://mp.weixin.qq.com/cgi-bin/appmsg?begin=0&count=10&type=77&action=list_card"
 
 
 def _load_script_dict(script_path: Path) -> dict | None:
@@ -62,6 +66,8 @@ def print_manual_publish_pack(
     eastmoney_title: str = "",
     xueqiu_title: str = "",
     wechat_title: str = "",
+    zhihu_title: str = "",
+    xhs_article_title: str = "",
     skip_auto_note: bool = False,
 ) -> None:
     script = _load_script_dict(script_path) or load_script(script_path)
@@ -123,8 +129,37 @@ def print_manual_publish_pack(
         eastmoney_title=eastmoney_title,
         xueqiu_title=xueqiu_title,
         wechat_title=wechat_title,
+        zhihu_title=zhihu_title,
+        xhs_article_title=xhs_article_title,
         skip_auto_note=skip_auto_note,
     )
+
+
+def _read_last_log_bool(log_name: str, key: str) -> bool:
+    log_path = ROOT / "logs" / log_name
+    if not log_path.is_file():
+        return False
+    try:
+        data = json.loads(log_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(data.get(key))
+
+
+def _read_last_log_field(log_name: str, *keys: str) -> str:
+    log_path = ROOT / "logs" / log_name
+    if not log_path.is_file():
+        return ""
+    try:
+        data = json.loads(log_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    cur: object = data
+    for key in keys:
+        if not isinstance(cur, dict):
+            return ""
+        cur = cur.get(key)
+    return str(cur or "").strip()
 
 
 def _read_bilibili_article_status() -> tuple[str, bool]:
@@ -151,125 +186,124 @@ def _print_todo_checklist(
     eastmoney_title: str,
     xueqiu_title: str,
     wechat_title: str,
+    zhihu_title: str,
+    xhs_article_title: str,
     skip_auto_note: bool,
 ) -> None:
-    """流程结束后的「待办清单」：国内视频 / 国内长文 / 国外视频（未开启则无项）。"""
+    """流程结束后的「待办清单」：①手动视频 ②自动提交 ③草稿箱待点发布。"""
     print("\n" + "═" * 58, flush=True)
-    print("✅ 发布 TODO 清单（国内视频 · 国内长文 · 国外视频）", flush=True)
+    print("✅ 发布 TODO 清单（①手动视频 · ②自动提交 · ③草稿待发布）", flush=True)
     print("═" * 58, flush=True)
 
-    # 1) 国内视频：B 站 API 自动，其余真人上传
+    # ① 完全手动 · 视频
     src_hint = f"（成片 {video_rel}）" if video_rel else ""
-    print(f"\n— 国内视频 · 真人上传 {src_hint}—", flush=True)
-    print("  复制上面「标题 / 简介 / 话题」，按各平台习惯微调：", flush=True)
-    if bilibili_enabled():
-        if skip_auto_note:
-            print("  [·] B站视频: 本次未执行自动发布", flush=True)
-        elif bilibili_title:
-            print(f"  [✓] B站视频: 已自动提交 — {bilibili_title}", flush=True)
-        else:
-            print(
-                "  [!] B站视频: 未发布或失败 — ./scripts/publish-bilibili.sh"
-                " 或先 ./bilibili-login.sh",
-                flush=True,
-            )
-    else:
-        print(f"  [ ] B站视频: {BILIBILI_VIDEO_UPLOAD_URL}", flush=True)
-        print("        未开启：.env 设 AIVIDEO_PUBLISH_BILIBILI=1 并先 ./bilibili-login.sh", flush=True)
+    print(f"\n— ① 完全手动 · 视频 {src_hint}—", flush=True)
+    print("  复制上面「标题 / 简介 / 话题」，真人上传后发布：", flush=True)
     for name, url, tip in VIDEO_MANUAL_PLATFORMS:
         print(f"  [ ] {name}: {url}", flush=True)
         print(f"        {tip}", flush=True)
 
-    # 2) 国内长文：雪球 / 东财 / B 站专栏（Playwright 或 API）
-    longform_on = (
-        eastmoney_enabled()
+    # ② 完全自动 · API / Playwright 一键提交（TikTok 收件箱归 ③）
+    auto_on = (
+        bilibili_enabled()
+        or eastmoney_enabled()
         or xueqiu_enabled()
-        or wechat_enabled()
-        or (bilibili_enabled() and bilibili_article_enabled())
+        or youtube_enabled()
     )
-    if longform_on:
-        pack_hint = f"（{forum_rel}/post.md + cover.jpg）" if forum_rel else ""
-        print(f"\n— 国内长文 · 自动发布 {pack_hint}—", flush=True)
+    if auto_on:
+        print("\n— ② 完全自动 · 无需再操作 —", flush=True)
         if skip_auto_note:
-            print("  [·] 本次未执行自动发布（--no-publish / 预演）", flush=True)
-        elif not has_forum and (eastmoney_enabled() or xueqiu_enabled()):
-            print("  [!] 无论坛图文包，雪球/东财已跳过", flush=True)
+            print("  [·] 本次未执行（--no-publish / 预演）", flush=True)
+        if bilibili_enabled():
+            if bilibili_title:
+                print(f"  [✓] B站视频: {bilibili_title}", flush=True)
+            elif not skip_auto_note:
+                print(
+                    "  [!] B站视频: 失败 — ./scripts/publish-bilibili.sh",
+                    flush=True,
+                )
         if eastmoney_enabled():
             if eastmoney_title:
                 print(f"  [✓] 东方财富: {eastmoney_title}", flush=True)
             elif not skip_auto_note:
-                print(
-                    "  [!] 东方财富: 未发布或失败 — ./scripts/publish-eastmoney.sh",
-                    flush=True,
-                )
+                print("  [!] 东方财富: 失败 — ./scripts/publish-eastmoney.sh", flush=True)
         if xueqiu_enabled():
             if xueqiu_title:
                 print(f"  [✓] 雪球: {xueqiu_title}", flush=True)
             elif not skip_auto_note:
-                print(
-                    "  [!] 雪球: 未发布或失败 — ./scripts/publish-xueqiu.sh",
-                    flush=True,
-                )
-        if bilibili_enabled() and bilibili_article_enabled():
-            article_url, article_published = _read_bilibili_article_status()
-            if bilibili_title and article_url:
-                if article_published:
-                    print(f"  [✓] B站专栏: 已发布 — {article_url}", flush=True)
-                else:
-                    print(
-                        f"  [→] B站专栏: 草稿 — {article_url}"
-                        "（创作中心确认后点发布）",
-                        flush=True,
-                    )
-            elif not skip_auto_note and bilibili_title:
-                print(
-                    "  [·] B站专栏: 未同步（需论坛包 post.md + cover.jpg）",
-                    flush=True,
-                )
-            elif not skip_auto_note:
-                print("  [·] B站专栏: 随视频投稿一并处理", flush=True)
-        if wechat_enabled():
-            published = False
-            log_path = ROOT / "logs" / "last_wechat_publish.json"
-            if log_path.is_file():
-                try:
-                    payload = json.loads(log_path.read_text(encoding="utf-8"))
-                    published = bool(payload.get("published"))
-                except (OSError, json.JSONDecodeError):
-                    pass
-            if wechat_title and published:
-                print(f"  [✓] 微信公众号: 已发表 — {wechat_title}", flush=True)
-            elif wechat_title:
-                print(f"  [→] 微信公众号: 草稿 — {wechat_title}", flush=True)
-            elif not skip_auto_note:
-                print(
-                    "  [!] 微信公众号: 未发布或失败 — ./scripts/publish-wechat.sh"
-                    " 或先 ./wechat-login.sh",
-                    flush=True,
-                )
-        if has_forum:
-            print(f"  [ ] 知乎专栏（仅手动）: {ZHIHU_COLUMN_URL}", flush=True)
-            print("        post.md 第一行作标题，正文贴入并按【插入配图 N】上传配图", flush=True)
-
-    # 3) 国外视频：仅当 .env 开启对应开关时出现待办
-    if youtube_enabled() or tiktok_enabled():
-        print("\n— 国外视频 · API 自动 —", flush=True)
-        if skip_auto_note:
-            print("  [·] 本次未执行自动发布（--no-publish / 预演）", flush=True)
+                print("  [!] 雪球: 失败 — ./scripts/publish-xueqiu.sh", flush=True)
         if youtube_enabled():
             if youtube_url:
                 print(f"  [✓] YouTube: {youtube_url}", flush=True)
             elif not skip_auto_note:
                 print(
-                    "  [!] YouTube: 未发布或失败 — https://studio.youtube.com/",
+                    "  [!] YouTube: 失败 — https://studio.youtube.com/",
                     flush=True,
                 )
-        if tiktok_enabled():
-            if tiktok_url:
-                print(f"  [✓] TikTok: {tiktok_url}", flush=True)
+
+    # ③ 草稿箱 · 脚本已填表，请到后台点「发布」
+    draft_on = (
+        (bilibili_enabled() and bilibili_article_enabled())
+        or zhihu_enabled()
+        or xhs_article_enabled()
+        or wechat_enabled()
+        or tiktok_enabled()
+    )
+    if draft_on:
+        print("\n— ③ 草稿箱 · 已填好内容，请手动点发布 —", flush=True)
+        if skip_auto_note:
+            print("  [·] 本次未执行草稿同步", flush=True)
+        if bilibili_enabled() and bilibili_article_enabled():
+            article_url, article_published = _read_bilibili_article_status()
+            if bilibili_title and article_url and not article_published:
+                print(f"  [→] B站专栏: {article_url}", flush=True)
+            elif bilibili_title and article_published:
+                print(f"  [✓] B站专栏: 已发布 — {article_url}", flush=True)
+            elif not skip_auto_note and bilibili_title:
+                print("  [·] B站专栏: 未同步（需论坛包）", flush=True)
             elif not skip_auto_note:
-                print("  [→] TikTok: 收件箱草稿 — 打开 App，", flush=True)
-                print("      粘贴上面【TikTok】整段文案后点发布", flush=True)
+                print("  [·] B站专栏: 随 B 站投稿处理", flush=True)
+        if zhihu_enabled():
+            url = _read_last_log_field("last_zhihu_publish.json", "url") or ZHIHU_DRAFTS_URL
+            if zhihu_title:
+                print(f"  [→] 知乎专栏: {zhihu_title} — {url}", flush=True)
+            elif not skip_auto_note:
+                print(
+                    f"  [!] 知乎专栏: 失败 — ./scripts/publish-zhihu.sh · {ZHIHU_DRAFTS_URL}",
+                    flush=True,
+                )
+        if xhs_article_enabled():
+            url = (
+                _read_last_log_field("last_xhs_article_publish.json", "url")
+                or XHS_DRAFTS_URL
+            )
+            if xhs_article_title:
+                print(f"  [→] 小红书图文: {xhs_article_title} — {url}", flush=True)
+            elif not skip_auto_note:
+                print(
+                    "  [!] 小红书图文: 失败 — ./scripts/publish-xhs-article.sh"
+                    f" · {XHS_DRAFTS_URL}",
+                    flush=True,
+                )
+        if wechat_enabled():
+            published = _read_last_log_bool("last_wechat_publish.json", "published")
+            if wechat_title and not published:
+                print(f"  [→] 微信公众号: {wechat_title} — {WECHAT_DRAFTS_URL}", flush=True)
+            elif wechat_title:
+                print(f"  [✓] 微信公众号: 已发表 — {wechat_title}", flush=True)
+            elif not skip_auto_note:
+                print(
+                    "  [!] 微信公众号: 失败 — ./scripts/publish-wechat.sh",
+                    flush=True,
+                )
+        if tiktok_enabled() and not skip_auto_note:
+            if tiktok_url:
+                print(f"  [→] TikTok: 已上传收件箱 — 打开 App 粘贴【TikTok】文案后发布", flush=True)
+            else:
+                print(
+                    "  [!] TikTok: 未上传 — 检查 logs 或 ./scripts/publish-tiktok.sh",
+                    flush=True,
+                )
 
     print("\n" + "─" * 58, flush=True)
     print("提示: 财经平台风控严，简介勿出现「荐股/收益/带单」等字眼。", flush=True)
@@ -330,3 +364,17 @@ def bilibili_article_enabled() -> bool:
         return False
     value = os.environ.get("AIVIDEO_PUBLISH_BILIBILI_ARTICLE", "1")
     return value.strip().lower() not in ("0", "false", "no", "off")
+
+
+def zhihu_enabled() -> bool:
+    value = os.environ.get("AIVIDEO_PUBLISH_ZHIHU")
+    if value is None or value.strip() == "":
+        return False
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def xhs_article_enabled() -> bool:
+    value = os.environ.get("AIVIDEO_PUBLISH_XHS_ARTICLE")
+    if value is None or value.strip() == "":
+        return False
+    return value.strip().lower() in ("1", "true", "yes", "on")

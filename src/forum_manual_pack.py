@@ -333,22 +333,21 @@ def _build_readme_publish_sections(script: dict) -> str:
     )
 
 
-FORUM_ARTICLE_SYSTEM = """你是「AI财知道」的专业财经图文编辑。
+FORUM_ARTICLE_SYSTEM = """你是「AI财知道」财经图文编辑。
 
-任务：根据短视频脚本，单独写一篇适合雪球/东方财富发布的深度专业图文稿。它不是口播稿转写，必须像研究型文章。
+任务：根据短视频分镜脚本，写一篇适合雪球/东方财富发布的图文长文。读者会边看与视频相同的漫画分镜配图边读正文，因此叙事必须与视频一致，写法则从口语改为文章。
 
-写作要求：
-1. 正文 1500-2200 字；信息密度高，必须显著长于视频口播。
-2. 写成财经研究文章，不要短视频口吻；不要用口播式比喻、互动结尾或账号运营话术。
-3. 不要逐页改写视频脚本。请从脚本里抽取事实、数字、时间线和核心矛盾，重新组织为完整文章。
-4. 结构清晰：核心结论、事件复盘、上涨逻辑、下跌触发因素、基本面验证、交易结构/情绪、后续观察、风险提示。
-5. 对 A股/港美股/宏观内容保持合规：不荐股、不喊单、不预测具体买卖点，不使用“必涨/抄底/梭哈/能不能买/追不追”等表述。
-6. 保留专业判断，但用“可能、需要观察、取决于、尚需验证”等审慎表达。
-7. 每节 body 写 2-4 段自然段，每段 90-180 字；不要把视频每页 narration 原样搬过来，不要复用口播比喻。
-8. 输出 JSON，不要 markdown。
+核心原则（折中，必须遵守）：
+1. **叙事骨架 = 视频分镜**：严格按 slides 顺序，第 i 页对应第 i 节；不得打乱顺序，不得改成另一套独立研究框架或换话题。
+2. **写法改书面、逻辑不变**：把口播 narration 改写成财经科普/评论文章（完整句、因果与转折、2-3 段自然段）；去掉互动引导、点赞关注、评论区话术；口播式夸张比喻改为克制表述，可保留少量有助于理解的类比。
+3. **呼应画面**：每节正文要解释该页漫画在讲什么，自然融入 on_image_text 里的要点，让读者看图能读懂。
+4. **可补充细节**：在【深读材料】【文章来源】中选取与当页叙事相关的数字、背景、引语补充进来；禁止引入与视频主线无关的新章节或跑题。
+5. 全文 1200-2000 字，信息密度高于口播总字数，但不必写成券商深度报告体例。
+6. 合规：不荐股、不喊单、不预测买卖点；不用“必涨/抄底/梭哈/能不能买”等表述；审慎用语（可能、尚需观察、取决于）。
+7. 输出 JSON，不要 markdown。
 """
 
-FORUM_ARTICLE_USER = """请基于以下研究材料生成专业长文。优先使用【深读材料】和【文章来源】，视频脚本只作为选题角度参考。
+FORUM_ARTICLE_USER = """请生成图文长文。必须输出 **恰好 {slide_count} 个 sections**，与下方【视频分镜】逐页一一对应（第 1 节 = 第 1 页，以此类推）。
 
 【标题】
 {title}
@@ -359,39 +358,44 @@ FORUM_ARTICLE_USER = """请基于以下研究材料生成专业长文。优先�
 【冷开场】
 {cold_open}
 
-【文章来源】
+【文章来源】（仅补充与视频同主线的事实，勿改叙事顺序）
 {article_json}
 
-【深读材料：outline / 数字 / 引语 / 机构 / 术语 / 叙事节奏】
+【深读材料】（仅补充与当页相关的数字/背景/引语）
 {details_json}
 
-【视频脚本 JSON】
+【视频分镜：每页 headline / narration / on_image_text 即该节叙事骨架】
 {script_json}
 
 输出格式：
 {{
-  "title": "适合雪球/东方财富的标题，稳健专业，不标题党",
+  "title": "适合雪球/东方财富的标题，稳健清晰，不标题党",
   "sections": [
     {{
-      "headline": "小标题",
-      "body": "2-4段正文，用\\n\\n分段"
+      "headline": "与小标题相近，可略书面化，勿偏离该页主题",
+      "body": "2-3段正文，用\\n\\n分段；书面语；逻辑跟该页 narration 一致"
     }}
   ]
 }}
+
+sections 数组长度必须等于 {slide_count}。
 """
 
 
 def _script_digest(script: dict) -> dict:
     slides = []
-    for slide in (script.get("slides") or [])[:8]:
+    for i, slide in enumerate(script.get("slides") or [], start=1):
         if not isinstance(slide, dict):
             continue
         slides.append(
             {
+                "page": i,
+                "chapter_title": slide.get("chapter_title"),
                 "headline": slide.get("headline"),
                 "concept": slide.get("concept"),
                 "narration": slide.get("narration"),
                 "on_image_text": slide.get("on_image_text"),
+                "lead_in": slide.get("lead_in"),
             }
         )
     return {
@@ -400,6 +404,7 @@ def _script_digest(script: dict) -> dict:
         "keyword": script.get("keyword"),
         "cold_open": script.get("cold_open"),
         "hashtags": script.get("hashtags"),
+        "slide_count": len(slides),
         "slides": slides,
     }
 
@@ -476,21 +481,27 @@ def _plain_text_len(text: str) -> int:
     return len(re.sub(r"\s+", "", text or ""))
 
 
-def _validate_professional_sections(title: str, sections: list[dict]) -> None:
+def _validate_professional_sections(
+    title: str, sections: list[dict], *, slide_count: int
+) -> None:
+    del title
     body = "\n".join(str(s.get("body") or "") for s in sections)
     total_len = _plain_text_len(body)
-    min_chars = int(os.environ.get("AIVIDEO_FORUM_ARTICLE_MIN_CHARS", "1200"))
+    min_chars = int(os.environ.get("AIVIDEO_FORUM_ARTICLE_MIN_CHARS", "1000"))
     if total_len < min_chars:
-        raise RuntimeError(f"专业长文字数不足：{total_len} 字，要求至少 {min_chars} 字")
-    if len(sections) < 4:
-        raise RuntimeError(f"专业长文章节不足：{len(sections)} 节，要求至少 4 节")
+        raise RuntimeError(f"长文字数不足：{total_len} 字，要求至少 {min_chars} 字")
+    if slide_count and len(sections) != slide_count:
+        raise RuntimeError(
+            f"长文章节数须与视频分镜一致：{len(sections)} 节，要求 {slide_count} 节"
+        )
+    min_section = int(os.environ.get("AIVIDEO_FORUM_SECTION_MIN_CHARS", "120"))
     short_sections = [
         str(s.get("headline") or f"第{i + 1}节")
         for i, s in enumerate(sections)
-        if _plain_text_len(str(s.get("body") or "")) < 180
+        if _plain_text_len(str(s.get("body") or "")) < min_section
     ]
     if short_sections:
-        raise RuntimeError(f"专业长文章节过短：{', '.join(short_sections[:3])}")
+        raise RuntimeError(f"长文章节过短：{', '.join(short_sections[:3])}")
 
 
 def _generate_professional_forum_sections(
@@ -502,10 +513,12 @@ def _generate_professional_forum_sections(
     details: dict | None = None,
 ) -> tuple[str, list[dict]]:
     load_env()
+    slide_count = len(slides)
     base_user = FORUM_ARTICLE_USER.format(
         title=str(script.get("title") or ""),
         category=str(script.get("category") or ""),
         cold_open=str(script.get("cold_open") or ""),
+        slide_count=slide_count,
         article_json=json.dumps(_article_digest(article), ensure_ascii=False, indent=2),
         details_json=json.dumps(_details_digest(details), ensure_ascii=False, indent=2),
         script_json=json.dumps(_script_digest(script), ensure_ascii=False, indent=2),
@@ -530,20 +543,21 @@ def _generate_professional_forum_sections(
             if not sections:
                 preview = (raw or "").strip().replace("\n", " ")[:240]
                 raise RuntimeError(
-                    f"专业长文生成结果为空（模型返回无有效 sections）"
+                    f"叙事长文生成结果为空（模型返回无有效 sections）"
                     + (f"；片段: {preview}…" if preview else "")
                 )
-            _validate_professional_sections(title, sections)
+            _validate_professional_sections(title, sections, slide_count=slide_count)
             return title, sections
         except Exception as exc:  # noqa: BLE001
             last_err = exc
             user = (
                 f"{base_user}\n\n【上一版不合格，必须重写】\n"
                 f"问题：{exc}\n"
-                "请重新输出一篇真正的研究型长文：1500-2200字，至少4节，禁止口播比喻和互动引导。"
+                f"请严格输出 {slide_count} 节，与视频分镜逐页对应；书面语改写口播，"
+                "叙事顺序不变；禁止互动引导和独立研报体例。"
             )
-            print(f"[forum] 专业长文第 {attempt + 1} 次不合格，准备重试：{exc}")
-    raise RuntimeError(f"专业长文生成多次不合格：{last_err}") from last_err
+            print(f"[forum] 叙事长文第 {attempt + 1} 次不合格，准备重试：{exc}")
+    raise RuntimeError(f"叙事长文生成多次不合格：{last_err}") from last_err
 
 
 def _fallback_forum_sections(slides: list[dict], image_paths: list[Path]) -> list[dict]:
@@ -791,11 +805,11 @@ def build_forum_pack(
         except Exception as exc:  # noqa: BLE001
             allow_fallback = os.environ.get("AIVIDEO_FORUM_ALLOW_FALLBACK", "0").strip().lower()
             if allow_fallback in ("1", "true", "yes"):
-                print(f"[forum] 专业长文生成失败，按配置回退口播扩展稿：{exc}")
+                print(f"[forum] 叙事长文生成失败，按配置回退口播扩展稿：{exc}")
                 sections = _fallback_forum_sections(slides, image_paths)
             else:
                 raise RuntimeError(
-                    "专业长文生成失败，已停止生成论坛图文，避免发布口播短稿。"
+                    "叙事长文生成失败，已停止生成论坛图文，避免发布口播短稿。"
                     "如需临时回退旧稿，设置 AIVIDEO_FORUM_ALLOW_FALLBACK=1。"
                     f"原因：{exc}"
                 ) from exc

@@ -125,6 +125,12 @@ def check_bilibili_session(*, root: Path | None = None) -> None:
     )
 
 
+def bilibili_video_upload_skippable(message: str) -> bool:
+    """视频已在站内成功或触发频控时，不必再跑 biliup 上传。"""
+    m = message or ""
+    return "21566" in m or "投稿过于频繁" in m
+
+
 def publish_bilibili_video(
     video: Path,
     *,

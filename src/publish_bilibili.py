@@ -18,7 +18,13 @@ from bilibili_publisher import (
 from paths import ROOT
 from publish_resolve import load_script, resolve_script_for_video
 from research import load_env
-from sau_client import SauError, bilibili_account, check_bilibili_session, publish_bilibili_video
+from sau_client import (
+    SauError,
+    bilibili_account,
+    bilibili_video_upload_skippable,
+    check_bilibili_session,
+    publish_bilibili_video,
+)
 
 
 class BilibiliPublishError(RuntimeError):
@@ -70,6 +76,16 @@ def main() -> int:
         action="store_true",
         help="只发视频，不同步专栏长文",
     )
+    parser.add_argument(
+        "--article-only",
+        action="store_true",
+        help="只同步专栏长文，不上传视频（续发用）",
+    )
+    parser.add_argument(
+        "--skip-video",
+        action="store_true",
+        help="跳过 biliup 视频上传（视频已手动/重复发过时用）",
+    )
     args = parser.parse_args()
 
     try:
@@ -109,15 +125,37 @@ def main() -> int:
             check_bilibili_session(root=ROOT)
             print("登录态有效", flush=True)
 
-        print("开始上传（biliup，视网速约 2–10 分钟）…", flush=True)
-        publish_bilibili_video(
-            video_path,
-            title=title,
-            desc=desc,
-            tags=tags,
-            tid=tid,
-            root=ROOT,
-        )
+        video_uploaded = False
+        video_skipped = bool(args.article_only or args.skip_video)
+        skip_reason = ""
+        if args.article_only:
+            print("跳过视频上传（--article-only）", flush=True)
+            skip_reason = "article-only"
+        elif args.skip_video:
+            print("跳过视频上传（--skip-video）", flush=True)
+            skip_reason = "skip-video"
+        else:
+            print("开始上传（biliup，视网速约 2–10 分钟）…", flush=True)
+            try:
+                publish_bilibili_video(
+                    video_path,
+                    title=title,
+                    desc=desc,
+                    tags=tags,
+                    tid=tid,
+                    root=ROOT,
+                )
+                video_uploaded = True
+            except SauError as exc:
+                if bilibili_video_upload_skippable(str(exc)):
+                    video_skipped = True
+                    skip_reason = "rate-limit-or-duplicate"
+                    print(
+                        "  ⚠️ B站视频上传跳过：投稿过于频繁或重复投稿（视为视频已发过，继续专栏）",
+                        flush=True,
+                    )
+                else:
+                    raise
 
         log_path = ROOT / "logs" / "last_bilibili_publish.json"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +202,9 @@ def main() -> int:
             "desc": desc,
             "tags": tags,
             "tid": tid,
+            "video_uploaded": video_uploaded,
+            "video_skipped": video_skipped,
+            "video_skip_reason": skip_reason,
             "published_at": datetime.now(timezone.utc).isoformat(),
         }
         if article_result:

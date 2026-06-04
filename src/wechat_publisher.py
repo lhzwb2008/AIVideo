@@ -655,6 +655,9 @@ def _body_blocks_to_html(body: str) -> str:
 
 def forum_pack_to_html(data: dict, *, image_urls: dict[str, str]) -> str:
     parts: list[str] = []
+    summary = _summary_from_data(data)
+    if summary:
+        parts.append(_wechat_paragraph(f"【摘要】{summary}"))
     for sec in data.get("sections") or []:
         headline = (sec.get("headline") or "").strip()
         if headline:

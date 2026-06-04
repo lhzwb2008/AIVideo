@@ -302,9 +302,10 @@ async def fill_xueqiu_body_sections(
             await page.keyboard.press("Enter")
             wrote = True
 
+        body = (sec.get("body") or "").strip()
         if body:
             await focus_editor_end(page)
-            paras = body_to_opus_lines((sec.get("body") or "").strip())
+            paras = body_to_opus_lines(body)
             if paras:
                 await paste_paragraphs(page, paras)
             wrote = True
