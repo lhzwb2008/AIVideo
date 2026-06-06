@@ -32,12 +32,12 @@ def main() -> int:
     parser.add_argument("--script", help="脚本 JSON，默认同目录 logs 或 resolve")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
-        "--bilibili-video",
+        "--skip-bilibili-video",
         action="store_true",
-        help="仍尝试 biliup 上传 B 站视频（默认跳过，仅同步专栏）",
+        help="跳过 biliup 视频上传（视频已手动/重复发过时用）",
     )
     args = parser.parse_args()
-    skip_bili_video = not args.bilibili_video
+    skip_bili_video = args.skip_bilibili_video
 
     video = Path(args.video)
     if not video.is_absolute():
@@ -59,12 +59,11 @@ def main() -> int:
     youtube_url = publish_youtube(video, script_path, dry_run=args.dry_run)
     tiktok_url = publish_tiktok(video, script_path, dry_run=args.dry_run)
     if skip_bili_video:
-        log("B站：跳过视频上传（--skip-bilibili-video），仅同步专栏（若有）")
+        log("B站：跳过视频上传（--skip-bilibili-video）")
     bilibili_title = publish_bilibili(
         video,
         script_path,
         dry_run=args.dry_run,
-        forum_dir=forum_dir,
         skip_video=skip_bili_video,
     )
     wechat_title = ""

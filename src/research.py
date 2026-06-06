@@ -1628,17 +1628,23 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
         + json.dumps(details, ensure_ascii=False, indent=2)
     )
     topic_block = _topic_plan_block(article)
+    recap_block = _daily_recap_adapt_block(article)
     relaxed_note = ""
     if compliance_relaxed(article=article):
         relaxed_note = (
             "\n【合规说明·Cursor 新流水线】客观复盘里可以使用「买入」「卖出」等中性表述"
             "（如资金卖出、抛售、买入意愿），但不要写成荐股喊单（跟我买、目标价、必涨、买卖点建议等）。\n"
         )
+    title_rule = (
+        "如果上文已指定「视频标题（必须一字不改）」，title 必须完全一致，禁止改成问句；"
+        if _resolve_fixed_video_title(article) or _is_daily_recap(article)
+        else "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
+    )
     return (
-        f"{topic_block}{meta_block}\n\n{details_block}\n{relaxed_note}\n"
+        f"{recap_block}{topic_block}{meta_block}\n\n{details_block}\n{relaxed_note}\n"
         "请严格根据上面的「原文深读细节」改编。输出字段须含 title / keyword / cold_open / "
         "cold_open_type / theme_cluster / angle / hashtags / slides；"
-        "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
+        f"{title_rule}"
         "slides 每页只填 headline / narration / image_prompt / on_image_text。"
         "不要输出 source、article、layout、lead_in、chapter_title、concept。"
         "写法上要直接给出本栏目的判断和解释，禁止在口播里说「文章认为」「作者指出」「文中提到」「某某的观点」；"
@@ -1671,6 +1677,42 @@ def _apply_fixed_video_title(script: dict, article: dict) -> dict:
     return script
 
 
+def _is_daily_recap(article: dict) -> bool:
+    plan = article.get("_topic_plan")
+    if isinstance(plan, dict) and plan.get("script_mode") == "daily_recap":
+        return True
+    st = str(article.get("source_type") or "")
+    return st == "cursor:astock_market"
+
+
+def _daily_recap_adapt_block(article: dict) -> str:
+    fixed = _resolve_fixed_video_title(article)
+    if not fixed and _is_daily_recap(article):
+        try:
+            from cursor_daily_topics import fixed_market_video_title
+
+            fixed = fixed_market_video_title()
+        except Exception:  # noqa: BLE001
+            fixed = ""
+    if not _is_daily_recap(article):
+        return ""
+    title_line = fixed or "X月X日A股大盘分析"
+    return (
+        "【本篇类型：A股每日收盘报盘视频（必须服从，禁止跑题）】\n"
+        f"- title 字段必须 exactly 为：{title_line}（禁止改成问句、禁止「钱去哪了」类悬念标题）\n"
+        "- keyword 建议：A股大盘\n"
+        "- 这是「帮观众快速看懂今天收盘」的报盘视频，不是板块专题、不是个股故事\n"
+        "- slides 固定 4 页分工（不得改成 MLCC/半导体深度解读）：\n"
+        "  · 第1页 cover：三大指数+科创50收盘数字报盘（口播念出点位与涨跌幅）\n"
+        "  · 第2页：成交额、较昨日缩量/放量、上涨/下跌家数\n"
+        "  · 第3页：领涨与领跌行业各 2–3 个（只报名字与涨跌，各 1 句）\n"
+        "  · 第4页：一句话总结今日结构（普涨/普跌/分化）+ 明日 1 条客观观察，不要操作建议\n"
+        "- 任一概念板块（MLCC、存储、CPO 等）全文合计不得超过 1 句、15 字\n"
+        "- cold_open 可用「今天X月X日收盘，帮你看懂大盘」风格，不必强行反差悬念\n"
+        "- hashtags 优先：A股、大盘、收盘、复盘（不要窄概念词）\n\n"
+    )
+
+
 def _topic_plan_block(article: dict) -> str:
     plan = article.get("_topic_plan")
     if not isinstance(plan, dict):
@@ -1679,19 +1721,22 @@ def _topic_plan_block(article: dict) -> str:
     fixed = str(plan.get("fixed_video_title") or "").strip()
     if fixed:
         parts.append(f"- 视频标题（必须一字不改）: {fixed}")
-    elif plan.get("title_hint"):
+    elif plan.get("title_hint") and not _is_daily_recap(article):
         parts.append(f"- 选题问句: {plan['title_hint']}")
     if plan.get("cold_open"):
-        parts.append(
-            f"- 冷开场（须保留生活化入口，可微调）: {plan['cold_open']}"
-        )
+        parts.append(f"- 冷开场（可微调）: {plan['cold_open']}")
     if plan.get("angle"):
         parts.append(f"- 本篇角度: {plan['angle']}")
     if plan.get("theme_cluster"):
         parts.append(f"- 概念簇: {plan['theme_cluster']}")
     if not parts:
         return ""
-    return "【选题已定（Hook-First，请服从）】\n" + "\n".join(parts) + "\n\n"
+    header = (
+        "【选题已定·每日报盘】\n"
+        if _is_daily_recap(article)
+        else "【选题已定（Hook-First，请服从）】\n"
+    )
+    return header + "\n".join(parts) + "\n\n"
 
 
 def adapt_article_to_script(
@@ -1738,6 +1783,7 @@ def adapt_article_to_script(
             data = merge_article_into_script(raw, article)
             data = soft_sanitize_script(data)  # 软修复长度类违规
             validated = validate_article_script(data, article)
+            validated = _apply_fixed_video_title(validated, article)
             print_douyin_pre_publish_scan(validated)
             return validated, agent_id
         except (ValueError, json.JSONDecodeError) as e:

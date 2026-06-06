@@ -19,7 +19,6 @@ from publish_caption import (
     print_manual_publish_pack,
     tiktok_enabled,
     wechat_enabled,
-    xhs_article_enabled,
     xueqiu_enabled,
     youtube_enabled,
     zhihu_enabled,
@@ -32,6 +31,22 @@ def log(message: str) -> None:
     print(message, flush=True)
 
 
+# 本轮批量执行中，用户交互输入 s 跳过的发布渠道（同进程后续视频自动跳过）
+_skipped_publish_labels: set[str] = set()
+
+
+def reset_publish_skips() -> None:
+    _skipped_publish_labels.clear()
+
+
+def _mark_publish_skipped(label: str) -> None:
+    _skipped_publish_labels.add(label)
+
+
+def _publish_skipped(label: str) -> bool:
+    return label in _skipped_publish_labels
+
+
 def _auto_publish_platforms_label() -> str:
     names: list[str] = []
     if youtube_enabled():
@@ -39,7 +54,7 @@ def _auto_publish_platforms_label() -> str:
     if tiktok_enabled():
         names.append("TikTok")
     if bilibili_enabled():
-        names.append("B站")
+        names.append("B站视频")
     if eastmoney_enabled():
         names.append("东方财富")
     if xueqiu_enabled():
@@ -48,8 +63,6 @@ def _auto_publish_platforms_label() -> str:
         names.append("微信公众号")
     if zhihu_enabled():
         names.append("知乎专栏")
-    if xhs_article_enabled():
-        names.append("小红书图文")
     return " / ".join(names) if names else ""
 
 
@@ -137,7 +150,6 @@ def publish_bilibili_api(
     script_path: Path,
     *,
     dry_run: bool,
-    forum_dir: Path | None = None,
     skip_video: bool = False,
 ) -> str:
     cmd = [
@@ -146,8 +158,6 @@ def publish_bilibili_api(
         "--script",
         rel(script_path),
     ]
-    if forum_dir and (forum_dir / "post.md").is_file():
-        cmd += ["--forum", rel(forum_dir)]
     if skip_video or _bilibili_skip_video():
         cmd.append("--skip-video")
     if dry_run:
@@ -228,8 +238,11 @@ def _publish_with_retry(do_fn, *, label: str, dry_run: bool) -> str:
     """发布失败不退出：提示翻墙并一直重试，直到成功或达到上限。
 
     AIVIDEO_PUBLISH_MAX_RETRIES<=0（默认）= 无限重试；交互式终端可直接回车立即重试、
-    输入 s 跳过本平台。
+    输入 s 跳过本平台（本轮后续视频同渠道也跳过）。
     """
+    if _publish_skipped(label):
+        log(f"  ↳ [{label}] 本轮已跳过（前序视频已标记 s）。")
+        return ""
     max_attempts, sleep_s = _retry_config()
     attempt = 0
     while True:
@@ -246,7 +259,8 @@ def _publish_with_retry(do_fn, *, label: str, dry_run: bool) -> str:
             if sys.stdin and sys.stdin.isatty():
                 log(f"     （回车=立即重试；输入 s 回车=跳过 {label}）")
                 if _wait_or_skip(sleep_s):
-                    log(f"  ↳ [{label}] 已按要求跳过。")
+                    _mark_publish_skipped(label)
+                    log(f"  ↳ [{label}] 已按要求跳过（本轮后续视频同渠道也将跳过）。")
                     return ""
             else:
                 time.sleep(sleep_s)
@@ -300,7 +314,6 @@ def publish_bilibili(
     script_path: Path,
     *,
     dry_run: bool,
-    forum_dir: Path | None = None,
     skip_video: bool = False,
 ) -> str:
     if not bilibili_enabled():
@@ -311,30 +324,13 @@ def publish_bilibili(
             video,
             script_path,
             dry_run=dry_run,
-            forum_dir=forum_dir,
             skip_video=skip_video,
         )
         if title:
-            if _bilibili_skip_video():
-                log(f"  [B站] 已同步专栏/跳过视频上传: {title}")
+            if _bilibili_skip_video() or skip_video:
+                log(f"  [B站] 跳过视频上传: {title}")
             else:
                 log(f"  [B站] 视频已提交: {title}")
-            article_url = _read_last_publish_url(
-                "last_bilibili_publish.json", "article", "url"
-            )
-            if article_url:
-                log_path = ROOT / "logs" / "last_bilibili_publish.json"
-                published = False
-                if log_path.is_file():
-                    try:
-                        art = json.loads(log_path.read_text(encoding="utf-8")).get(
-                            "article"
-                        ) or {}
-                        published = bool(art.get("published"))
-                    except (OSError, json.JSONDecodeError):
-                        pass
-                label = "专栏已发布" if published else "专栏草稿"
-                log(f"  [B站] {label}: {article_url}")
         return title
 
     return _publish_forum_with_retry(
@@ -356,6 +352,9 @@ def _publish_forum_with_retry(
     non_retryable=None,
 ) -> str:
     """论坛 Playwright 发布：cookie 失效已在内部等待扫码；其它错误可重试/跳过。"""
+    if _publish_skipped(label):
+        log(f"  ↳ [{label}] 本轮已跳过（前序视频已标记 s）。")
+        return ""
     max_attempts, sleep_s = _retry_config()
     attempt = 0
     while True:
@@ -378,7 +377,8 @@ def _publish_forum_with_retry(
             if sys.stdin and sys.stdin.isatty():
                 log(f"     （回车=立即重试；输入 s 回车=跳过 {label}）")
                 if _wait_or_skip(sleep_s):
-                    log(f"  ↳ [{label}] 已按要求跳过。")
+                    _mark_publish_skipped(label)
+                    log(f"  ↳ [{label}] 已按要求跳过（本轮后续视频同渠道也将跳过）。")
                     return ""
             else:
                 time.sleep(sleep_s)
@@ -441,38 +441,6 @@ def publish_zhihu(forum_dir: str | Path, *, dry_run: bool) -> str:
         return title
 
     return _publish_forum_with_retry(_do, label="知乎专栏", dry_run=dry_run)
-
-
-def publish_xhs_article(
-    forum_dir: str | Path, script_path: Path, *, dry_run: bool
-) -> str:
-    if not xhs_article_enabled():
-        return ""
-    path = Path(forum_dir)
-    if not path.is_absolute():
-        path = ROOT / path
-    if not (path / "post.md").is_file():
-        log(f"  ↳ [小红书图文] 跳过：无论坛包 {rel(path)}")
-        return ""
-
-    script: dict | None = None
-    try:
-        data = json.loads(script_path.read_text(encoding="utf-8"))
-        script = data.get("script", data)
-        if not isinstance(script, dict):
-            script = None
-    except (OSError, json.JSONDecodeError):
-        script = None
-
-    def _do() -> str:
-        from publish_xhs_article import publish_forum_dir
-
-        title = publish_forum_dir(path, dry_run=dry_run, script=script, force=True)
-        if title:
-            log(f"  [小红书图文] 草稿: {title}")
-        return title
-
-    return _publish_forum_with_retry(_do, label="小红书图文", dry_run=dry_run)
 
 
 def publish_wechat(forum_dir: str | Path, *, dry_run: bool) -> str:
@@ -563,6 +531,8 @@ def pipeline_after_script(
     skip_publish: bool = False,
 ) -> dict:
     del publish_check  # 保留参数兼容；国内平台改手动发布
+    if index == 1:
+        reset_publish_skips()
 
     run([str(ROOT / "scripts" / "run-enrich-images.sh"), str(script_path)], label="生图")
     run([str(ROOT / "scripts" / "run-compose.sh"), str(script_path)], label="合成")
@@ -581,28 +551,20 @@ def pipeline_after_script(
     xueqiu_title = ""
     wechat_title = ""
     zhihu_title = ""
-    xhs_article_title = ""
 
     if dry_run:
         log(f"\n=== [{index}/{target}] 预演 API 发布 ===")
         youtube_url = publish_youtube(video, script_path, dry_run=True)
         tiktok_url = publish_tiktok(video, script_path, dry_run=True)
+        bilibili_title = publish_bilibili(video, script_path, dry_run=True)
         forum_for_bili = video.parent / video.stem
-        if not (forum_for_bili / "post.md").is_file():
-            forum_for_bili = None
-        bilibili_title = publish_bilibili(
-            video, script_path, dry_run=True, forum_dir=forum_for_bili
-        )
-        if forum_for_bili:
+        if (forum_for_bili / "post.md").is_file():
             wechat_title = publish_wechat(forum_for_bili, dry_run=True)
         forum_preview = video.parent / video.stem
         if forum_preview.is_dir() and (forum_preview / "post.md").is_file():
             eastmoney_title = publish_eastmoney(forum_preview, dry_run=True)
             xueqiu_title = publish_xueqiu(forum_preview, dry_run=True)
             zhihu_title = publish_zhihu(forum_preview, dry_run=True)
-            xhs_article_title = publish_xhs_article(
-                forum_preview, script_path, dry_run=True
-            )
         print_manual_publish_pack(
             script_path,
             video,
@@ -613,7 +575,6 @@ def pipeline_after_script(
             xueqiu_title=xueqiu_title,
             wechat_title=wechat_title,
             zhihu_title=zhihu_title,
-            xhs_article_title=xhs_article_title,
             skip_auto_note=True,
         )
         return {
@@ -628,7 +589,6 @@ def pipeline_after_script(
             "xueqiu_title": xueqiu_title,
             "wechat_title": wechat_title,
             "zhihu_title": zhihu_title,
-            "xhs_article_title": xhs_article_title,
         }
 
     if (
@@ -639,19 +599,14 @@ def pipeline_after_script(
         or eastmoney_enabled()
         or xueqiu_enabled()
         or zhihu_enabled()
-        or xhs_article_enabled()
     ):
         label = _auto_publish_platforms_label()
         log(f"\n=== [{index}/{target}] API 自动发布（{label}）===")
     youtube_url = publish_youtube(video, script_path, dry_run=False)
     tiktok_url = publish_tiktok(video, script_path, dry_run=False)
     forum_for_bili = video.parent / video.stem
-    if not (forum_for_bili / "post.md").is_file():
-        forum_for_bili = None
-    bilibili_title = publish_bilibili(
-        video, script_path, dry_run=False, forum_dir=forum_for_bili
-    )
-    if forum_for_bili:
+    bilibili_title = publish_bilibili(video, script_path, dry_run=False)
+    if (forum_for_bili / "post.md").is_file():
         wechat_title = publish_wechat(forum_for_bili, dry_run=False)
 
     append_history_fn(script_path)
@@ -664,9 +619,6 @@ def pipeline_after_script(
         eastmoney_title = publish_eastmoney(archived["forum"], dry_run=False)
         xueqiu_title = publish_xueqiu(archived["forum"], dry_run=False)
         zhihu_title = publish_zhihu(archived["forum"], dry_run=False)
-        xhs_article_title = publish_xhs_article(
-            archived["forum"], script_path, dry_run=False
-        )
 
     print_manual_publish_pack(
         script_path,
@@ -678,7 +630,6 @@ def pipeline_after_script(
         xueqiu_title=xueqiu_title,
         wechat_title=wechat_title,
         zhihu_title=zhihu_title,
-        xhs_article_title=xhs_article_title,
     )
 
     return {
@@ -694,7 +645,6 @@ def pipeline_after_script(
             or eastmoney_title
             or xueqiu_title
             or zhihu_title
-            or xhs_article_title
         ),
         "youtube_url": youtube_url,
         "tiktok_url": tiktok_url,
@@ -703,7 +653,6 @@ def pipeline_after_script(
         "eastmoney_title": eastmoney_title,
         "xueqiu_title": xueqiu_title,
         "zhihu_title": zhihu_title,
-        "xhs_article_title": xhs_article_title,
     }
 
 
@@ -729,14 +678,20 @@ def process_topic(
     if co:
         log(f"  冷开场: {co}")
     article = dict(article)
-    article["_topic_plan"] = {
+    plan = {
         "title_hint": topic.get("title_hint"),
         "cold_open": topic.get("cold_open"),
         "theme_cluster": topic.get("theme_cluster"),
         "angle": topic.get("angle"),
         "direction": topic.get("direction"),
         "category": topic.get("category"),
+        "slot": topic.get("slot") or topic.get("cursor_slot"),
+        "script_mode": topic.get("script_mode"),
+        "fixed_video_title": topic.get("fixed_video_title"),
     }
+    article["_topic_plan"] = {k: v for k, v in plan.items() if v}
+    if topic.get("fixed_video_title"):
+        article["_fixed_video_title"] = topic["fixed_video_title"]
     script, _ = run_article_research(
         output=script_path,
         auto_pick=True,

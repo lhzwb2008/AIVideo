@@ -504,6 +504,15 @@ def _validate_professional_sections(
         raise RuntimeError(f"长文章节过短：{', '.join(short_sections[:3])}")
 
 
+def _is_daily_recap_script(script: dict, article: dict | None = None) -> bool:
+    plan = script.get("_topic_plan")
+    if isinstance(plan, dict) and plan.get("script_mode") == "daily_recap":
+        return True
+    if isinstance(article, dict) and str(article.get("source_type") or "") == "cursor:astock_market":
+        return True
+    return False
+
+
 def _generate_professional_forum_sections(
     script: dict,
     *,
@@ -523,6 +532,15 @@ def _generate_professional_forum_sections(
         details_json=json.dumps(_details_digest(details), ensure_ascii=False, indent=2),
         script_json=json.dumps(_script_digest(script), ensure_ascii=False, indent=2),
     )
+    if _is_daily_recap_script(script, article):
+        fixed = str(script.get("title") or "").strip()
+        base_user += (
+            "\n\n【长文类型：A股每日收盘报盘】\n"
+            f"- 标题必须与视频一致：{fixed}，禁止悬念问句\n"
+            "- 4 节与视频分镜一一对应：①指数报盘 ②量能与涨跌家数 ③行业涨跌一览 ④一句话总结\n"
+            "- 简单分析即可，禁止写成 MLCC/半导体/个股专题；行业名点到为止\n"
+            "- 少用「加仓」「割肉」；资金用净流入/净流出\n"
+        )
     last_err: Exception | None = None
     user = base_user
     attempts = int(os.environ.get("AIVIDEO_FORUM_ARTICLE_RETRIES", "2"))
@@ -536,6 +554,8 @@ def _generate_professional_forum_sections(
         try:
             data = extract_json(raw)
             title = _sanitize_forum_title(str(data.get("title") or script.get("title") or "未命名"))
+            if _is_daily_recap_script(script, article):
+                title = _sanitize_forum_title(str(script.get("title") or title))
             rows = data.get("sections") or data.get("paragraphs") or []
             if not rows and isinstance(data.get("body"), str) and data["body"].strip():
                 rows = [{"headline": title, "body": data["body"].strip()}]

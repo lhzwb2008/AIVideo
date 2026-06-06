@@ -448,6 +448,7 @@ async def _insert_body_image(page, image_path: str) -> None:
     if "usercenter" in page.url.lower() or "/login" in page.url.lower():
         raise EastmoneyPublishError("插入配图时跳转到登录页，请重新 ./eastmoney-login.sh")
 
+    await _dismiss_dialogs(page)
     await move_cursor_to_end(page)
     await page.keyboard.press("Enter")
 
@@ -455,7 +456,12 @@ async def _insert_body_image(page, image_path: str) -> None:
     await btn.wait_for(state="visible", timeout=10_000)
     before = await page.locator(".ProseMirror img").count()
 
-    await btn.click(timeout=10_000)
+    await _dismiss_dialogs(page)
+    try:
+        await btn.click(timeout=10_000)
+    except Exception:
+        await _hide_prompt_overlays(page)
+        await btn.click(timeout=10_000, force=True)
     await asyncio.sleep(0.5)
     file_input = page.locator(".upload_wrap #upload_input, .upload_wrap input[type='file']").first
     await file_input.wait_for(state="attached", timeout=15_000)
@@ -636,9 +642,86 @@ async def _upload_cover(page, cover_path: str) -> None:
     raise EastmoneyPublishError("封面上传后未检测到预览图")
 
 
+async def _hide_prompt_overlays(page) -> bool:
+    """prompt_wrapper 会挡住 em_icon_image 等工具栏；JS 兜底移除。"""
+    try:
+        removed = await page.evaluate(
+            """
+            () => {
+              let n = 0;
+              document.querySelectorAll('.prompt_wrapper').forEach((el) => {
+                el.style.display = 'none';
+                el.style.pointerEvents = 'none';
+                el.remove();
+                n += 1;
+              });
+              return n;
+            }
+            """
+        )
+        return bool(removed)
+    except Exception:
+        return False
+
+
+async def _dismiss_prompt_wrapper(page) -> bool:
+    """关闭东方财富编辑器新手引导/提示层（常见遮挡插图按钮）。"""
+    dismissed = False
+    prompt = page.locator(".prompt_wrapper").first
+    try:
+        if not await prompt.is_visible(timeout=400):
+            return False
+    except Exception:
+        return False
+
+    for sel in (
+        ".btn_confirm",
+        ".dialog_btn_confirm",
+        "button:has-text('知道了')",
+        "button:has-text('我知道了')",
+        "button:has-text('确定')",
+        "button:has-text('关闭')",
+        "button",
+    ):
+        btn = prompt.locator(sel).first
+        try:
+            if await btn.is_visible(timeout=300):
+                await btn.click(timeout=3000, force=True)
+                await asyncio.sleep(0.4)
+                dismissed = True
+                break
+        except Exception:
+            continue
+
+    if not dismissed:
+        for close_sel in (".close", ".el-dialog__close", "[class*='close']"):
+            close = prompt.locator(close_sel).first
+            try:
+                if await close.is_visible(timeout=300):
+                    await close.click(timeout=2000, force=True)
+                    dismissed = True
+                    await asyncio.sleep(0.3)
+                    break
+            except Exception:
+                continue
+
+    if not dismissed:
+        try:
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
+        except Exception:
+            pass
+
+    if await prompt.is_visible(timeout=300):
+        dismissed = await _hide_prompt_overlays(page) or dismissed
+    return dismissed
+
+
 async def _dismiss_dialogs(page) -> None:
-    for _ in range(5):
+    for _ in range(6):
         clicked = False
+        if await _dismiss_prompt_wrapper(page):
+            clicked = True
         for sel in (
             ".dialog_btn_confirm",
             ".dialog_wrapper .btn_confirm",
@@ -656,18 +739,6 @@ async def _dismiss_dialogs(page) -> None:
                     break
             except Exception:
                 continue
-        prompt = page.locator(".prompt_wrapper").first
-        try:
-            if await prompt.is_visible(timeout=300):
-                await page.keyboard.press("Escape")
-                await asyncio.sleep(0.3)
-                close = prompt.locator(".close, .el-dialog__close, [class*='close']").first
-                if await close.count():
-                    await close.click(timeout=2000, force=True)
-                    clicked = True
-                    await asyncio.sleep(0.3)
-        except Exception:
-            pass
         if clicked:
             continue
         close = page.locator(".dialog_wrapper .close, .el-dialog__close").first
@@ -678,6 +749,8 @@ async def _dismiss_dialogs(page) -> None:
                 continue
         except Exception:
             pass
+        if await _hide_prompt_overlays(page):
+            continue
         break
 
 
@@ -824,6 +897,7 @@ async def publish_forum_pack(
             if publish_title != data["title"]:
                 print(f"  标题略改（避免重复）: {publish_title}", flush=True)
             await _fill_title(page, publish_title)
+            await _dismiss_dialogs(page)
             await _fill_body_sections(
                 page,
                 data["sections"],

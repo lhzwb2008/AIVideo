@@ -47,11 +47,158 @@ SLOT_TO_CATEGORY: dict[str, str] = {
     "world": "hkus",
 }
 
+_CN_TZ_OFFSET = timedelta(hours=8)
+ASTOCK_MARKET_SLOT = "astock_market"
+
+
+def china_today() -> date:
+    """中国时区（UTC+8）下的日历日期。"""
+    return (datetime.now(timezone.utc) + _CN_TZ_OFFSET).date()
+
+
+def _cn_holiday_dates() -> set[date]:
+    """可选：.env 里 AIVIDEO_CN_HOLIDAYS=2026-01-01,2026-02-18 补充法定节假日。"""
+    raw = os.environ.get("AIVIDEO_CN_HOLIDAYS", "").strip()
+    out: set[date] = set()
+    for part in raw.replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.add(date.fromisoformat(part))
+        except ValueError:
+            continue
+    return out
+
+
+def is_cn_workday(d: date | None = None) -> bool:
+    """是否为中国工作日（周一至周五，且不在 AIVIDEO_CN_HOLIDAYS 列表）。"""
+    d = d or china_today()
+    if d in _cn_holiday_dates():
+        return False
+    return d.weekday() < 5
+
+
+def should_skip_astock_market_today() -> bool:
+    """非工作日跳过第一槽位「A股大盘报盘」；AIVIDEO_FORCE_ASTOCK_MARKET=1 可强制保留。"""
+    if os.environ.get("AIVIDEO_SKIP_ASTOCK_MARKET_OFFDAY", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+    ):
+        return False
+    if os.environ.get("AIVIDEO_FORCE_ASTOCK_MARKET", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return False
+    return not is_cn_workday()
+
 
 def fixed_market_video_title(d: date | None = None) -> str:
     """第一槽位固定视频/文章标题，如「6月4日A股大盘分析」。"""
     d = d or date.today()
     return f"{d.month}月{d.day}日A股大盘分析"
+
+
+def astock_market_cold_open(d: date | None = None) -> str:
+    d = d or date.today()
+    return f"{d.month}月{d.day}日收盘了，3分钟帮你看懂大盘"
+
+
+def _safe_date(year: int, month: int, day: int) -> date | None:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _md_to_date(month: int, day: int) -> date | None:
+    """只有「M月D日」时按当前年份推断；若推断出未来日期则回退到去年。"""
+    today = date.today()
+    d = _safe_date(today.year, month, day)
+    if d and d > today:
+        d = _safe_date(today.year - 1, month, day)
+    return d
+
+
+def _extract_trading_date(markdown: str) -> date | None:
+    """从大盘报盘草稿里解析「最近已收盘交易日」（不是今天）。
+
+    优先级：机器标记 > 明确描述「已收盘/对应…交易日」> 通用年月日（排除被描述为未收盘的今天）。
+    """
+    if not markdown:
+        return None
+
+    # 1) 机器可读标记：交易日：YYYY-MM-DD
+    m = re.search(r"交易日[：:]\s*(\d{4})-(\d{1,2})-(\d{1,2})", markdown)
+    if m:
+        d = _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        if d:
+            return d
+
+    # 2) 明确描述「已完整收盘的交易日为 …」/「对应 … 交易日」/「收盘数据对应 …」
+    desc_patterns = (
+        r"已(?:完整)?收盘的交易日为\s*(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日",
+        r"对应\s*(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日\s*(?:交易日|收盘)",
+        r"收盘数据(?:主要)?(?:对应|为|来自)\s*(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日",
+    )
+    for pat in desc_patterns:
+        m = re.search(pat, markdown)
+        if m:
+            year = int(m.group(1)) if m.group(1) else None
+            month, day = int(m.group(2)), int(m.group(3))
+            d = _safe_date(year, month, day) if year else _md_to_date(month, day)
+            if d:
+                return d
+
+    # 3) 通用兜底：收集所有「YYYY年M月D日」，排除被描述为「尚未收盘/盘中」的今天
+    today = date.today()
+    candidates: list[date] = []
+    for ym in re.finditer(r"(\d{4})年(\d{1,2})月(\d{1,2})日", markdown):
+        d = _safe_date(int(ym.group(1)), int(ym.group(2)), int(ym.group(3)))
+        if not d or d > today:
+            continue
+        # 若该日期紧邻「尚未收盘/未收盘/盘中/早间」等字样，视为今天、跳过
+        ctx = markdown[max(0, ym.start() - 10): ym.end() + 16]
+        if d == today and re.search(r"尚未收盘|未收盘|盘中|早间|开盘", ctx):
+            continue
+        candidates.append(d)
+    if candidates:
+        # 取最近的一个已收盘交易日（最大但 ≤ 今天；优先非今天）
+        non_today = [d for d in candidates if d != today]
+        pool = non_today or candidates
+        return max(pool)
+    return None
+
+
+def market_title_for_date(d: date) -> str:
+    return f"{d.month}月{d.day}日A股大盘分析"
+
+
+def topic_plan_for_slot(slot: str, *, d: date | None = None) -> dict:
+    """各槽位写入 _topic_plan，供 Opus 改编时约束形态。"""
+    d = d or date.today()
+    if slot == "astock_market":
+        fixed = fixed_market_video_title(d)
+        return {
+            "slot": slot,
+            "script_mode": "daily_recap",
+            "fixed_video_title": fixed,
+            "title_hint": fixed,
+            "cold_open": astock_market_cold_open(d),
+            "angle": "收盘数据报盘+简要解读，不写板块专题",
+            "theme_cluster": "astock_daily_recap",
+        }
+    label = SLOT_LABEL.get(slot, slot)
+    return {
+        "slot": slot,
+        "title_hint": f"{d.isoformat()} {label}",
+        "angle": label,
+        "theme_cluster": f"cursor_{slot}",
+    }
 
 
 _COMMON_RULES = """
@@ -64,20 +211,47 @@ _COMMON_RULES = """
 """
 
 _SLOT_PROMPTS: dict[str, str] = {
-    "astock_market": """你是 A 股日终复盘作者。请联网搜索 A 股「最新一个交易日」的大盘与资金面。
+    "astock_market": """你是 A 股**收盘播报编辑**（不是板块研究员、不是个股故事写手）。
+请联网核对 A 股「最近一个**已完整收盘**的交易日」的收盘数据，写一篇 **每日报盘 + 简单分析**（全文 1000–1600 字，宁可短也不要跑题）。
 
-写一篇 **A股大盘报盘与分析**（1800–2800 字），结构：
-1. 文章一级标题（# 标题）必须 exactly 为：{market_title}（禁止改成「报盘与分析」「大盘复盘」等其它说法）
-2. 一句话结论（今日市场性格：进攻/防守/分化等）
-3. 三大指数 + 科创50/北证50 收盘表现（点位、涨跌幅）
-4. 量能：成交额、较昨日缩量/放量、涨跌家数
-5. 板块与风格：领涨/领跌行业、资金主线（各举 2–3 个方向，不展开成个股推荐）
-6. 北向/主力/情绪指标（有数据则写，无则标注待核实）
-7. 与前一交易日对比：情绪是改善还是恶化
-8. 后市观察（3 条客观线索，非操作建议）
-9. 结语
+【交易日判定（重要）】
+- 写的是「最近一个已经收盘的交易日」，不是日历上的今天。例如：周六/周日或交易日盘中、收盘前运行，都要取**上一个已收盘交易日**（周一早上跑 → 取上周五）。
+- 在正文**第一行**单独输出一行机器可读标记：`交易日：YYYY-MM-DD`（你联网确认的那个已收盘交易日）。这行必须存在、放最前面。
 
-不要写成单一概念板块深度稿；本篇重点是 **全景报盘**。
+# 一级标题
+紧接着写一级标题，格式固定为「{{月}}月{{日}}日A股大盘分析」，其中「月/日」取上面那行的交易日（不是今天）。例如交易日是 2026-06-04，标题就是「6月4日A股大盘分析」。禁止写成问句或别的说法。
+
+## 一、今日报盘（只摆数据，不超过 350 字）
+必须按条目写出（有则写数字，没有则写「数据待核实」）：
+- 上证指数：收盘点位、涨跌幅
+- 深证成指：收盘点位、涨跌幅
+- 创业板指：收盘点位、涨跌幅
+- 科创50：收盘点位、涨跌幅
+- 沪深两市成交额、较前一交易日缩量或放量多少
+- 上涨家数 / 下跌家数 / 平盘（注明媒体口径若不一致）
+
+## 二、盘面一句话（不超过 60 字）
+用一句话概括今日市场性格（如：指数小跌、个股普跌、缩量观望、结构分化等）。
+
+## 三、行业涨跌一览（不超过 200 字）
+- 领涨行业 3 个：只写行业名 + 大致涨跌幅，每个行业最多补 1 句事实
+- 领跌行业 3 个：同上
+禁止：把某一概念（MLCC、存储、CPO、某只个股）写成半篇文章。
+
+## 四、简单分析（不超过 350 字，共 3 点，每点 2–3 句）
+只回答：
+1）指数为什么这样走（结合量能/结构，不要预测明天涨跌）
+2）涨跌家数说明什么情绪
+3）今天是普涨、普跌还是二八分化（举 1 个行业例子即可）
+
+## 五、明日关注（3 条 bullet，每条 1 句，客观线索，非操作建议）
+
+【严禁跑题 — 违反则视为失败】
+- 禁止问句/悬念标题（如「钱去哪了」「为什么跌」）
+- 禁止单一板块/概念深度分析（MLCC、半导体涨价、存储周期等最多提 1 次、不超过 15 字）
+- 禁止个股案例、龙虎榜、妖股、连板
+- 禁止国际宏观（美联储、美股）占篇幅
+- 禁止「加仓」「减仓」「割肉」「抄底」等操作建议措辞；资金描述用「净流入/净流出」
 """ + _COMMON_RULES,
     "astock_sector": """你是 A 股板块研究员。请联网搜索 A 股「最新一个交易日」盘面。
 
@@ -135,11 +309,26 @@ _SLOT_PROMPTS: dict[str, str] = {
 }
 
 
-def planned_slots(target: int, *, start_offset: int = 0) -> list[str]:
+def planned_slots(
+    target: int,
+    *,
+    start_offset: int = 0,
+    skip_astock_market: bool = False,
+) -> list[str]:
     if target <= 0:
         return []
     n = len(CURSOR_SLOT_ORDER)
-    return [CURSOR_SLOT_ORDER[(start_offset + i) % n] for i in range(target)]
+    if not skip_astock_market:
+        return [CURSOR_SLOT_ORDER[(start_offset + i) % n] for i in range(target)]
+    out: list[str] = []
+    i = 0
+    while len(out) < target and i < n * max(target, 1):
+        slot = CURSOR_SLOT_ORDER[(start_offset + i) % n]
+        i += 1
+        if slot == ASTOCK_MARKET_SLOT:
+            continue
+        out.append(slot)
+    return out
 
 
 def _today_queue_offset() -> int:
@@ -184,22 +373,39 @@ def discover_cursor_topics(*, target: int = 5) -> list[dict]:
     """生成今日固定槽位话题列表（不调 Exa、不调 Opus 选题）。"""
     load_env()
     start = _today_queue_offset()
-    slots = planned_slots(target, start_offset=start)
-    today = date.today().isoformat()
+    skip_market = should_skip_astock_market_today()
+    if skip_market:
+        d = china_today()
+        weekday = "六日"[d.weekday() - 5] if d.weekday() >= 5 else ""
+        reason = f"周{weekday}" if weekday else f"{d.isoformat()}（法定节假日）"
+        print(
+            f"  ⏭  今日非工作日（{reason}），跳过槽位「{SLOT_LABEL[ASTOCK_MARKET_SLOT]}」",
+            flush=True,
+        )
+    slots = planned_slots(target, start_offset=start, skip_astock_market=skip_market)
+    today = china_today().isoformat()
     topics: list[dict] = []
     for i, slot in enumerate(slots, 1):
         label = SLOT_LABEL[slot]
-        topics.append({
+        plan = topic_plan_for_slot(slot)
+        row = {
             "index": i,
             "slot": slot,
             "direction": slot,
             "cursor_slot": slot,
-            "title_hint": f"{today} {label}",
+            "title_hint": plan.get("title_hint") or f"{today} {label}",
             "category": SLOT_TO_CATEGORY.get(slot, "ai"),
-            "theme_cluster": f"cursor_{slot}",
-            "angle": label,
+            "theme_cluster": plan.get("theme_cluster") or f"cursor_{slot}",
+            "angle": plan.get("angle") or label,
             "reason": f"固定槽位 #{i}：{label}",
-        })
+        }
+        if plan.get("fixed_video_title"):
+            row["fixed_video_title"] = plan["fixed_video_title"]
+        if plan.get("cold_open"):
+            row["cold_open"] = plan["cold_open"]
+        if plan.get("script_mode"):
+            row["script_mode"] = plan["script_mode"]
+        topics.append(row)
     return topics
 
 
@@ -236,10 +442,11 @@ def run_cursor_draft(
     if slot not in _SLOT_PROMPTS:
         raise ValueError(f"未知槽位: {slot}")
     today = date.today().isoformat()
+    raw = _SLOT_PROMPTS[slot]
     prompt = (
-        f"【当前日期参考】{today}\n"
+        f"【当前日期参考】{today}（注意：A股大盘报盘要写最近一个已收盘交易日，未必是今天）\n"
         f"【本任务类型】{SLOT_LABEL[slot]}\n\n"
-        + _SLOT_PROMPTS[slot]
+        + raw
     )
     print(f"  ☁️  Cursor Cloud Agent · {SLOT_LABEL[slot]} · model={model_id()}", flush=True)
     if agent_id:
@@ -293,7 +500,33 @@ def build_cursor_topic_research(
     draft_path = _save_draft(slot, markdown, meta)
     print(f"  ✓ Cursor 草稿已保存: {draft_path} ({len(markdown)} 字)")
 
-    title = _extract_title(markdown, str(topic.get("title_hint") or SLOT_LABEL[slot]))
+    plan = topic_plan_for_slot(slot)
+    for key in (
+        "fixed_video_title", "cold_open", "script_mode",
+        "title_hint", "angle", "theme_cluster",
+    ):
+        if topic.get(key):
+            plan[key] = topic[key]
+    fixed_title = str(
+        topic.get("fixed_video_title") or plan.get("fixed_video_title") or ""
+    ).strip()
+
+    # 大盘报盘：以正文里的「实际交易日」为准生成标题/冷开场，避免写死成今天。
+    if slot == "astock_market":
+        trading_day = _extract_trading_date(markdown)
+        if trading_day:
+            fixed_title = market_title_for_date(trading_day)
+            plan["fixed_video_title"] = fixed_title
+            plan["cold_open"] = astock_market_cold_open(trading_day)
+            print(f"  📅 报盘交易日：{trading_day.isoformat()} → 标题「{fixed_title}」")
+        else:
+            print("  ⚠️  未能从草稿解析交易日，沿用今日日期标题", file=sys.stderr)
+
+    fallback = fixed_title or str(topic.get("title_hint") or SLOT_LABEL[slot])
+    title = fixed_title or _extract_title(markdown, fallback)
+    if slot == "astock_market" and fixed_title:
+        title = fixed_title
+
     article = {
         "title": title,
         "question_title": "",
@@ -305,11 +538,14 @@ def build_cursor_topic_research(
         "summary_zh": markdown[:500],
         "thesis": title,
         "key_facts": [],
-        "narrative_arc": SLOT_LABEL[slot],
+        "narrative_arc": "A股每日收盘报盘",
         "source_type": f"cursor:{slot}",
         "_cursor_draft": str(draft_path),
         "_compliance_relaxed": True,
+        "_topic_plan": plan,
     }
+    if fixed_title:
+        article["_fixed_video_title"] = fixed_title
 
     print(f"  🤖 Opus 深读 Cursor 草稿（抽取短视频素材）…")
     details, _ = deep_read_article(article, agent_id=None, full_text=markdown)

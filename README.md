@@ -227,12 +227,9 @@ src/
 
 开关：`AIVIDEO_PUBLISH_TIKTOK=0`。记录：`logs/last_tiktok_publish.json`。
 
-### B站（主流程可选，biliup 视频 + 专栏长文）
+### B站（主流程可选，biliup 视频投稿）
 
-B 站支持**视频投稿**和**专栏长文**（创作中心 → 专栏）。开启 `AIVIDEO_PUBLISH_BILIBILI=1` 后，主流程会：
-
-1. 用 biliup 上传成片（与论坛包同名的 `output/xxx/` 目录）
-2. 若存在论坛图文包（`post.md` + `cover.jpg` + `images/`），自动同步专栏并**浏览器提交发布**（含封面与分段配图）
+开启 `AIVIDEO_PUBLISH_BILIBILI=1` 后，主流程会用 biliup 自动上传成片。
 
 ```bash
 ./setup-sau.sh
@@ -240,10 +237,9 @@ B 站支持**视频投稿**和**专栏长文**（创作中心 → 专栏）。�
 # .env: AIVIDEO_PUBLISH_BILIBILI=1
 ./make-and-publish.sh
 ./scripts/publish-bilibili.sh output/xxx.mp4 --script logs/xxx.json
-# 仅视频、不发专栏：加 --no-article
 ```
 
-创作中心：[member.bilibili.com](https://member.bilibili.com/platform/home)。视频默认分区 `BILIBILI_TID=207`（知识·财经商业）。专栏默认自动发布（`BILIBILI_ARTICLE_AUTO_PUBLISH=0` 仅保存草稿）。记录：`logs/last_bilibili_publish.json`。
+创作中心：[member.bilibili.com](https://member.bilibili.com/platform/home)。视频默认分区 `BILIBILI_TID=207`（知识·财经商业）。记录：`logs/last_bilibili_publish.json`。
 
 ### 国内平台（手动）
 

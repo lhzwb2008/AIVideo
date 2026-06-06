@@ -54,14 +54,6 @@ def _verify_sync(platform: str, *, account: str | None) -> bool:
         from zhihu_session import verify_editor_sync
 
         return verify_editor_sync(account=account)
-    if platform == "xiaohongshu":
-        from xhs_article_publisher import cookie_path
-
-        try:
-            path = cookie_path(account=account)
-            return path.is_file() and path.stat().st_size > 64
-        except Exception:
-            return False
     raise ValueError(f"未知平台: {platform}")
 
 
@@ -81,15 +73,6 @@ def _login_sync(platform: str, *, account: str | None) -> None:
 
         asyncio.run(login_interactive(account=account))
         return
-    if platform == "xiaohongshu":
-        import subprocess
-
-        from paths import ROOT
-
-        script = ROOT / "social-login.sh"
-        if script.is_file():
-            subprocess.run([str(script), "xiaohongshu"], cwd=str(ROOT), check=False)
-        return
     raise ValueError(f"未知平台: {platform}")
 
 
@@ -104,7 +87,6 @@ def ensure_logged_in_sync(
         "eastmoney": "东方财富",
         "xueqiu": "雪球",
         "zhihu": "知乎专栏",
-        "xiaohongshu": "小红书",
     }.get(platform, platform)
     if _verify_sync(platform, account=account):
         return
@@ -139,7 +121,6 @@ def run_with_relogin(
         "eastmoney": "东方财富",
         "xueqiu": "雪球",
         "zhihu": "知乎专栏",
-        "xiaohongshu": "小红书",
     }.get(platform, platform)
     if interactive_login:
         ensure_logged_in_sync(platform=platform, account=account, label=label)

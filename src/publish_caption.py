@@ -12,8 +12,8 @@ from publish_resolve import load_script
 from tiktok_caption import build_tiktok_fields
 from youtube_caption import build_youtube_fields
 
-# ① 完全手动 · 视频（名称, 后台地址, 操作提示）
-VIDEO_MANUAL_PLATFORMS: list[tuple[str, str, str]] = [
+# 主流程不会自动发的视频站（始终需要你手动上传）
+_VIDEO_MANUAL_PLATFORMS: list[tuple[str, str, str]] = [
     (
         "抖音",
         "https://creator.douyin.com/creator-micro/content/upload",
@@ -35,14 +35,6 @@ BILIBILI_VIDEO_UPLOAD_URL = (
     "https://member.bilibili.com/platform/upload/video/frame"
 )
 ZHIHU_DRAFTS_URL = "https://zhuanlan.zhihu.com/creator/manage/drafts"
-# 图文草稿在发布页「草稿箱」（浏览器本地），不是笔记管理里的云端草稿
-XHS_DRAFTS_URL = (
-    "https://creator.xiaohongshu.com/publish/publish?target=image"
-)
-XHS_OPEN_CREATOR_CMD = "./xhs-open-creator.sh"
-XHS_MANUAL_PUBLISH_TIP = (
-    "草稿箱 → 图文笔记 → 编辑 → 左侧滚到底 → 点红色「发布」"
-)
 WECHAT_DRAFTS_URL = "https://mp.weixin.qq.com/cgi-bin/appmsg?begin=0&count=10&type=77&action=list_card"
 
 
@@ -72,7 +64,6 @@ def print_manual_publish_pack(
     xueqiu_title: str = "",
     wechat_title: str = "",
     zhihu_title: str = "",
-    xhs_article_title: str = "",
     skip_auto_note: bool = False,
 ) -> None:
     script = _load_script_dict(script_path) or load_script(script_path)
@@ -135,7 +126,6 @@ def print_manual_publish_pack(
         xueqiu_title=xueqiu_title,
         wechat_title=wechat_title,
         zhihu_title=zhihu_title,
-        xhs_article_title=xhs_article_title,
         skip_auto_note=skip_auto_note,
     )
     _print_todo_checklist(**todo_kwargs)
@@ -170,50 +160,59 @@ def _read_last_log_field(log_name: str, *keys: str) -> str:
     return str(cur or "").strip()
 
 
-def _read_bilibili_article_status() -> tuple[str, bool]:
-    """从 logs/last_bilibili_publish.json 读取专栏 url 与是否已发布。"""
-    log_path = ROOT / "logs" / "last_bilibili_publish.json"
-    if not log_path.is_file():
-        return "", False
-    try:
-        art = json.loads(log_path.read_text(encoding="utf-8")).get("article") or {}
-    except (OSError, json.JSONDecodeError):
-        return "", False
-    return str(art.get("url") or ""), bool(art.get("published"))
-
-
 README_TODO_HEADING = "## 发布 TODO 清单"
+
+
+def _env_enabled(name: str, *, default: str = "0") -> bool:
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        value = default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def douyin_enabled() -> bool:
+    return _env_enabled("AIVIDEO_PUBLISH_DOUYIN", default="0")
+
+
+def xhs_video_enabled() -> bool:
+    return _env_enabled("AIVIDEO_PUBLISH_XHS", default="0")
+
+
+def shipinhao_enabled() -> bool:
+    return _env_enabled("AIVIDEO_PUBLISH_SHIPINHAO", default="0")
+
+
+def bilibili_video_auto_enabled() -> bool:
+    return bilibili_enabled() and not bilibili_skip_video()
+
+
+def bilibili_video_manual_needed() -> bool:
+    """是否在待办中提醒手动上传 B 站视频。"""
+    if bilibili_video_auto_enabled():
+        return False
+    return bilibili_skip_video() and bilibili_enabled()
 
 
 def _todo_config_summary() -> str:
     """当前 .env 中与待办相关的开关摘要。"""
-    bits: list[str] = []
-    if bilibili_enabled():
-        bits.append("B站=开")
-        if bilibili_skip_video():
-            bits.append("B站视频=手动(BILIBILI_SKIP_VIDEO)")
-        else:
-            bits.append("B站视频=自动")
-        if bilibili_article_enabled():
-            if bilibili_article_auto_publish():
-                bits.append("B站专栏=自动点发布")
-            else:
-                bits.append("B站专栏=草稿+手动发布")
+    bits: list[str] = ["抖音/小红书/视频号=你手动传"]
+    if bilibili_video_auto_enabled():
+        bits.append("B站视频=自动")
+    elif bilibili_video_manual_needed():
+        bits.append("B站视频=手动传")
     if eastmoney_enabled():
         bits.append("东财=自动")
     if xueqiu_enabled():
         bits.append("雪球=自动")
     if wechat_enabled():
-        bits.append("公众号=草稿+手动发表")
+        bits.append("公众号=草稿+你点发表")
     if zhihu_enabled():
-        bits.append("知乎专栏=草稿+手动发布")
-    if xhs_article_enabled():
-        bits.append("小红书图文=草稿+手动发布")
+        bits.append("知乎专栏=草稿+你点发布")
     if youtube_enabled():
         bits.append("YouTube=自动")
     if tiktok_enabled():
-        bits.append("TikTok=收件箱+手动")
-    return " · ".join(bits) if bits else "（未开启 API 发布渠道）"
+        bits.append("TikTok=收件箱+你App内发")
+    return " · ".join(bits) if bits else "（.env 未开启任何发布渠道）"
 
 
 def _append_todo_items(
@@ -224,6 +223,41 @@ def _append_todo_items(
     sublines: list[str] | None = None,
 ) -> None:
     items.append((mark, headline, sublines or []))
+
+
+def _auto_publish_summary(
+    *,
+    youtube_url: str,
+    tiktok_url: str,
+    bilibili_title: str,
+    eastmoney_title: str,
+    xueqiu_title: str,
+    wechat_title: str,
+    zhihu_title: str,
+    skip_auto_note: bool,
+) -> str:
+    """已成功自动发布的平台，仅作一行摘要，不进待办清单。"""
+    if skip_auto_note:
+        return ""
+    names: list[str] = []
+    if bilibili_video_auto_enabled() and bilibili_title:
+        names.append("B站视频")
+    if eastmoney_enabled() and eastmoney_title:
+        names.append("东财")
+    if xueqiu_enabled() and xueqiu_title:
+        names.append("雪球")
+    if youtube_enabled() and youtube_url:
+        names.append("YouTube")
+    if tiktok_enabled() and tiktok_url:
+        names.append("TikTok收件箱")
+    if wechat_enabled() and wechat_title:
+        if _read_last_log_bool("last_wechat_publish.json", "published"):
+            names.append("公众号")
+    if zhihu_enabled() and zhihu_title:
+        names.append("知乎草稿")
+    if not names:
+        return ""
+    return f"（{'、'.join(names)} 已自动处理 ✓）"
 
 
 def build_todo_checklist_items(
@@ -238,259 +272,154 @@ def build_todo_checklist_items(
     xueqiu_title: str,
     wechat_title: str,
     zhihu_title: str,
-    xhs_article_title: str,
     skip_auto_note: bool,
 ) -> list[tuple[str, list[tuple[str, str, list[str]]]]]:
-    """按 .env 与本次发布结果生成待办分组：(分组标题, [(标记, 主行, 子行), ...])。"""
-    sections: list[tuple[str, list[tuple[str, str, list[str]]]]] = []
+    """仅生成仍需你亲手完成的待办，已成功自动发布的不列入。"""
+    manual: list[tuple[str, str, list[str]]] = []
+    notes: list[tuple[str, str, list[str]]] = []
 
-    manual_video: list[tuple[str, str, list[str]]] = []
-    for name, url, tip in VIDEO_MANUAL_PLATFORMS:
+    if skip_auto_note:
         _append_todo_items(
-            manual_video,
-            mark=" ",
-            headline=f"{name}: {url}",
-            sublines=[tip],
+            notes,
+            mark="·",
+            headline="本次未执行自动发布（--no-publish / --dry-run）",
         )
-    if bilibili_enabled() and bilibili_skip_video():
+
+    if video_rel:
+        for name, url, tip in _VIDEO_MANUAL_PLATFORMS:
+            sublines = [tip, f"成片: {video_rel}"]
+            _append_todo_items(
+                manual,
+                mark=" ",
+                headline=f"{name}: {url}",
+                sublines=sublines,
+            )
+
+    if bilibili_video_manual_needed():
+        sublines = ["复制上面「标题 / 简介 / 话题」，在创作中心上传成片"]
+        if bilibili_skip_video():
+            sublines.append(".env 已设 BILIBILI_SKIP_VIDEO=1")
+        if video_rel:
+            sublines.append(f"成片: {video_rel}")
         _append_todo_items(
-            manual_video,
+            manual,
             mark=" ",
             headline=f"B站视频: {BILIBILI_VIDEO_UPLOAD_URL}",
-            sublines=[".env 已设 BILIBILI_SKIP_VIDEO=1，请手动上传成片"],
+            sublines=sublines,
         )
-    if manual_video:
-        src = f"（成片 {video_rel}）" if video_rel else ""
-        sections.append((f"① 完全手动 · 视频 {src}".strip(), manual_video))
 
-    auto_items: list[tuple[str, str, list[str]]] = []
-    auto_on = (
-        (bilibili_enabled() and not bilibili_skip_video())
-        or eastmoney_enabled()
-        or xueqiu_enabled()
-        or youtube_enabled()
-    )
-    if auto_on:
+    if bilibili_video_auto_enabled() and not skip_auto_note and not bilibili_title:
+        _append_todo_items(
+            manual,
+            mark="!",
+            headline="B站视频: 自动投稿失败 — ./scripts/publish-bilibili.sh",
+        )
+
+    if eastmoney_enabled() and not skip_auto_note and not eastmoney_title:
+        _append_todo_items(
+            manual,
+            mark="!",
+            headline="东方财富: 自动发布失败 — ./scripts/publish-eastmoney.sh",
+        )
+
+    if xueqiu_enabled() and not skip_auto_note and not xueqiu_title:
+        _append_todo_items(
+            manual,
+            mark="!",
+            headline="雪球: 自动发布失败 — ./scripts/publish-xueqiu.sh",
+        )
+
+    if youtube_enabled() and not skip_auto_note and not youtube_url:
+        _append_todo_items(
+            manual,
+            mark="!",
+            headline="YouTube: 自动发布失败 — https://studio.youtube.com/",
+        )
+
+    if zhihu_enabled():
+        url = _read_last_log_field("last_zhihu_publish.json", "url") or ZHIHU_DRAFTS_URL
         if skip_auto_note:
             _append_todo_items(
-                auto_items,
-                mark="·",
-                headline="本次未执行自动发布（--no-publish / 预演）",
+                manual,
+                mark=" ",
+                headline=f"知乎专栏: 将保存草稿，你需手动点发布 — {ZHIHU_DRAFTS_URL}",
             )
-        if bilibili_enabled() and not bilibili_skip_video():
-            if bilibili_title and not skip_auto_note:
-                _append_todo_items(
-                    auto_items, mark="✓", headline=f"B站视频: {bilibili_title}"
-                )
-            elif not skip_auto_note:
-                _append_todo_items(
-                    auto_items,
-                    mark="!",
-                    headline="B站视频: 失败 — ./scripts/publish-bilibili.sh",
-                )
-            else:
-                _append_todo_items(
-                    auto_items,
-                    mark=" ",
-                    headline="B站视频: 将走 biliup 自动投稿（本次未跑）",
-                )
-        if eastmoney_enabled():
-            if eastmoney_title and not skip_auto_note:
-                _append_todo_items(
-                    auto_items, mark="✓", headline=f"东方财富: {eastmoney_title}"
-                )
-            elif not skip_auto_note:
-                _append_todo_items(
-                    auto_items,
-                    mark="!",
-                    headline="东方财富: 失败 — ./scripts/publish-eastmoney.sh",
-                )
-            elif skip_auto_note:
-                _append_todo_items(
-                    auto_items,
-                    mark=" ",
-                    headline="东方财富: 将自动提交（本次未跑）",
-                )
-        if xueqiu_enabled():
-            if xueqiu_title and not skip_auto_note:
-                _append_todo_items(auto_items, mark="✓", headline=f"雪球: {xueqiu_title}")
-            elif not skip_auto_note:
-                _append_todo_items(
-                    auto_items, mark="!", headline="雪球: 失败 — ./scripts/publish-xueqiu.sh"
-                )
-            elif skip_auto_note:
-                _append_todo_items(
-                    auto_items, mark=" ", headline="雪球: 将自动提交（本次未跑）"
-                )
-        if youtube_enabled():
-            if youtube_url and not skip_auto_note:
-                _append_todo_items(auto_items, mark="✓", headline=f"YouTube: {youtube_url}")
-            elif not skip_auto_note:
-                _append_todo_items(
-                    auto_items,
-                    mark="!",
-                    headline="YouTube: 失败 — https://studio.youtube.com/",
-                )
-            elif skip_auto_note:
-                _append_todo_items(
-                    auto_items, mark=" ", headline="YouTube: 将自动投稿（本次未跑）"
-                )
-        sections.append(("② 完全自动 · 无需再操作", auto_items))
+        elif zhihu_title:
+            _append_todo_items(
+                manual,
+                mark=" ",
+                headline=f"知乎专栏: {zhihu_title}",
+                sublines=[f"草稿箱 — {url}", "请手动点发布"],
+            )
+        else:
+            _append_todo_items(
+                manual,
+                mark="!",
+                headline=f"知乎专栏: 失败 — ./scripts/publish-zhihu.sh · {ZHIHU_DRAFTS_URL}",
+            )
 
-    draft_items: list[tuple[str, str, list[str]]] = []
-    draft_on = (
-        (bilibili_enabled() and bilibili_article_enabled())
+    if wechat_enabled():
+        published = _read_last_log_bool("last_wechat_publish.json", "published")
+        if skip_auto_note:
+            _append_todo_items(
+                manual,
+                mark=" ",
+                headline=f"微信公众号: 将存草稿箱，你需手动发表 — {WECHAT_DRAFTS_URL}",
+            )
+        elif wechat_title and not published:
+            _append_todo_items(
+                manual,
+                mark=" ",
+                headline=f"微信公众号: {wechat_title}",
+                sublines=[WECHAT_DRAFTS_URL, "草稿箱 → 手动发表"],
+            )
+        elif wechat_title and published:
+            pass
+        else:
+            _append_todo_items(
+                manual,
+                mark="!",
+                headline="微信公众号: 失败 — ./scripts/publish-wechat.sh",
+            )
+
+    if tiktok_enabled():
+        if skip_auto_note:
+            _append_todo_items(
+                manual,
+                mark=" ",
+                headline="TikTok: 将上传收件箱，你需在 App 内粘贴文案后发布",
+            )
+        elif tiktok_url:
+            _append_todo_items(
+                manual,
+                mark=" ",
+                headline="TikTok: 已上传收件箱",
+                sublines=["打开 App，粘贴终端【TikTok】文案后发布"],
+            )
+        else:
+            _append_todo_items(
+                manual,
+                mark="!",
+                headline="TikTok: 未上传 — ./scripts/publish-tiktok.sh",
+            )
+
+    if forum_rel and not has_forum and (
+        eastmoney_enabled()
+        or xueqiu_enabled()
         or zhihu_enabled()
-        or xhs_article_enabled()
         or wechat_enabled()
-        or tiktok_enabled()
-    )
-    if draft_on:
-        if bilibili_enabled() and bilibili_article_enabled():
-            article_url, article_published = _read_bilibili_article_status()
-            if skip_auto_note:
-                _append_todo_items(
-                    draft_items,
-                    mark=" ",
-                    headline="B站专栏: 发布流程未跑（需论坛包 post.md）",
-                    sublines=[
-                        "https://member.bilibili.com/platform/upload/text/frame"
-                    ],
-                )
-            elif article_published and article_url:
-                _append_todo_items(
-                    draft_items,
-                    mark="✓",
-                    headline=f"B站专栏: 已发布 — {article_url}",
-                )
-            elif article_url:
-                note = "草稿已保存，请打开链接点「发布」"
-                if not bilibili_article_auto_publish():
-                    note += "（BILIBILI_ARTICLE_AUTO_PUBLISH 未开启）"
-                _append_todo_items(
-                    draft_items,
-                    mark=" ",
-                    headline=f"B站专栏: {article_url}",
-                    sublines=[note],
-                )
-            elif bilibili_title and has_forum:
-                _append_todo_items(
-                    draft_items,
-                    mark="!",
-                    headline="B站专栏: 未同步 — ./scripts/publish-bilibili.sh --article-only",
-                )
-            elif bilibili_title:
-                _append_todo_items(
-                    draft_items, mark="·", headline="B站专栏: 未同步（需论坛包）"
-                )
-        if zhihu_enabled():
-            url = _read_last_log_field("last_zhihu_publish.json", "url") or ZHIHU_DRAFTS_URL
-            if skip_auto_note:
-                _append_todo_items(
-                    draft_items,
-                    mark=" ",
-                    headline=f"知乎专栏: 将保存草稿后手动发布 — {ZHIHU_DRAFTS_URL}",
-                )
-            elif zhihu_title:
-                _append_todo_items(
-                    draft_items,
-                    mark=" ",
-                    headline=f"知乎专栏: {zhihu_title}",
-                    sublines=[f"草稿箱 — {url}", "请手动点发布"],
-                )
-            else:
-                _append_todo_items(
-                    draft_items,
-                    mark="!",
-                    headline=f"知乎专栏: 失败 — ./scripts/publish-zhihu.sh · {ZHIHU_DRAFTS_URL}",
-                )
-        if xhs_article_enabled():
-            if skip_auto_note:
-                _append_todo_items(
-                    draft_items,
-                    mark=" ",
-                    headline=f"小红书图文: 将保存本地草稿后手动发布 — {XHS_OPEN_CREATOR_CMD}",
-                    sublines=[XHS_MANUAL_PUBLISH_TIP],
-                )
-            elif xhs_article_title:
-                _append_todo_items(
-                    draft_items,
-                    mark=" ",
-                    headline=f"小红书图文: {xhs_article_title}",
-                    sublines=[
-                        XHS_OPEN_CREATOR_CMD,
-                        f"发布页: {XHS_DRAFTS_URL}",
-                        XHS_MANUAL_PUBLISH_TIP,
-                    ],
-                )
-            else:
-                _append_todo_items(
-                    draft_items,
-                    mark="!",
-                    headline="小红书图文: 失败 — ./scripts/publish-xhs-article.sh",
-                    sublines=[f"成功后: {XHS_OPEN_CREATOR_CMD} · {XHS_MANUAL_PUBLISH_TIP}"],
-                )
-        if wechat_enabled():
-            published = _read_last_log_bool("last_wechat_publish.json", "published")
-            if skip_auto_note:
-                _append_todo_items(
-                    draft_items,
-                    mark=" ",
-                    headline=f"微信公众号: 将存草稿箱后手动发表 — {WECHAT_DRAFTS_URL}",
-                )
-            elif wechat_title and not published:
-                _append_todo_items(
-                    draft_items,
-                    mark=" ",
-                    headline=f"微信公众号: {wechat_title}",
-                    sublines=[WECHAT_DRAFTS_URL, "草稿箱 → 手动发表"],
-                )
-            elif wechat_title:
-                _append_todo_items(
-                    draft_items, mark="✓", headline=f"微信公众号: 已发表 — {wechat_title}"
-                )
-            else:
-                _append_todo_items(
-                    draft_items,
-                    mark="!",
-                    headline="微信公众号: 失败 — ./scripts/publish-wechat.sh",
-                )
-        if tiktok_enabled():
-            if skip_auto_note:
-                _append_todo_items(
-                    draft_items,
-                    mark=" ",
-                    headline="TikTok: 将上传收件箱，App 内粘贴文案后手动发布",
-                )
-            elif tiktok_url:
-                _append_todo_items(
-                    draft_items,
-                    mark=" ",
-                    headline="TikTok: 已上传收件箱",
-                    sublines=["打开 App，粘贴终端【TikTok】文案后发布"],
-                )
-            else:
-                _append_todo_items(
-                    draft_items,
-                    mark="!",
-                    headline="TikTok: 未上传 — ./scripts/publish-tiktok.sh",
-                )
-        sections.append(("③ 草稿 / 长文 · 请手动点发布", draft_items))
-
-    if forum_rel and not has_forum:
-        sections.append(
-            (
-                "提示",
-                [
-                    (
-                        "·",
-                        f"未找到论坛图文包 {forum_rel}/post.md，东财/雪球/专栏等可能未同步",
-                        [],
-                    )
-                ],
-            )
+    ):
+        _append_todo_items(
+            notes,
+            mark="·",
+            headline=f"未找到论坛图文包 {forum_rel}/post.md，东财/雪球/知乎等可能未同步",
         )
 
+    sections: list[tuple[str, list[tuple[str, str, list[str]]]]] = []
+    if manual:
+        sections.append((f"待你亲手发布（{len(manual)} 项）", manual))
+    if notes:
+        sections.append(("说明", notes))
     return sections
 
 
@@ -506,19 +435,31 @@ def format_todo_checklist_markdown(
     xueqiu_title: str = "",
     wechat_title: str = "",
     zhihu_title: str = "",
-    xhs_article_title: str = "",
     skip_auto_note: bool = False,
     script: dict | None = None,
 ) -> str:
     del script  # 预审仅终端输出
+    auto_line = _auto_publish_summary(
+        youtube_url=youtube_url,
+        tiktok_url=tiktok_url,
+        bilibili_title=bilibili_title,
+        eastmoney_title=eastmoney_title,
+        xueqiu_title=xueqiu_title,
+        wechat_title=wechat_title,
+        zhihu_title=zhihu_title,
+        skip_auto_note=skip_auto_note,
+    )
     lines = [
         README_TODO_HEADING,
         "",
-        "根据当前 `.env` 与本次发布结果生成，打勾表示你已完成。",
+        "仅列出仍需你亲手完成的发布步骤；脚本已自动处理的平台不列入待办。",
         "",
         f"**配置**: {_todo_config_summary()}",
         "",
     ]
+    if auto_line:
+        lines.append(auto_line)
+        lines.append("")
     if forum_rel:
         lines.append(f"**论坛图文**: `{forum_rel}/`")
         lines.append("")
@@ -533,7 +474,6 @@ def format_todo_checklist_markdown(
         xueqiu_title=xueqiu_title,
         wechat_title=wechat_title,
         zhihu_title=zhihu_title,
-        xhs_article_title=xhs_article_title,
         skip_auto_note=skip_auto_note,
     ):
         lines.append(f"### {title}")
@@ -578,16 +518,10 @@ def _print_todo_checklist(
     xueqiu_title: str,
     wechat_title: str,
     zhihu_title: str,
-    xhs_article_title: str,
     skip_auto_note: bool,
 ) -> None:
-    """流程结束后的「待办清单」：①手动视频 ②自动提交 ③草稿箱待点发布。"""
-    print("\n" + "═" * 58, flush=True)
-    print("✅ 发布 TODO 清单（①手动视频 · ②自动提交 · ③草稿待发布）", flush=True)
-    print(f"   配置: {_todo_config_summary()}", flush=True)
-    print("═" * 58, flush=True)
-
-    for title, items in build_todo_checklist_items(
+    """流程结束后的待办清单：优先列出需要你亲手完成的事项。"""
+    sections = build_todo_checklist_items(
         video_rel=video_rel,
         forum_rel=forum_rel,
         has_forum=has_forum,
@@ -598,12 +532,35 @@ def _print_todo_checklist(
         xueqiu_title=xueqiu_title,
         wechat_title=wechat_title,
         zhihu_title=zhihu_title,
-        xhs_article_title=xhs_article_title,
         skip_auto_note=skip_auto_note,
-    ):
+    )
+    manual_n = 0
+    for title, items in sections:
+        if title.startswith("待你亲手发布"):
+            manual_n = len(items)
+
+    auto_line = _auto_publish_summary(
+        youtube_url=youtube_url,
+        tiktok_url=tiktok_url,
+        bilibili_title=bilibili_title,
+        eastmoney_title=eastmoney_title,
+        xueqiu_title=xueqiu_title,
+        wechat_title=wechat_title,
+        zhihu_title=zhihu_title,
+        skip_auto_note=skip_auto_note,
+    )
+
+    print("\n" + "═" * 58, flush=True)
+    print(f"📌 发布 TODO · 待你亲手完成 {manual_n} 项", flush=True)
+    print(f"   配置: {_todo_config_summary()}", flush=True)
+    if auto_line:
+        print(f"   {auto_line}", flush=True)
+    print("═" * 58, flush=True)
+
+    for title, items in sections:
         print(f"\n— {title} —", flush=True)
-        if title.startswith("①"):
-            print("  复制上面「标题 / 简介 / 话题」，真人上传后发布：", flush=True)
+        if title.startswith("待你亲手发布"):
+            print("  复制上面「标题 / 简介 / 话题」，按链接上传后发布：", flush=True)
         for mark, headline, sublines in items:
             bracket = f"[{mark}]" if mark.strip() else "[ ]"
             print(f"  {bracket} {headline}", flush=True)
@@ -669,27 +626,8 @@ def bilibili_enabled() -> bool:
     return value.strip().lower() in ("1", "true", "yes", "on")
 
 
-def bilibili_article_enabled() -> bool:
-    if not bilibili_enabled():
-        return False
-    value = os.environ.get("AIVIDEO_PUBLISH_BILIBILI_ARTICLE", "1")
-    return value.strip().lower() not in ("0", "false", "no", "off")
-
-
-def bilibili_article_auto_publish() -> bool:
-    raw = os.environ.get("BILIBILI_ARTICLE_AUTO_PUBLISH", "0").strip().lower()
-    return raw in ("1", "true", "yes", "on")
-
-
 def zhihu_enabled() -> bool:
     value = os.environ.get("AIVIDEO_PUBLISH_ZHIHU")
-    if value is None or value.strip() == "":
-        return False
-    return value.strip().lower() in ("1", "true", "yes", "on")
-
-
-def xhs_article_enabled() -> bool:
-    value = os.environ.get("AIVIDEO_PUBLISH_XHS_ARTICLE")
     if value is None or value.strip() == "":
         return False
     return value.strip().lower() in ("1", "true", "yes", "on")
