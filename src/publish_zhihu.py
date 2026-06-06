@@ -15,6 +15,7 @@ from forum_auth import run_with_relogin
 from paths import ROOT
 from zhihu_publisher import (
     ZhihuPublishError,
+    _auto_publish_enabled,
     clear_forum_draft,
     parse_forum_pack,
     publish_forum_pack,
@@ -84,10 +85,16 @@ def publish_pack(
     headless: bool,
     account: str,
     interactive_login: bool = True,
+    draft_only: bool | None = None,
 ) -> dict:
     def attempt() -> dict:
         return asyncio.run(
-            publish_forum_pack(pack, headless=headless, account=account)
+            publish_forum_pack(
+                pack,
+                headless=headless,
+                account=account,
+                draft_only=draft_only,
+            )
         )
 
     if not interactive_login:
@@ -129,6 +136,7 @@ def publish_forum_dir(
     *,
     dry_run: bool = False,
     account: str | None = None,
+    draft_only: bool | None = None,
 ) -> str:
     load_env()
     account = account or os.environ.get("ZHIHU_ACCOUNT", "main")
@@ -138,21 +146,33 @@ def publish_forum_dir(
     if not (pack / "post.md").is_file():
         return ""
 
-    print(f"\n[发布知乎专栏草稿] {pack}", flush=True)
+    effective_draft = draft_only if draft_only is not None else not _auto_publish_enabled()
+    mode = "草稿" if effective_draft else "发布"
+    print(f"\n[知乎专栏 · {mode}] {pack}", flush=True)
     if dry_run:
         result = _dry_run_check(pack, account=account)
     else:
-        result = publish_pack(pack, headless=True, account=account)
+        result = publish_pack(
+            pack,
+            headless=True,
+            account=account,
+            draft_only=draft_only,
+        )
         _write_log(result)
     return str(result.get("title") or "")
 
 
 def main() -> int:
     load_env()
-    parser = argparse.ArgumentParser(description="知乎专栏 · 保存草稿（不发布）")
+    parser = argparse.ArgumentParser(description="知乎专栏 · 草稿或自动发布")
     parser.add_argument("pack_dir", nargs="?", help="论坛包目录")
     parser.add_argument("--headed", action="store_true", help="有头浏览器")
     parser.add_argument("--dry-run", action="store_true", help="仅校验登录与素材")
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="填表后直接点发布（默认仅存草稿）",
+    )
     parser.add_argument("--clear-draft", action="store_true", help="删除同标题草稿后退出")
     parser.add_argument("--account", default=os.environ.get("ZHIHU_ACCOUNT", "main"))
     args = parser.parse_args()
@@ -175,14 +195,20 @@ def main() -> int:
         if args.dry_run:
             result = _dry_run_check(pack, account=args.account)
         else:
+            draft_only = False if args.publish else True
             result = publish_pack(
                 pack,
                 headless=not args.headed,
                 account=args.account,
+                draft_only=draft_only,
             )
             log_path = _write_log(result)
-            print(f"草稿已保存：{result['title']}")
-            print(f"草稿箱: {result.get('url')}")
+            if result.get("published"):
+                print(f"已发布：{result['title']}")
+                print(f"链接: {result.get('url')}")
+            else:
+                print(f"草稿已保存：{result['title']}")
+                print(f"草稿箱: {result.get('url')}")
             print(f"记录: {log_path}")
             return 0
     except ZhihuPublishError as exc:

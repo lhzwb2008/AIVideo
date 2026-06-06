@@ -1,4 +1,4 @@
-"""知乎专栏 · 论坛图文草稿（Playwright 填表 + 保存草稿，不点发布）。"""
+"""知乎专栏 · 论坛图文（Playwright 填表 + 草稿/自动发布）。"""
 
 from __future__ import annotations
 
@@ -39,6 +39,10 @@ def _headless() -> bool:
         "no",
         "off",
     )
+
+
+def _auto_publish_enabled() -> bool:
+    return _env("ZHIHU_AUTO_PUBLISH", "0").lower() in ("1", "true", "yes", "on")
 
 
 def cookie_path(root: Path | None = None, account: str | None = None) -> Path:
@@ -265,6 +269,59 @@ async def _save_draft(page) -> None:
     await asyncio.sleep(2)
 
 
+async def _click_publish(page) -> str:
+    """写作页点击发布并确认，返回文章 URL（若可解析）。"""
+    await page.evaluate("window.scrollTo(0, 0)")
+    await asyncio.sleep(0.5)
+
+    pub = None
+    for loc in (
+        page.get_by_role("button", name="发布").first,
+        page.locator("button").filter(has_text="发布").first,
+        page.locator('[class*="Publish"]').filter(has_text="发布").first,
+    ):
+        if await loc.count():
+            pub = loc
+            break
+    if pub is None:
+        raise ZhihuPublishError("未找到「发布」按钮")
+
+    await pub.scroll_into_view_if_needed()
+    await pub.click(timeout=15_000, force=True)
+    await asyncio.sleep(1.5)
+
+    for _ in range(8):
+        for label in ("确认发布", "继续发布", "确定", "发布"):
+            btn = page.get_by_role("button", name=label).first
+            if await btn.count() and await btn.is_visible():
+                try:
+                    await btn.click(timeout=8000, force=True)
+                    await asyncio.sleep(1.2)
+                except Exception:
+                    pass
+        url = page.url
+        if "/p/" in url and "zhuanlan.zhihu.com" in url:
+            return url.split("?")[0]
+        body = await page.evaluate("() => document.body.innerText || ''")
+        if any(k in body for k in ("发布成功", "已发布", "提交成功")):
+            if "/p/" in page.url:
+                return page.url.split("?")[0]
+            break
+        await asyncio.sleep(1.5)
+
+    # 发布后可能跳转到文章页或内容管理
+    url = page.url
+    if "/p/" in url and "zhuanlan.zhihu.com" in url:
+        return url.split("?")[0]
+
+    await page.goto(DRAFTS_URL, wait_until="domcontentloaded", timeout=60_000)
+    await asyncio.sleep(2)
+    raise ZhihuPublishError(
+        "已点击发布但未检测到成功页，请到草稿箱/内容管理确认。"
+        f" 当前 URL: {page.url}"
+    )
+
+
 async def _delete_draft_by_title(page, title: str) -> int:
     await page.goto(DRAFTS_URL, wait_until="domcontentloaded", timeout=90_000)
     await asyncio.sleep(2)
@@ -346,13 +403,16 @@ async def publish_forum_pack(
     *,
     headless: bool | None = None,
     account: str | None = None,
+    draft_only: bool | None = None,
 ) -> dict:
-    """填好专栏并保存草稿，不点击发布。"""
+    """填好专栏；默认存草稿，draft_only=False 时点击发布。"""
     _ensure_patchright()
     from patchright.async_api import async_playwright
 
     if headless is None:
         headless = _headless()
+    if draft_only is None:
+        draft_only = not _auto_publish_enabled()
 
     data = parse_forum_pack(pack_dir)
     expected_image_paths = []
@@ -387,22 +447,33 @@ async def publish_forum_pack(
                     f"知乎正文图片数量不足：期望 {expected_images} 张，实际 {actual_images} 张"
                 )
             await asyncio.sleep(1)
-            await _save_draft(page)
+            article_url = ""
+            publish_note = ""
+            if draft_only:
+                await _save_draft(page)
+                draft_url = page.url
+                if "draft" not in draft_url.lower() and "write" not in draft_url.lower():
+                    draft_url = DRAFTS_URL
+                article_url = draft_url
+            else:
+                try:
+                    article_url = await _click_publish(page)
+                except ZhihuPublishError as exc:
+                    await _save_draft(page)
+                    raise ZhihuPublishError(f"{exc}（内容已存草稿）") from exc
 
             await context.storage_state(path=str(cookie))
-            draft_url = page.url
-            if "draft" not in draft_url.lower() and "write" not in draft_url.lower():
-                draft_url = DRAFTS_URL
             return {
                 "title": data["title"],
                 "pack_dir": data["pack_dir"],
-                "draft_only": True,
-                "published": False,
+                "draft_only": draft_only,
+                "published": not draft_only,
                 "editor_mode": mode,
-                "url": draft_url,
+                "url": article_url or DRAFTS_URL,
                 "images": expected_image_paths,
                 "image_count": actual_images,
                 "expected_image_count": expected_images,
+                "publish_note": publish_note,
             }
         finally:
             await context.close()

@@ -436,8 +436,22 @@ def publish_zhihu(forum_dir: str | Path, *, dry_run: bool) -> str:
         from publish_zhihu import publish_forum_dir
 
         title = publish_forum_dir(path, dry_run=dry_run)
-        if title:
-            log(f"  [知乎专栏] 草稿: {title}")
+        if title and not dry_run:
+            log_path = ROOT / "logs" / "last_zhihu_publish.json"
+            published = False
+            url = ""
+            if log_path.is_file():
+                try:
+                    payload = json.loads(log_path.read_text(encoding="utf-8"))
+                    published = bool(payload.get("published"))
+                    url = str(payload.get("url") or "").strip()
+                except (OSError, json.JSONDecodeError):
+                    pass
+            if published:
+                suffix = f" — {url}" if url else ""
+                log(f"  [知乎专栏] 已发布: {title}{suffix}")
+            else:
+                log(f"  [知乎专栏] 草稿: {title}")
         return title
 
     return _publish_forum_with_retry(_do, label="知乎专栏", dry_run=dry_run)

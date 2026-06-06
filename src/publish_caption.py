@@ -207,7 +207,10 @@ def _todo_config_summary() -> str:
     if wechat_enabled():
         bits.append("公众号=草稿+你点发表")
     if zhihu_enabled():
-        bits.append("知乎专栏=草稿+你点发布")
+        if zhihu_auto_publish():
+            bits.append("知乎专栏=自动")
+        else:
+            bits.append("知乎专栏=草稿+你点发布")
     if youtube_enabled():
         bits.append("YouTube=自动")
     if tiktok_enabled():
@@ -254,7 +257,10 @@ def _auto_publish_summary(
         if _read_last_log_bool("last_wechat_publish.json", "published"):
             names.append("公众号")
     if zhihu_enabled() and zhihu_title:
-        names.append("知乎草稿")
+        if zhihu_auto_publish() and _read_last_log_bool("last_zhihu_publish.json", "published"):
+            names.append("知乎")
+        elif not zhihu_auto_publish():
+            names.append("知乎草稿")
     if not names:
         return ""
     return f"（{'、'.join(names)} 已自动处理 ✓）"
@@ -337,19 +343,36 @@ def build_todo_checklist_items(
         )
 
     if zhihu_enabled():
+        published = _read_last_log_bool("last_zhihu_publish.json", "published")
         url = _read_last_log_field("last_zhihu_publish.json", "url") or ZHIHU_DRAFTS_URL
         if skip_auto_note:
-            _append_todo_items(
-                manual,
-                mark=" ",
-                headline=f"知乎专栏: 将保存草稿，你需手动点发布 — {ZHIHU_DRAFTS_URL}",
-            )
-        elif zhihu_title:
+            if zhihu_auto_publish():
+                _append_todo_items(
+                    manual,
+                    mark=" ",
+                    headline="知乎专栏: 将自动填表并发布",
+                )
+            else:
+                _append_todo_items(
+                    manual,
+                    mark=" ",
+                    headline=f"知乎专栏: 将保存草稿，你需手动点发布 — {ZHIHU_DRAFTS_URL}",
+                )
+        elif zhihu_title and zhihu_auto_publish() and published:
+            pass
+        elif zhihu_title and not zhihu_auto_publish():
             _append_todo_items(
                 manual,
                 mark=" ",
                 headline=f"知乎专栏: {zhihu_title}",
                 sublines=[f"草稿箱 — {url}", "请手动点发布"],
+            )
+        elif zhihu_title and zhihu_auto_publish() and not published:
+            _append_todo_items(
+                manual,
+                mark=" ",
+                headline=f"知乎专栏: {zhihu_title}",
+                sublines=[f"自动发布未确认，请检查 — {url}", "或 ./scripts/publish-zhihu.sh --publish"],
             )
         else:
             _append_todo_items(
@@ -631,3 +654,8 @@ def zhihu_enabled() -> bool:
     if value is None or value.strip() == "":
         return False
     return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def zhihu_auto_publish() -> bool:
+    raw = os.environ.get("ZHIHU_AUTO_PUBLISH", "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")

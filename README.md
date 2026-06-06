@@ -251,7 +251,7 @@ src/
 | 视频号 | https://channels.weixin.qq.com/platform/post/create |
 | 雪球（图文） | https://xueqiu.com/ |
 | 东方财富（股吧/财富号·图文） | https://mpservice.eastmoney.com/ |
-| 知乎专栏（长文） | https://zhuanlan.zhihu.com/write（仅手动复制 post.md） |
+| 知乎专栏（长文） | https://zhuanlan.zhihu.com/write（`AIVIDEO_PUBLISH_ZHIHU=1` + `ZHIHU_AUTO_PUBLISH=1` 可自动发布） |
 
 独立调试（不进主流程，有封号风险）：`./scripts/publish-douyin.sh`、`./scripts/publish-xiaohongshu.sh` 等。
 
@@ -336,7 +336,7 @@ archive/published/20260531/
   20260531_192557/
 ```
 
-合成后自动生成图文包（`AIVIDEO_FORUM_POST=0` 可关闭）。YouTube/TikTok/B站 走 API；雪球/东财长文可设 `AIVIDEO_PUBLISH_*=1` 自动填表发布；抖音/小红书/视频号/知乎请从归档目录手动发布。
+合成后自动生成图文包（`AIVIDEO_FORUM_POST=0` 可关闭）。YouTube/TikTok/B站 走 API；雪球/东财/知乎长文可设 `AIVIDEO_PUBLISH_*=1` 自动发布（知乎另设 `ZHIHU_AUTO_PUBLISH=1` 直接点发布）；抖音/小红书/视频号请从归档目录手动发布。
 
 ## 环境变量
 
