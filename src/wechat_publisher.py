@@ -565,6 +565,11 @@ def get_access_token(*, force_refresh: bool = False) -> str:
     return token
 
 
+def _wechat_title(title: str) -> str:
+    """微信图文标题上限 32 字，API 会截断，后续校验须用同一规则。"""
+    return title.strip()[:32]
+
+
 def _inline_html(text: str) -> str:
     text = escape(text)
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
@@ -866,9 +871,10 @@ def get_draft_article(token: str, media_id: str) -> dict:
 def _validate_draft_article(article: dict, *, title: str, html: str) -> None:
     draft_title = str(article.get("title") or "").strip()
     content = str(article.get("content") or "")
-    if draft_title != title.strip():
+    expected = _wechat_title(title)
+    if draft_title != expected:
         raise WechatPublishError(
-            f"草稿标题校验失败: {draft_title!r} != {title.strip()!r}"
+            f"草稿标题校验失败: {draft_title!r} != {expected!r}"
         )
     if _content_starts_with_title(content, title):
         raise WechatPublishError("草稿正文开头误含标题，请重试或清空草稿箱")
@@ -891,7 +897,7 @@ def add_draft(
 ) -> str:
     article = {
         "article_type": "news",
-        "title": title[:32],
+        "title": _wechat_title(title),
         "author": (author or _env("WECHAT_AUTHOR", "AI财知道"))[:16],
         "digest": digest[:120],
         "content": html,
@@ -949,6 +955,7 @@ def publish_forum_pack(
     if draft_only is None:
         draft_only = _env_bool("WECHAT_DRAFT_ONLY", True)
 
+    wx_title = _wechat_title(data["title"])
     token = get_access_token()
     image_urls: dict[str, str] = {}
     cover = data.get("cover")
@@ -964,18 +971,18 @@ def publish_forum_pack(
         raise WechatPublishError("正文 HTML 不应包含文章标题")
     thumb_media_id = upload_thumb_material(token, Path(data["cover"]))
     digest = _summary_from_data(data)
-    removed = delete_drafts_by_title(data["title"], token=token)
+    removed = delete_drafts_by_title(wx_title, token=token)
     if removed:
         print(f"  已清理旧草稿 {removed} 篇", flush=True)
     draft_media_id = add_draft(
         token,
-        title=data["title"],
+        title=wx_title,
         html=html,
         thumb_media_id=thumb_media_id,
         digest=digest,
     )
     saved = get_draft_article(token, draft_media_id)
-    _validate_draft_article(saved, title=data["title"], html=html)
+    _validate_draft_article(saved, title=wx_title, html=html)
 
     published = False
     publish_id = ""
@@ -1007,7 +1014,7 @@ def publish_forum_pack(
 
     if not published and not draft_only and _browser_publish_enabled():
         try:
-            publish_draft_via_browser(data["title"])
+            publish_draft_via_browser(wx_title)
             published = True
             if publish_note:
                 publish_note = f"{publish_note}；已通过创作中心浏览器提交发表"

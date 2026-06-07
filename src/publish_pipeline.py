@@ -209,6 +209,11 @@ def publish_xueqiu_api(forum_dir: Path, *, dry_run: bool) -> str:
     return _read_last_publish_url("last_xueqiu_publish.json", "title")
 
 
+def _wechat_draft_only() -> bool:
+    raw = os.environ.get("WECHAT_DRAFT_ONLY", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 def publish_wechat_api(forum_dir: Path, *, dry_run: bool) -> str:
     cmd = [
         str(ROOT / "scripts" / "publish-wechat.sh"),
@@ -216,7 +221,8 @@ def publish_wechat_api(forum_dir: Path, *, dry_run: bool) -> str:
     ]
     if dry_run:
         cmd.append("--dry-run")
-    # 默认仅存草稿箱（WECHAT_DRAFT_ONLY=1）；需 API/浏览器发表时手动加 --publish
+    elif not _wechat_draft_only():
+        cmd.append("--publish")
     run(cmd, label="发布微信公众号")
     return _read_last_publish_url("last_wechat_publish.json", "title")
 
@@ -618,10 +624,7 @@ def pipeline_after_script(
         log(f"\n=== [{index}/{target}] API 自动发布（{label}）===")
     youtube_url = publish_youtube(video, script_path, dry_run=False)
     tiktok_url = publish_tiktok(video, script_path, dry_run=False)
-    forum_for_bili = video.parent / video.stem
     bilibili_title = publish_bilibili(video, script_path, dry_run=False)
-    if (forum_for_bili / "post.md").is_file():
-        wechat_title = publish_wechat(forum_for_bili, dry_run=False)
 
     append_history_fn(script_path)
     date_tag = datetime.now().strftime("%Y%m%d")
@@ -630,6 +633,8 @@ def pipeline_after_script(
     if archived.get("forum"):
         log(f"  论坛图文：{rel(archived['forum'])}/")
         log(f"  发布文案：{rel(archived['forum'])}/README.md")
+        if (archived["forum"] / "post.md").is_file():
+            wechat_title = publish_wechat(archived["forum"], dry_run=False)
         eastmoney_title = publish_eastmoney(archived["forum"], dry_run=False)
         xueqiu_title = publish_xueqiu(archived["forum"], dry_run=False)
         zhihu_title = publish_zhihu(archived["forum"], dry_run=False)
