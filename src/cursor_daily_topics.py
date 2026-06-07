@@ -49,6 +49,8 @@ SLOT_TO_CATEGORY: dict[str, str] = {
 
 _CN_TZ_OFFSET = timedelta(hours=8)
 ASTOCK_MARKET_SLOT = "astock_market"
+ASTOCK_SECTOR_SLOT = "astock_sector"
+OFFDAY_SKIP_SLOTS = frozenset({ASTOCK_MARKET_SLOT, ASTOCK_SECTOR_SLOT})
 
 
 def china_today() -> date:
@@ -80,7 +82,7 @@ def is_cn_workday(d: date | None = None) -> bool:
 
 
 def should_skip_astock_market_today() -> bool:
-    """非工作日跳过第一槽位「A股大盘报盘」；AIVIDEO_FORCE_ASTOCK_MARKET=1 可强制保留。"""
+    """非工作日跳过 A股大盘与热点板块槽位；AIVIDEO_FORCE_ASTOCK_MARKET=1 可强制保留大盘。"""
     if os.environ.get("AIVIDEO_SKIP_ASTOCK_MARKET_OFFDAY", "1").strip().lower() in (
         "0",
         "false",
@@ -314,18 +316,22 @@ def planned_slots(
     *,
     start_offset: int = 0,
     skip_astock_market: bool = False,
+    skip_slots: frozenset[str] | None = None,
 ) -> list[str]:
     if target <= 0:
         return []
     n = len(CURSOR_SLOT_ORDER)
-    if not skip_astock_market:
+    slots_to_skip = skip_slots
+    if slots_to_skip is None:
+        slots_to_skip = OFFDAY_SKIP_SLOTS if skip_astock_market else frozenset()
+    if not slots_to_skip:
         return [CURSOR_SLOT_ORDER[(start_offset + i) % n] for i in range(target)]
     out: list[str] = []
     i = 0
     while len(out) < target and i < n * max(target, 1):
         slot = CURSOR_SLOT_ORDER[(start_offset + i) % n]
         i += 1
-        if slot == ASTOCK_MARKET_SLOT:
+        if slot in slots_to_skip:
             continue
         out.append(slot)
     return out
@@ -378,8 +384,9 @@ def discover_cursor_topics(*, target: int = 5) -> list[dict]:
         d = china_today()
         weekday = "六日"[d.weekday() - 5] if d.weekday() >= 5 else ""
         reason = f"周{weekday}" if weekday else f"{d.isoformat()}（法定节假日）"
+        skipped = "」「".join(SLOT_LABEL[s] for s in OFFDAY_SKIP_SLOTS)
         print(
-            f"  ⏭  今日非工作日（{reason}），跳过槽位「{SLOT_LABEL[ASTOCK_MARKET_SLOT]}」",
+            f"  ⏭  今日非工作日（{reason}），跳过槽位「{skipped}」",
             flush=True,
         )
     slots = planned_slots(target, start_offset=start, skip_astock_market=skip_market)
