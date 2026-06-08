@@ -839,6 +839,25 @@ def _fallback_details_from_article(article: dict) -> dict:
     }
 
 
+def _coerce_str_list(value) -> list[str]:
+    """模型有时把 list 字段写成 dict（如 key_terms: {术语: 解释}），统一转成字符串列表。"""
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    if isinstance(value, dict):
+        rows: list[str] = []
+        for k, v in value.items():
+            term = str(k).strip()
+            if not term:
+                continue
+            expl = str(v).strip()
+            rows.append(f"{term}：{expl}" if expl else term)
+        return rows
+    if value is None:
+        return []
+    text = str(value).strip()
+    return [text] if text else []
+
+
 def _normalize_deep_read_details(details: dict, article: dict) -> dict:
     """补齐深读 JSON 的必需字段，避免模型漏字段导致整条选题报废。"""
     fallback = _fallback_details_from_article(article)
@@ -847,6 +866,20 @@ def _normalize_deep_read_details(details: dict, article: dict) -> dict:
     for key, value in fallback.items():
         if not details.get(key):
             details[key] = value
+    for key in (
+        "outline",
+        "all_numbers",
+        "all_quotes",
+        "people",
+        "companies_or_institutions",
+        "key_terms",
+        "concrete_scenes",
+        "narrative_beats",
+        "omit_in_video",
+        "everyday_analogies",
+    ):
+        if key in details:
+            details[key] = _coerce_str_list(details[key])
     return details
 
 

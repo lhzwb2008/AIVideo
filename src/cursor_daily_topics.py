@@ -51,11 +51,17 @@ _CN_TZ_OFFSET = timedelta(hours=8)
 ASTOCK_MARKET_SLOT = "astock_market"
 ASTOCK_SECTOR_SLOT = "astock_sector"
 OFFDAY_SKIP_SLOTS = frozenset({ASTOCK_MARKET_SLOT, ASTOCK_SECTOR_SLOT})
+PRE_CLOSE_SKIP_SLOTS = frozenset({ASTOCK_MARKET_SLOT})
+
+
+def china_now() -> datetime:
+    """中国时区（UTC+8）下的当前时刻（naive datetime，数值即北京时间）。"""
+    return (datetime.now(timezone.utc) + _CN_TZ_OFFSET).replace(tzinfo=None)
 
 
 def china_today() -> date:
     """中国时区（UTC+8）下的日历日期。"""
-    return (datetime.now(timezone.utc) + _CN_TZ_OFFSET).date()
+    return china_now().date()
 
 
 def _cn_holiday_dates() -> set[date]:
@@ -81,6 +87,15 @@ def is_cn_workday(d: date | None = None) -> bool:
     return d.weekday() < 5
 
 
+def _force_astock_market() -> bool:
+    return os.environ.get("AIVIDEO_FORCE_ASTOCK_MARKET", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def should_skip_astock_market_today() -> bool:
     """非工作日跳过 A股大盘与热点板块槽位；AIVIDEO_FORCE_ASTOCK_MARKET=1 可强制保留大盘。"""
     if os.environ.get("AIVIDEO_SKIP_ASTOCK_MARKET_OFFDAY", "1").strip().lower() in (
@@ -89,14 +104,32 @@ def should_skip_astock_market_today() -> bool:
         "no",
     ):
         return False
-    if os.environ.get("AIVIDEO_FORCE_ASTOCK_MARKET", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    ):
+    if _force_astock_market():
         return False
     return not is_cn_workday()
+
+
+def astock_market_close_at(d: date | None = None) -> datetime:
+    """A 股收盘时刻（北京时间），默认 15:00。可用 AIVIDEO_ASTOCK_CLOSE_HOUR/MINUTE 覆盖。"""
+    d = d or china_today()
+    hour = int(os.environ.get("AIVIDEO_ASTOCK_CLOSE_HOUR", "15"))
+    minute = int(os.environ.get("AIVIDEO_ASTOCK_CLOSE_MINUTE", "0"))
+    return datetime(d.year, d.month, d.day, hour, minute)
+
+
+def should_skip_astock_market_before_close() -> bool:
+    """交易日 15:00 前跳过大盘报盘槽位（尚未收盘，写收评不合理）。"""
+    if os.environ.get("AIVIDEO_SKIP_ASTOCK_MARKET_PRE_CLOSE", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+    ):
+        return False
+    if _force_astock_market():
+        return False
+    if not is_cn_workday():
+        return False
+    return china_now() < astock_market_close_at()
 
 
 def fixed_market_video_title(d: date | None = None) -> str:
@@ -379,8 +412,9 @@ def discover_cursor_topics(*, target: int = 5) -> list[dict]:
     """生成今日固定槽位话题列表（不调 Exa、不调 Opus 选题）。"""
     load_env()
     start = _today_queue_offset()
-    skip_market = should_skip_astock_market_today()
-    if skip_market:
+    skip_slots: frozenset[str] = frozenset()
+
+    if should_skip_astock_market_today():
         d = china_today()
         weekday = "六日"[d.weekday() - 5] if d.weekday() >= 5 else ""
         reason = f"周{weekday}" if weekday else f"{d.isoformat()}（法定节假日）"
@@ -389,7 +423,19 @@ def discover_cursor_topics(*, target: int = 5) -> list[dict]:
             f"  ⏭  今日非工作日（{reason}），跳过槽位「{skipped}」",
             flush=True,
         )
-    slots = planned_slots(target, start_offset=start, skip_astock_market=skip_market)
+        skip_slots = OFFDAY_SKIP_SLOTS
+    elif should_skip_astock_market_before_close():
+        close_at = astock_market_close_at()
+        now = china_now()
+        print(
+            f"  ⏭  A股尚未收盘（当前 {now.strftime('%H:%M')}，"
+            f"{close_at.strftime('%H:%M')} 前），"
+            f"跳过槽位「{SLOT_LABEL[ASTOCK_MARKET_SLOT]}」",
+            flush=True,
+        )
+        skip_slots = PRE_CLOSE_SKIP_SLOTS
+
+    slots = planned_slots(target, start_offset=start, skip_slots=skip_slots)
     today = china_today().isoformat()
     topics: list[dict] = []
     for i, slot in enumerate(slots, 1):

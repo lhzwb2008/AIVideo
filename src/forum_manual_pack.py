@@ -409,18 +409,34 @@ def _script_digest(script: dict) -> dict:
     }
 
 
+def _coerce_detail_list(value) -> list:
+    """深读字段应为 list；模型偶发 dict 时先转成 list 再切片。"""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [
+            f"{k}：{v}" if str(v).strip() else str(k)
+            for k, v in value.items()
+            if str(k).strip()
+        ]
+    if value is None:
+        return []
+    text = str(value).strip()
+    return [text] if text else []
+
+
 def _details_digest(details: dict | None) -> dict:
     if not isinstance(details, dict):
         return {}
     return {
-        "outline": (details.get("outline") or [])[:16],
-        "all_numbers": (details.get("all_numbers") or [])[:24],
-        "all_quotes": (details.get("all_quotes") or [])[:12],
-        "people": (details.get("people") or [])[:12],
-        "companies_or_institutions": (details.get("companies_or_institutions") or [])[:16],
-        "key_terms": (details.get("key_terms") or [])[:16],
-        "concrete_scenes": (details.get("concrete_scenes") or [])[:10],
-        "narrative_beats": (details.get("narrative_beats") or [])[:12],
+        "outline": _coerce_detail_list(details.get("outline"))[:16],
+        "all_numbers": _coerce_detail_list(details.get("all_numbers"))[:24],
+        "all_quotes": _coerce_detail_list(details.get("all_quotes"))[:12],
+        "people": _coerce_detail_list(details.get("people"))[:12],
+        "companies_or_institutions": _coerce_detail_list(details.get("companies_or_institutions"))[:16],
+        "key_terms": _coerce_detail_list(details.get("key_terms"))[:16],
+        "concrete_scenes": _coerce_detail_list(details.get("concrete_scenes"))[:10],
+        "narrative_beats": _coerce_detail_list(details.get("narrative_beats"))[:12],
         "author_stance": details.get("author_stance"),
         "actual_opening": details.get("actual_opening"),
         "actual_ending": details.get("actual_ending"),
