@@ -706,10 +706,13 @@ def process_topic(
         "category": topic.get("category"),
         "slot": topic.get("slot") or topic.get("cursor_slot"),
         "script_mode": topic.get("script_mode"),
+        "suggested_video_title": topic.get("suggested_video_title"),
         "fixed_video_title": topic.get("fixed_video_title"),
     }
     article["_topic_plan"] = {k: v for k, v in plan.items() if v}
-    if topic.get("fixed_video_title"):
+    if topic.get("suggested_video_title"):
+        article["_suggested_video_title"] = topic["suggested_video_title"]
+    elif topic.get("fixed_video_title"):
         article["_fixed_video_title"] = topic["fixed_video_title"]
     script, _ = run_article_research(
         output=script_path,

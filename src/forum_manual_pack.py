@@ -552,7 +552,7 @@ def _generate_professional_forum_sections(
         fixed = str(script.get("title") or "").strip()
         base_user += (
             "\n\n【长文类型：A股每日收盘报盘】\n"
-            f"- 标题必须与视频一致：{fixed}，禁止悬念问句\n"
+            f"- 标题与视频一致：{fixed}\n"
             "- 4 节与视频分镜一一对应：①指数报盘 ②量能与涨跌家数 ③行业涨跌一览 ④一句话总结\n"
             "- 简单分析即可，禁止写成 MLCC/半导体/个股专题；行业名点到为止\n"
             "- 少用「加仓」「割肉」；资金用净流入/净流出\n"

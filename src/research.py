@@ -1668,11 +1668,17 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
             "\n【合规说明·Cursor 新流水线】客观复盘里可以使用「买入」「卖出」等中性表述"
             "（如资金卖出、抛售、买入意愿），但不要写成荐股喊单（跟我买、目标价、必涨、买卖点建议等）。\n"
         )
-    title_rule = (
-        "如果上文已指定「视频标题（必须一字不改）」，title 必须完全一致，禁止改成问句；"
-        if _resolve_fixed_video_title(article) or _is_daily_recap(article)
-        else "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
-    )
+    if _resolve_fixed_video_title(article):
+        title_rule = (
+            "如果上文已指定「视频标题（必须一字不改）」，title 必须完全一致，禁止改成问句；"
+        )
+    elif _is_daily_recap(article):
+        title_rule = (
+            "收盘报盘 title 须点出今日盘面特点（参考上文 suggested 标题），"
+            "禁止「大盘」与「X月X日」模板，可陈述或轻问句；"
+        )
+    else:
+        title_rule = "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
     return (
         f"{recap_block}{topic_block}{meta_block}\n\n{details_block}\n{relaxed_note}\n"
         "请严格根据上面的「原文深读细节」改编。输出字段须含 title / keyword / cold_open / "
@@ -1700,8 +1706,48 @@ def _resolve_fixed_video_title(article: dict) -> str:
     return ""
 
 
+def _resolve_suggested_video_title(article: dict) -> str:
+    suggested = str(article.get("_suggested_video_title") or "").strip()
+    if suggested:
+        return suggested
+    plan = article.get("_topic_plan")
+    if isinstance(plan, dict):
+        return str(plan.get("suggested_video_title") or "").strip()
+    return ""
+
+
+def _sanitize_daily_recap_video_title(title: str) -> str:
+    try:
+        from cursor_daily_topics import sanitize_market_recap_video_title
+
+        return sanitize_market_recap_video_title(title)
+    except Exception:  # noqa: BLE001
+        t = re.sub(r"^\d{1,2}月\d{1,2}日[：:、\s]*", "", (title or "").strip())
+        return t.replace("大盘", "").strip()
+
+
+def _apply_daily_recap_video_title(script: dict, article: dict) -> dict:
+    """收盘报盘：标题点出盘面特点，禁止「大盘」与日期模板。"""
+    suggested = _sanitize_daily_recap_video_title(_resolve_suggested_video_title(article))
+    title = _sanitize_daily_recap_video_title(str(script.get("title") or ""))
+    if len(title) < 4:
+        title = suggested
+    if len(title) < 4:
+        title = "今日收盘速览"
+    script["title"] = _compact_title(title, 24)
+    if not str(script.get("keyword") or "").strip():
+        script["keyword"] = "A股收盘"
+    tags = script.get("hashtags")
+    if isinstance(tags, list):
+        clean = [str(t).strip() for t in tags if str(t).strip() and "大盘" not in str(t)]
+        script["hashtags"] = clean[:5] or ["A股", "收盘", "复盘", "行情"]
+    return script
+
+
 def _apply_fixed_video_title(script: dict, article: dict) -> dict:
-    """大盘报盘等槽位：标题固定，不让 Opus 改成问句。"""
+    """非报盘槽位可固定标题；收盘报盘走灵活标题逻辑。"""
+    if _is_daily_recap(article):
+        return _apply_daily_recap_video_title(script, article)
     fixed = _resolve_fixed_video_title(article)
     if fixed:
         script["title"] = fixed
@@ -1719,30 +1765,29 @@ def _is_daily_recap(article: dict) -> bool:
 
 
 def _daily_recap_adapt_block(article: dict) -> str:
-    fixed = _resolve_fixed_video_title(article)
-    if not fixed and _is_daily_recap(article):
-        try:
-            from cursor_daily_topics import fixed_market_video_title
-
-            fixed = fixed_market_video_title()
-        except Exception:  # noqa: BLE001
-            fixed = ""
+    suggested = _sanitize_daily_recap_video_title(_resolve_suggested_video_title(article))
     if not _is_daily_recap(article):
         return ""
-    title_line = fixed or "X月X日A股大盘分析"
+    suggested_line = (
+        f"- title 参考（可微调，须保留盘面特点）：{suggested}\n"
+        if suggested
+        else ""
+    )
     return (
         "【本篇类型：A股每日收盘报盘视频（必须服从，禁止跑题）】\n"
-        f"- title 字段必须 exactly 为：{title_line}（禁止改成问句、禁止「钱去哪了」类悬念标题）\n"
-        "- keyword 建议：A股大盘\n"
-        "- 这是「帮观众快速看懂今天收盘」的报盘视频，不是板块专题、不是个股故事\n"
-        "- slides 固定 4 页分工（不得改成 MLCC/半导体深度解读）：\n"
-        "  · 第1页 cover：三大指数+科创50收盘数字报盘（口播念出点位与涨跌幅）\n"
-        "  · 第2页：成交额、较昨日缩量/放量、上涨/下跌家数\n"
-        "  · 第3页：领涨与领跌行业各 2–3 个（只报名字与涨跌，各 1 句）\n"
-        "  · 第4页：一句话总结今日结构（普涨/普跌/分化）+ 明日 1 条客观观察，不要操作建议\n"
-        "- 任一概念板块（MLCC、存储、CPO 等）全文合计不得超过 1 句、15 字\n"
-        "- cold_open 可用「今天X月X日收盘，帮你看懂大盘」风格，不必强行反差悬念\n"
-        "- hashtags 优先：A股、大盘、收盘、复盘（不要窄概念词）\n\n"
+        + suggested_line
+        + "- title 规则：4-24 字，点出今日盘面最大特点（涨跌/量能/分化/领涨行业），陈述或轻问句均可\n"
+        + "- title 禁止：出现「大盘」；禁止「X月X日」开头；禁止「A股大盘分析」类模板\n"
+        + "- keyword 建议：A股收盘\n"
+        + "- 这是「帮观众快速看懂今天收盘」的报盘视频，不是板块专题、不是个股故事\n"
+        + "- slides 固定 4 页分工（不得改成 MLCC/半导体深度解读）：\n"
+        + "  · 第1页 cover：三大指数+科创50收盘数字报盘（口播念出点位与涨跌幅）\n"
+        + "  · 第2页：成交额、较昨日缩量/放量、上涨/下跌家数\n"
+        + "  · 第3页：领涨与领跌行业各 2–3 个（只报名字与涨跌，各 1 句）\n"
+        + "  · 第4页：一句话总结今日结构（普涨/普跌/分化）+ 明日 1 条客观观察，不要操作建议\n"
+        + "- 任一概念板块（MLCC、存储、CPO 等）全文合计不得超过 1 句、15 字\n"
+        + "- cold_open 可用「今天X月X日收盘，帮你看懂行情」风格，不必强行反差悬念\n"
+        + "- hashtags 优先：A股、收盘、复盘、行情（不要「大盘」）\n\n"
     )
 
 
@@ -1751,8 +1796,11 @@ def _topic_plan_block(article: dict) -> str:
     if not isinstance(plan, dict):
         return ""
     parts = []
+    suggested = str(plan.get("suggested_video_title") or "").strip()
     fixed = str(plan.get("fixed_video_title") or "").strip()
-    if fixed:
+    if suggested and _is_daily_recap(article):
+        parts.append(f"- 视频标题参考（点出盘面特点，禁止「大盘」）: {suggested}")
+    elif fixed:
         parts.append(f"- 视频标题（必须一字不改）: {fixed}")
     elif plan.get("title_hint") and not _is_daily_recap(article):
         parts.append(f"- 选题问句: {plan['title_hint']}")

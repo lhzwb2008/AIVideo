@@ -140,7 +140,7 @@ def fixed_market_video_title(d: date | None = None) -> str:
 
 def astock_market_cold_open(d: date | None = None) -> str:
     d = d or date.today()
-    return f"{d.month}月{d.day}日收盘了，3分钟帮你看懂大盘"
+    return f"{d.month}月{d.day}日收盘了，3分钟帮你看懂今天行情"
 
 
 def _safe_date(year: int, month: int, day: int) -> date | None:
@@ -210,19 +210,104 @@ def _extract_trading_date(markdown: str) -> date | None:
 
 
 def market_title_for_date(d: date) -> str:
+    """长文草稿内部标题（编辑用），与对外短视频标题分离。"""
     return f"{d.month}月{d.day}日A股大盘分析"
+
+
+def sanitize_market_recap_video_title(title: str, *, max_chars: int = 24) -> str:
+    """短视频标题：去掉日期前缀与「大盘」等易触发限流的模板词。"""
+    t = (title or "").strip()
+    t = re.sub(r"^\d{4}年\d{1,2}月\d{1,2}日[：:、\s]*", "", t)
+    t = re.sub(r"^\d{1,2}月\d{1,2}日[：:、\s]*", "", t)
+    for bad in ("A股大盘分析", "A股大盘", "大盘分析", "大盘"):
+        t = t.replace(bad, "")
+    t = re.sub(r"[：:]{2,}", "：", t)
+    t = re.sub(r"\s+", "", t).strip("：:、，。 ")
+    if len(t) > max_chars:
+        t = t[:max_chars].rstrip("：:、，")
+    return t if len(t) >= 4 else ""
+
+
+def derive_market_recap_video_title(markdown: str) -> str:
+    """从报盘草稿提取盘面特点，生成对外短视频标题（不含「大盘」、不以日期开头）。"""
+    md = markdown or ""
+    one_liner = ""
+    m = re.search(
+        r"##\s*[二2][、.．]?\s*盘面一句话[^\n]*\n+(.+?)(?:\n##|\Z)",
+        md,
+        re.S | re.I,
+    )
+    if m:
+        one_liner = re.sub(r"\*+", "", m.group(1).strip().splitlines()[0]).strip()
+
+    trait_src = one_liner + md
+    traits: list[str] = []
+    if re.search(r"普跌|全线下跌|跌多涨少|超\d+.*下跌", trait_src):
+        traits.append("普跌")
+    elif re.search(r"普涨|全线上涨|涨多跌少", trait_src):
+        traits.append("普涨")
+    if re.search(r"分化|结构性|跷跷板", trait_src) and not traits:
+        traits.append("分化")
+    if re.search(r"缩量|成交萎缩|量能不足", trait_src):
+        traits.append("缩量")
+    elif re.search(r"放量|成交放大", trait_src):
+        traits.append("放量")
+
+    sh_pct: float | None = None
+    for pat in (
+        r"上证指数[^。\n]{0,40}?([+-]?\d+\.?\d*)%",
+        r"沪指[^。\n]{0,30}?([+-]?\d+\.?\d*)%",
+    ):
+        m = re.search(pat, md)
+        if m:
+            try:
+                sh_pct = float(m.group(1))
+                break
+            except ValueError:
+                continue
+
+    lead = ""
+    for pat in (
+        r"领涨(?:行业|板块)?[：:\s]*([^\n，,、+（(]{2,8})",
+        r"([^\n，,、\d]{2,6})[（(]?[+\+]?\d+\.?\d*%",
+    ):
+        m = re.search(pat, md)
+        if m:
+            lead = re.sub(r"[（(].*", "", m.group(1)).strip()[:6]
+            if lead and lead not in ("行业", "板块"):
+                break
+            lead = ""
+
+    segments: list[str] = []
+    if traits:
+        segments.append("".join(traits[:2]))
+    if sh_pct is not None:
+        if sh_pct > 0:
+            segments.append(f"沪指涨{sh_pct:g}%")
+        elif sh_pct < 0:
+            segments.append(f"沪指跌{abs(sh_pct):g}%")
+        else:
+            segments.append("沪指平盘")
+    if lead and len(segments) < 2 and sum(len(s) for s in segments) < 14:
+        segments.append(f"{lead}走强")
+
+    if not segments and one_liner:
+        short = re.sub(r"[，。；、]", "：", one_liner)
+        short = re.sub(r"指数|市场|A股", "", short)
+        segments.append(short[:18])
+
+    raw = "：".join(segments) if len(segments) > 1 else (segments[0] if segments else "")
+    return sanitize_market_recap_video_title(raw) or "今日收盘速览"
 
 
 def topic_plan_for_slot(slot: str, *, d: date | None = None) -> dict:
     """各槽位写入 _topic_plan，供 Opus 改编时约束形态。"""
     d = d or date.today()
     if slot == "astock_market":
-        fixed = fixed_market_video_title(d)
         return {
             "slot": slot,
             "script_mode": "daily_recap",
-            "fixed_video_title": fixed,
-            "title_hint": fixed,
+            "title_hint": "收盘报盘：标题由盘面特点自动生成",
             "cold_open": astock_market_cold_open(d),
             "angle": "收盘数据报盘+简要解读，不写板块专题",
             "theme_cluster": "astock_daily_recap",
@@ -452,8 +537,8 @@ def discover_cursor_topics(*, target: int = 5) -> list[dict]:
             "angle": plan.get("angle") or label,
             "reason": f"固定槽位 #{i}：{label}",
         }
-        if plan.get("fixed_video_title"):
-            row["fixed_video_title"] = plan["fixed_video_title"]
+        if plan.get("suggested_video_title"):
+            row["suggested_video_title"] = plan["suggested_video_title"]
         if plan.get("cold_open"):
             row["cold_open"] = plan["cold_open"]
         if plan.get("script_mode"):
@@ -555,30 +640,35 @@ def build_cursor_topic_research(
 
     plan = topic_plan_for_slot(slot)
     for key in (
-        "fixed_video_title", "cold_open", "script_mode",
+        "suggested_video_title", "cold_open", "script_mode",
         "title_hint", "angle", "theme_cluster",
     ):
         if topic.get(key):
             plan[key] = topic[key]
-    fixed_title = str(
-        topic.get("fixed_video_title") or plan.get("fixed_video_title") or ""
+    video_title = str(
+        topic.get("suggested_video_title") or plan.get("suggested_video_title") or ""
     ).strip()
 
-    # 大盘报盘：以正文里的「实际交易日」为准生成标题/冷开场，避免写死成今天。
+    # 大盘报盘：长文仍用日期模板标题；对外短视频标题从盘面特点推导。
     if slot == "astock_market":
         trading_day = _extract_trading_date(markdown)
+        video_title = derive_market_recap_video_title(markdown)
+        plan["suggested_video_title"] = video_title
         if trading_day:
-            fixed_title = market_title_for_date(trading_day)
-            plan["fixed_video_title"] = fixed_title
             plan["cold_open"] = astock_market_cold_open(trading_day)
-            print(f"  📅 报盘交易日：{trading_day.isoformat()} → 标题「{fixed_title}」")
+            print(
+                f"  📅 报盘交易日：{trading_day.isoformat()} → "
+                f"视频标题「{video_title}」"
+            )
         else:
-            print("  ⚠️  未能从草稿解析交易日，沿用今日日期标题", file=sys.stderr)
+            print(
+                f"  📌 视频标题：{video_title}（未能从草稿解析交易日，冷开场沿用计划日期）",
+            )
 
-    fallback = fixed_title or str(topic.get("title_hint") or SLOT_LABEL[slot])
-    title = fixed_title or _extract_title(markdown, fallback)
-    if slot == "astock_market" and fixed_title:
-        title = fixed_title
+    fallback = video_title or str(topic.get("title_hint") or SLOT_LABEL[slot])
+    title = video_title or _extract_title(markdown, fallback)
+    if slot == "astock_market" and video_title:
+        title = video_title
 
     article = {
         "title": title,
@@ -597,8 +687,8 @@ def build_cursor_topic_research(
         "_compliance_relaxed": True,
         "_topic_plan": plan,
     }
-    if fixed_title:
-        article["_fixed_video_title"] = fixed_title
+    if video_title:
+        article["_suggested_video_title"] = video_title
 
     print(f"  🤖 Opus 深读 Cursor 草稿（抽取短视频素材）…")
     details, _ = deep_read_article(article, agent_id=None, full_text=markdown)
