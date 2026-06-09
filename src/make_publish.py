@@ -15,11 +15,12 @@ from batch_aivideo import append_history_from_script
 from daily_topics import DIRECTION_LABEL, discover_daily_topics
 from paths import ROOT
 from publish_pipeline import log, process_topic
+from locale_env import load_locale_env
 from research import load_env
 
 
 def main() -> int:
-    load_env()
+    load_locale_env("zh")
     os.environ["AIVIDEO_SOURCE"] = "exa"
     parser = argparse.ArgumentParser(description="AI财知道：每日话题模式制作并自动发布")
     parser.add_argument(

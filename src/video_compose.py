@@ -23,6 +23,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 import categories
+from locale_env import locale_logs_dir, locale_output_dir
 from paths import ROOT
 from research import load_env
 from tts_client import synthesize as tts_synthesize
@@ -114,31 +115,70 @@ def pick_cold_open_fx_mode(script_stem: str = "") -> str:
 
 
 # ============================================================
-# 栏目品牌：AI财知道
+# 栏目品牌 / 尾页（zh 默认；locale=en 时用英文池）
 # ============================================================
-BRAND_NAME = os.environ.get("AIVIDEO_BRAND_NAME", "AI财知道").strip()
-BRAND_TAGLINE = os.environ.get("AIVIDEO_BRAND_TAGLINE", "每天一个 AI 和股市的为什么").strip()
-OUTRO_NARRATION = os.environ.get(
-    "AIVIDEO_OUTRO_NARRATION",
-    "我是AI财知道，每天用大白话讲清一个AI和股市热点，A股美股港股都聊。觉得有用就收藏下来对照看盘用，也欢迎点个关注，下条更新别错过！",
-).strip()
-OUTRO_HEADLINE = os.environ.get("AIVIDEO_OUTRO_HEADLINE", "点赞 · 收藏 · 关注").strip()
-OUTRO_SUBLINE = os.environ.get("AIVIDEO_OUTRO_SUBLINE", "看懂 AI 和股市的事").strip()
+_ZH_OUTRO_NARRATION = (
+    "我是AI财知道，每天用大白话讲清一个AI和股市热点，A股美股港股都聊。"
+    "觉得有用就收藏下来对照看盘用，也欢迎点个关注，下条更新别错过！"
+)
+_ZH_OUTRO_VARIANTS = [
+    _ZH_OUTRO_NARRATION,
+    "我是AI财知道，每天用大白话讲一个AI和股市热点。记得收藏对照看盘用，也点个关注，明天同一时间见！",
+    "今天的AI和股市为什么就讲到这。觉得有用就收藏下来，对照看盘用，也欢迎关注我别错过下一条。",
+    "AI财知道陪你看懂AI和钱的事，A股美股港股都聊。收藏好这条，点关注每天一条不掉队。",
+    "就到这。如果这条让你多懂一点，收藏下来有空再看，也欢迎关注我们继续每天更新。",
+    "我是AI财知道，专挑值得解释的AI和股市热点。收藏加关注，明天继续陪你看世界。",
+]
+_EN_OUTRO_VARIANTS = [
+    "That's the sketch for today. Save it if useful — and tell me what you'd watch next.",
+    "Quick market sketch. Save this for later and follow for the next one.",
+    "That's today's sketch. Bookmark it if it helped — follow for daily updates.",
+    "Market Sketch signing off. Save this episode and follow for the next move.",
+    "That's the wrap. If this clarified anything, save it — tell us what to cover next.",
+    "Plain-English markets, one sketch at a time. Save, follow, see you tomorrow.",
+]
 
-# 尾页旁白每条视频随机选一条，避免每天产出末尾 mp4 字节完全相同被抖音判重复。
-# 用 "|" 分隔自定义变体，否则使用下面的默认池。
-_OUTRO_VARIANTS_RAW = os.environ.get("AIVIDEO_OUTRO_NARRATION_VARIANTS", "").strip()
-if _OUTRO_VARIANTS_RAW:
-    OUTRO_NARRATION_VARIANTS = [s.strip() for s in _OUTRO_VARIANTS_RAW.split("|") if s.strip()]
-else:
-    OUTRO_NARRATION_VARIANTS = [
-        OUTRO_NARRATION,
-        "我是AI财知道，每天用大白话讲一个AI和股市热点。记得收藏对照看盘用，也点个关注，明天同一时间见！",
-        "今天的AI和股市为什么就讲到这。觉得有用就收藏下来，对照看盘用，也欢迎关注我别错过下一条。",
-        "AI财知道陪你看懂AI和钱的事，A股美股港股都聊。收藏好这条，点关注每天一条不掉队。",
-        "就到这。如果这条让你多懂一点，收藏下来有空再看，也欢迎关注我们继续每天更新。",
-        "我是AI财知道，专挑值得解释的AI和股市热点。收藏加关注，明天继续陪你看世界。",
-    ]
+BRAND_NAME = "AI财知道"
+BRAND_TAGLINE = "每天一个 AI 和股市的为什么"
+OUTRO_NARRATION = _ZH_OUTRO_NARRATION
+OUTRO_HEADLINE = "点赞 · 收藏 · 关注"
+OUTRO_SUBLINE = "看懂 AI 和股市的事"
+OUTRO_NARRATION_VARIANTS: list[str] = list(_ZH_OUTRO_VARIANTS)
+
+
+def _load_brand_outro_config() -> None:
+    """按 locale / 环境变量刷新品牌与尾页文案（main 入口在 load_env 后再调一次）。"""
+    global BRAND_NAME, BRAND_TAGLINE, OUTRO_NARRATION, OUTRO_HEADLINE, OUTRO_SUBLINE
+    global OUTRO_NARRATION_VARIANTS
+    en = _locale_en()
+    if en:
+        brand_default = "Market Sketch"
+        tagline_default = "US markets in plain English"
+        outro_default = _EN_OUTRO_VARIANTS[0]
+        headline_default = "Like · Save · Follow"
+        subline_default = "US markets in plain English"
+        pool_default = _EN_OUTRO_VARIANTS
+    else:
+        brand_default = "AI财知道"
+        tagline_default = "每天一个 AI 和股市的为什么"
+        outro_default = _ZH_OUTRO_NARRATION
+        headline_default = "点赞 · 收藏 · 关注"
+        subline_default = "看懂 AI 和股市的事"
+        pool_default = _ZH_OUTRO_VARIANTS
+
+    BRAND_NAME = os.environ.get("AIVIDEO_BRAND_NAME", brand_default).strip()
+    BRAND_TAGLINE = os.environ.get("AIVIDEO_BRAND_TAGLINE", tagline_default).strip()
+    OUTRO_NARRATION = os.environ.get("AIVIDEO_OUTRO_NARRATION", outro_default).strip()
+    OUTRO_HEADLINE = os.environ.get("AIVIDEO_OUTRO_HEADLINE", headline_default).strip()
+    OUTRO_SUBLINE = os.environ.get("AIVIDEO_OUTRO_SUBLINE", subline_default).strip()
+    raw = os.environ.get("AIVIDEO_OUTRO_NARRATION_VARIANTS", "").strip()
+    if raw:
+        OUTRO_NARRATION_VARIANTS = [s.strip() for s in raw.split("|") if s.strip()]
+    else:
+        OUTRO_NARRATION_VARIANTS = list(pool_default)
+
+
+_load_brand_outro_config()
 
 
 # ============================================================
@@ -1201,16 +1241,32 @@ def compose_video(
     if not slides:
         raise ValueError("脚本无 slides")
 
+    load_env()
+    _load_brand_outro_config()
+    if _locale_en():
+        try:
+            from us_voice import apply_voice_env, resolve_voice
+
+            vid = apply_voice_env()
+            _, vcfg = resolve_voice(vid)
+            print(
+                f"[compose] TTS: doubao {os.environ.get('VOLCENGINE_TTS_RESOURCE_ID', '')} "
+                f"音色: {os.environ.get('VOLCENGINE_TTS_SPEAKER', '')} ({vcfg.get('name', vid)})",
+                file=sys.stderr,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[compose] US 音色配置失败: {exc}", file=sys.stderr)
     set_theme(categories.resolve_category(script, os.environ.get("AIVIDEO_CATEGORY")))
 
-    try:
-        from research import print_douyin_pre_publish_scan
+    if not _locale_en():
+        try:
+            from research import print_douyin_pre_publish_scan
 
-        print_douyin_pre_publish_scan(script)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[douyin预审] 跳过：{exc}", file=sys.stderr)
+            print_douyin_pre_publish_scan(script)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[douyin预审] 跳过：{exc}", file=sys.stderr)
 
-    work_dir = (work_dir or ROOT / "logs" / "compose" / script_file.stem)
+    work_dir = (work_dir or locale_logs_dir() / "compose" / script_file.stem)
     work_dir.mkdir(parents=True, exist_ok=True)
 
     total = len(slides)
@@ -1225,12 +1281,12 @@ def compose_video(
     if ai_cover_rel:
         ai_cover_path = Path(ai_cover_rel) if Path(ai_cover_rel).is_absolute() else ROOT / ai_cover_rel
     else:
-        ai_cover_path = ROOT / "logs" / "images" / script_file.stem / "cover.png"
+        ai_cover_path = locale_logs_dir() / "images" / script_file.stem / "cover.png"
     hero_rel = cover_slide.get("image_path")
     if hero_rel:
         hero_path = Path(hero_rel) if Path(hero_rel).is_absolute() else ROOT / hero_rel
     else:
-        hero_path = ROOT / "logs" / "images" / script_file.stem / "slide_01.png"
+        hero_path = locale_logs_dir() / "images" / script_file.stem / "slide_01.png"
     cover_png = work_dir / "cover.png"
     if cold_open_text:
         print(f"[cold_open] 口播：{cold_open_text}", file=sys.stderr)
@@ -1296,7 +1352,7 @@ def compose_video(
         if image_rel:
             image_path = Path(image_rel) if Path(image_rel).is_absolute() else ROOT / image_rel
         else:
-            image_path = ROOT / "logs" / "images" / script_file.stem / f"slide_{i:02d}.png"
+            image_path = locale_logs_dir() / "images" / script_file.stem / f"slide_{i:02d}.png"
         if not image_path.is_file():
             print(f"  ⚠️  缺图: {image_path}", file=sys.stderr)
             image_path = work_dir / f"missing_{i}.png"
@@ -1333,7 +1389,7 @@ def compose_video(
     except Exception as exc:  # noqa: BLE001
         print(f"[outro] ⚠️ 生成尾页失败，跳过：{exc}", file=sys.stderr)
 
-    output = output or (ROOT / "output" / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+    output = output or (locale_output_dir() / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
     output.parent.mkdir(parents=True, exist_ok=True)
     print(f"[concat] {len(clips)} 段 → {output}", file=sys.stderr)
     bgm = select_bgm(script_file.stem)
@@ -1346,9 +1402,9 @@ def compose_video(
         concat_clips(clips, output, work_dir)
     print(f"完成：{output} ({output.stat().st_size//1024} KB)", file=sys.stderr)
 
-    last_video = ROOT / "logs" / "last_video.txt"
+    last_video = locale_logs_dir() / "last_video.txt"
     last_video.write_text(str(output) + "\n", encoding="utf-8")
-    manifest = ROOT / "logs" / "video_manifest.jsonl"
+    manifest = locale_logs_dir() / "video_manifest.jsonl"
     with manifest.open("a", encoding="utf-8") as mf:
         mf.write(json.dumps({
             "video": str(output),
@@ -1362,6 +1418,7 @@ def compose_video(
 
 def main() -> int:
     load_env()
+    _load_brand_outro_config()
     parser = argparse.ArgumentParser(description="本地合成视频（图片+TTS+ffmpeg）")
     parser.add_argument("script_file", nargs="?", default=str(ROOT / "logs" / "last_script.json"))
     parser.add_argument("-o", "--output")

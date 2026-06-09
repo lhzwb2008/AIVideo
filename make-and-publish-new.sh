@@ -5,14 +5,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
-
-[[ -f .env ]] && set -a && source .env && set +a
+export ROOT
+source "$ROOT/scripts/load-dotenv.sh" zh
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-# 新流水线：客观叙述允许「买入/卖出」，仍禁荐股喊单类短语（见 research.compliance_relaxed）
 export AIVIDEO_SOURCE=cursor
 export AIVIDEO_COMPLIANCE_RELAXED=1
 
-# 默认每天 5 条（五槽位各 1）；可 ./make-and-publish-new.sh 2 只跑前 2 槽
 COUNT="${1:-${AIVIDEO_MAX_VIDEOS_PER_RUN:-5}}"
 
 PY="$ROOT/.venv/bin/python3"

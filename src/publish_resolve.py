@@ -8,6 +8,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from locale_env import iter_script_json_paths, locale_logs_dir, normalize_locale
 from paths import ROOT
 
 
@@ -18,8 +19,17 @@ def load_script(path: Path | None) -> dict | None:
     return data.get("script", data)
 
 
+def _guess_locale_from_video(video_path: Path) -> str:
+    parts = video_path.resolve().parts
+    if "en" in parts:
+        return "en"
+    if "zh" in parts:
+        return "zh"
+    return normalize_locale()
+
+
 def resolve_script_for_video(video_path: Path, script_arg: str | None) -> Path | None:
-    """为 MP4 找对应的 logs/last_script_*.json。"""
+    """为 MP4 找对应的 logs/{locale}/last_script_*.json。"""
     if script_arg:
         path = Path(script_arg)
         if not path.is_absolute():
@@ -27,9 +37,11 @@ def resolve_script_for_video(video_path: Path, script_arg: str | None) -> Path |
         return path if path.is_file() else None
 
     video_path = video_path.resolve()
+    loc = _guess_locale_from_video(video_path)
+    logs = locale_logs_dir(loc)
 
-    last_video = ROOT / "logs" / "last_video.txt"
-    last_script = ROOT / "logs" / "last_script.json"
+    last_video = logs / "last_video.txt"
+    last_script = logs / "last_script.json"
     if last_video.is_file() and last_script.is_file():
         raw = last_video.read_text(encoding="utf-8").strip()
         last = Path(raw)
@@ -38,8 +50,9 @@ def resolve_script_for_video(video_path: Path, script_arg: str | None) -> Path |
         if last.resolve() == video_path:
             return last_script
 
-    manifest = ROOT / "logs" / "video_manifest.jsonl"
-    if manifest.is_file():
+    for manifest in (logs / "video_manifest.jsonl", ROOT / "logs" / "video_manifest.jsonl"):
+        if not manifest.is_file():
+            continue
         rel = str(video_path.relative_to(ROOT.resolve())) if video_path.is_relative_to(ROOT.resolve()) else str(video_path)
         name = video_path.name
         for line in reversed(manifest.read_text(encoding="utf-8").splitlines()):
@@ -71,7 +84,9 @@ def resolve_script_for_video(video_path: Path, script_arg: str | None) -> Path |
 
     best_path: Path | None = None
     best_delta: float | None = None
-    for p in ROOT.glob("logs/last_script_*.json"):
+    for p in iter_script_json_paths():
+        if "last_script_" not in p.name:
+            continue
         sm = re.search(r"last_script_(\d{8})_(\d{6})", p.stem)
         if video_dt and sm:
             script_dt = _dt_from_stamp(sm.group(1) + sm.group(2))
@@ -91,11 +106,12 @@ def resolve_script_for_video(video_path: Path, script_arg: str | None) -> Path |
     if best_path:
         return best_path
 
-    # 合成时间：脚本 mtime 略早于视频
     v_mtime = video_path.stat().st_mtime
     by_mtime: Path | None = None
     by_delta: float | None = None
-    for p in ROOT.glob("logs/last_script_*.json"):
+    for p in iter_script_json_paths():
+        if "last_script_" not in p.name:
+            continue
         sm = p.stat().st_mtime
         if sm > v_mtime:
             continue
@@ -112,15 +128,16 @@ def _render_cover_like_video(script_path: Path, script: dict) -> Path | None:
     """按 video_compose 规则生成开场 cover.png（含品牌角标 / 标题兜底）。"""
     from video_compose import render_full_cover, render_title_cover
 
+    loc = normalize_locale()
     stem = script_path.stem
-    cache = ROOT / "logs" / "youtube_thumbs" / f"{stem}_composed_cover.png"
+    cache = locale_logs_dir(loc) / "youtube_thumbs" / f"{stem}_composed_cover.png"
     rel = script.get("cover_image")
     if rel:
         ai = Path(rel)
         if not ai.is_absolute():
             ai = ROOT / ai
     else:
-        ai = ROOT / "logs" / "images" / stem / "cover.png"
+        ai = locale_logs_dir(loc) / "images" / stem / "cover.png"
     if ai.is_file():
         render_full_cover(ai, out_path=cache)
         return cache if cache.is_file() else None
@@ -136,7 +153,7 @@ def _render_cover_like_video(script_path: Path, script: dict) -> Path | None:
         if not hero.is_absolute():
             hero = ROOT / hero
     else:
-        hero = ROOT / "logs" / "images" / stem / "slide_01.png"
+        hero = locale_logs_dir(loc) / "images" / stem / "slide_01.png"
     render_title_cover(
         title=title_text,
         subtitle=str(cover_slide.get("subtitle") or "").strip(),
@@ -148,8 +165,10 @@ def _render_cover_like_video(script_path: Path, script: dict) -> Path | None:
 
 def resolve_cover_image(script_path: Path | None, video_path: Path) -> Path | None:
     """封面图：与成片开场一致（compose/cover.png → 同款渲染 → 成片首帧 → 标题兜底）。"""
+    loc = _guess_locale_from_video(video_path)
+    logs = locale_logs_dir(loc)
     if script_path and script_path.is_file():
-        composed = ROOT / "logs" / "compose" / script_path.stem / "cover.png"
+        composed = logs / "compose" / script_path.stem / "cover.png"
         if composed.is_file():
             return composed
         script = load_script(script_path)
@@ -160,11 +179,11 @@ def resolve_cover_image(script_path: Path | None, video_path: Path) -> Path | No
                 if not ai.is_absolute():
                     ai = ROOT / ai
             else:
-                ai = ROOT / "logs" / "images" / script_path.stem / "cover.png"
+                ai = logs / "images" / script_path.stem / "cover.png"
             if ai.is_file():
                 from video_compose import render_full_cover
 
-                cache = ROOT / "logs" / "youtube_thumbs" / f"{script_path.stem}_composed_cover.png"
+                cache = logs / "youtube_thumbs" / f"{script_path.stem}_composed_cover.png"
                 render_full_cover(ai, out_path=cache)
                 if cache.is_file():
                     return cache
@@ -182,7 +201,8 @@ def extract_first_frame(video_path: Path) -> Path | None:
     """从成片提取第 0 秒帧（即首页封面段首帧）。"""
     if not video_path.is_file():
         return None
-    out_dir = ROOT / "logs" / "youtube_thumbs"
+    loc = _guess_locale_from_video(video_path)
+    out_dir = locale_logs_dir(loc) / "youtube_thumbs"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{video_path.stem}_frame0.jpg"
     cmd = [

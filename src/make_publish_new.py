@@ -23,11 +23,12 @@ from cursor_daily_topics import (
 )
 from paths import ROOT
 from publish_pipeline import log, process_topic
+from locale_env import load_locale_env, locale_logs_dir
 from research import load_env
 
 
 def main() -> int:
-    load_env()
+    load_locale_env("zh")
     os.environ.setdefault("AIVIDEO_SOURCE", "cursor")
     os.environ.setdefault("AIVIDEO_COMPLIANCE_RELAXED", "1")
     default_count = len(CURSOR_SLOT_ORDER)
@@ -81,7 +82,7 @@ def main() -> int:
 
             if args.draft_only:
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                out = ROOT / "logs" / f"cursor_research_{stamp}_topic{index:02d}.json"
+                out = locale_logs_dir("zh") / f"cursor_research_{stamp}_topic{index:02d}.json"
                 out.write_text(
                     json.dumps(
                         {"topic": topic, "article": article, "details": details},
@@ -117,7 +118,7 @@ def main() -> int:
             if reuse:
                 agent_id = None
 
-    summary = ROOT / "logs" / "make_publish_new_last.json"
+    summary = locale_logs_dir("zh") / "make_publish_new_last.json"
     summary.write_text(
         json.dumps(
             {

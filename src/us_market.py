@@ -135,7 +135,8 @@ Rules:
 - Last slide: one open question for comments + ask viewers to save the video for reference. No "like and subscribe" spam.
 - Explain jargon with analogies (coffee, rent, paycheck, grocery).
 - Tone: friendly teacher, not news anchor. No "the article says".
-- Compliance: NO buy/sell/hold calls, price targets, guaranteed returns, or ticker symbols (NVDA, AAPL, etc.). Use company names only.
+- Compliance: NO buy/sell/hold calls, price targets, or guaranteed returns. Use company names (Nvidia, Apple) — never stock tickers like NVDA/AAPL. Index names like S&P 500 / Nasdaq are fine.
+- Keep each narration within length limits: cover 80-340 chars, body 100-480 chars.
 - hashtags: real search terms (#stocks #Fed #earnings #S&P500), not invented phrases.
 - JSON only, no markdown."""
 
@@ -152,8 +153,12 @@ _RECO_BANNED = re.compile(
     r"financial advice|you should buy|you should sell|get rich)\b",
     re.I,
 )
-_TICKER_RE = re.compile(r"\b[A-Z]{1,5}\b")
-_TICKER_ALLOW = {"AI", "ETF", "GDP", "CPI", "PPI", "Fed", "SEC", "IPO", "CEO", "CFO", "US", "UK", "EU"}
+# 仅匹配 2–5 位全大写“词”，避免误杀句首 A / S&P 里的 S
+_TICKER_RE = re.compile(r"\b[A-Z]{2,5}\b")
+_TICKER_ALLOW = {
+    "AI", "ETF", "GDP", "CPI", "PPI", "Fed", "SEC", "IPO", "CEO", "CFO", "US", "UK", "EU",
+    "VIX", "ET", "AM", "PM", "IT", "HR", "PR", "TV", "PC", "OS", "EU", "UN",
+}
 
 
 def log(msg: str) -> None:
@@ -161,7 +166,9 @@ def log(msg: str) -> None:
 
 
 def _recent_clusters() -> list[str]:
-    path = ROOT / "logs" / "us_market_history.json"
+    from locale_env import locale_logs_dir
+
+    path = locale_logs_dir("en") / "us_market_history.json"
     if not path.is_file():
         return []
     try:
@@ -224,6 +231,27 @@ def pick_article_for_topic(topic: dict, *, days: int = 3) -> dict:
     return article
 
 
+def deep_read_us_markdown(article: dict, markdown: str) -> dict:
+    """对 Cursor 草稿等给定英文正文做深读（不抓 URL）。"""
+    body = (markdown or "").strip()
+    if len(body) < 200:
+        raise RuntimeError("draft too short for deep-read")
+    user = US_DEEP_READ_USER.format(
+        title=article.get("title", ""),
+        url=article.get("url", ""),
+        site=article.get("site", ""),
+        published_at=article.get("published_at", ""),
+        body=body[: int(os.environ.get("EXA_DEEP_READ_MAX_CHARS", "60000"))],
+    )
+    raw = chat_complete(system=US_DEEP_READ_SYSTEM, user=user, max_tokens=12000, response_format_json=True)
+    details = extract_json(raw)
+    if not isinstance(details, dict):
+        raise RuntimeError("deep-read result is not an object")
+    details.setdefault("thesis", "")
+    details.setdefault("outline", [])
+    return details
+
+
 def deep_read_us_article(article: dict) -> dict:
     import exa_client
 
@@ -261,8 +289,42 @@ def _check_ticker_free(text: str, *, field: str) -> None:
         tok = m.group(0)
         if tok in _TICKER_ALLOW:
             continue
-        if len(tok) <= 4 and tok.isupper():
-            raise ValueError(f"{field} contains ticker-like token {tok!r} (use company names)")
+        raise ValueError(f"{field} contains ticker-like token {tok!r} (use company names)")
+
+
+def _trim_narration_en(text: str, *, max_chars: int, min_chars: int) -> str:
+    s = re.sub(r"\s+", " ", (text or "").strip())
+    if len(s) <= max_chars:
+        return s
+    cut = s[:max_chars]
+    for sep in (". ", "! ", "? ", "; "):
+        idx = cut.rfind(sep)
+        if idx >= max(min_chars, max_chars // 2):
+            return cut[: idx + 1].strip()
+    return cut.rstrip(" ,;.")
+
+
+def soft_fix_us_script(data: dict) -> dict:
+    """温和裁剪超长口播，避免模型轻微超长导致整篇失败。"""
+    if not isinstance(data, dict):
+        return data
+    slides = data.get("slides")
+    if not isinstance(slides, list):
+        return data
+    for i, slide in enumerate(slides):
+        if not isinstance(slide, dict):
+            continue
+        n = str(slide.get("narration") or "").strip()
+        if not n:
+            continue
+        if i == 0:
+            slide["narration"] = _trim_narration_en(n, max_chars=340, min_chars=80)
+        else:
+            slide["narration"] = _trim_narration_en(n, max_chars=480, min_chars=100)
+    cold = str(data.get("cold_open") or "").strip()
+    if cold and len(cold) > 120:
+        data["cold_open"] = _trim_narration_en(cold, max_chars=120, min_chars=40)
+    return data
 
 
 def validate_us_script(data: dict) -> dict:
@@ -306,8 +368,8 @@ def validate_us_script(data: dict) -> dict:
         n = str(slide["narration"]).strip()
         nlen = len(n)
         if layout == "cover":
-            if not (80 <= nlen <= 320):
-                raise ValueError(f"cover narration 80-320 chars, got {nlen}")
+            if not (80 <= nlen <= 340):
+                raise ValueError(f"cover narration 80-340 chars, got {nlen}")
         else:
             if not (100 <= nlen <= 480):
                 raise ValueError(f"slide {page} narration 100-480 chars, got {nlen}")
@@ -392,6 +454,7 @@ def adapt_us_script(article: dict, *, details: dict) -> dict:
             parsed = extract_json(raw, require_slides=True)
             last_parsed = parsed
             merged = _merge_script(parsed, article)
+            merged = soft_fix_us_script(merged)
             return validate_us_script(merged)
         except (ValueError, json.JSONDecodeError) as exc:
             last_err = exc
@@ -444,7 +507,9 @@ def run_us_research(
 
 
 def append_us_history(script: dict, *, video: str = "") -> None:
-    path = ROOT / "logs" / "us_market_history.json"
+    from locale_env import locale_logs_dir
+
+    path = locale_logs_dir("en") / "us_market_history.json"
     rows: list[dict] = []
     if path.is_file():
         try:
@@ -453,6 +518,7 @@ def append_us_history(script: dict, *, video: str = "") -> None:
             rows = []
     rows.append({
         "title": script.get("title"),
+        "slot": script.get("slot"),
         "theme_cluster": script.get("theme_cluster"),
         "keyword": script.get("keyword"),
         "video": video,

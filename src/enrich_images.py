@@ -14,12 +14,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from image_client import build_cover_prompt, build_prompt, generate_image, save_b64_image
+from locale_env import locale_logs_dir
 from paths import ROOT
 from research import load_env
 
 
 def image_dir_for(script_path: Path) -> Path:
-    return ROOT / "logs" / "images" / script_path.stem
+    return locale_logs_dir() / "images" / script_path.stem
 
 
 def slide_fingerprint(slide: dict) -> str:

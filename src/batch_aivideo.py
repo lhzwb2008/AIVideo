@@ -18,7 +18,13 @@ from research import load_env, run_article_research
 
 PROGRESS_FILE = ROOT / "logs" / "batch_progress.json"
 BATCH_LOG = ROOT / "logs" / "batch_run.log"
-HISTORY_FILE = ROOT / "logs" / "article_history.json"
+def _history_file() -> Path:
+    from locale_env import locale_logs_dir
+
+    return locale_logs_dir("zh") / "article_history.json"
+
+
+HISTORY_FILE = ROOT / "logs" / "zh" / "article_history.json"  # 默认路径；读写请用 _history_file()
 # 去重窗口默认跟随搜索窗口（AIVIDEO_DAYS/DAILY_RUN_DAYS，默认 3 天），
 # 这样「搜索近 N 天」与「去重保留 N 天」始终一致；需要时用 BATCH_HISTORY_DAYS 单独覆盖。
 HISTORY_WINDOW_DAYS = int(
@@ -94,10 +100,11 @@ def exclude_urls(progress: dict) -> list[str]:
 # 跨批次/跨天主题去重：logs/article_history.json
 # ============================================================
 def load_history() -> list[dict]:
-    if not HISTORY_FILE.is_file():
+    path = _history_file()
+    if not path.is_file():
         return []
     try:
-        data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
     items = data.get("items") if isinstance(data, dict) else data
@@ -287,8 +294,9 @@ def append_history(item: dict) -> None:
     items.append(record)
     # 修剪：仅保留近 90 天，避免文件膨胀
     items = [x for x in items if _within_window(x, days=90)]
-    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    HISTORY_FILE.write_text(
+    hist = _history_file()
+    hist.parent.mkdir(parents=True, exist_ok=True)
+    hist.write_text(
         json.dumps({"items": items, "updated_at": datetime.now(timezone.utc).isoformat()},
                    ensure_ascii=False, indent=2),
         encoding="utf-8",

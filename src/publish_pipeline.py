@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""制作发布共用流水线：脚本落地 → 生图 → 合成 → YouTube/TikTok API → 打印文案 → 归档。"""
+"""制作发布共用流水线：脚本落地 → 生图 → 合成 → 各平台 API → 打印文案 → 归档。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from locale_env import normalize_locale
 from paths import ROOT
 from publish_caption import (
     bilibili_enabled,
@@ -25,6 +26,15 @@ from publish_caption import (
 )
 from forum_auth import is_login_error
 from research import run_article_research
+
+
+def _locale_en() -> bool:
+    return normalize_locale() == "en"
+
+
+def _intl_video_publish_enabled() -> bool:
+    """YouTube/TikTok 仅英文 US 流水线使用。"""
+    return _locale_en() and (youtube_enabled() or tiktok_enabled())
 
 
 def log(message: str) -> None:
@@ -49,10 +59,11 @@ def _publish_skipped(label: str) -> bool:
 
 def _auto_publish_platforms_label() -> str:
     names: list[str] = []
-    if youtube_enabled():
-        names.append("YouTube")
-    if tiktok_enabled():
-        names.append("TikTok")
+    if _locale_en():
+        if youtube_enabled():
+            names.append("YouTube")
+        if tiktok_enabled():
+            names.append("TikTok")
     if bilibili_enabled():
         names.append("B站视频")
     if eastmoney_enabled():
@@ -87,7 +98,9 @@ def read_script_title(script_path: Path) -> str:
 
 
 def latest_video() -> Path:
-    last_video = ROOT / "logs" / "last_video.txt"
+    from locale_env import locale_logs_dir
+
+    last_video = locale_logs_dir() / "last_video.txt"
     if not last_video.is_file():
         raise RuntimeError("未找到 logs/last_video.txt")
     raw = last_video.read_text(encoding="utf-8").strip()
@@ -501,10 +514,11 @@ def archive_video(video: Path, *, date_tag: str) -> Path:
 
 
 def archive_publish_bundle(video: Path, *, date_tag: str) -> dict[str, Path | None]:
-    """归档 mp4 + 同名图文文件夹到 archive/published/YYYYMMDD/。"""
+    """归档 mp4 + 同名图文文件夹到 archive/published/YYYYMMDD/zh|en/。"""
     from forum_manual_pack import forum_dir_for_video
+    from locale_env import archive_published_dir
 
-    dest_dir = ROOT / "archive" / "published" / date_tag
+    dest_dir = archive_published_dir(date_tag)
     dest_dir.mkdir(parents=True, exist_ok=True)
     stem = video.stem
 
@@ -574,8 +588,9 @@ def pipeline_after_script(
 
     if dry_run:
         log(f"\n=== [{index}/{target}] 预演 API 发布 ===")
-        youtube_url = publish_youtube(video, script_path, dry_run=True)
-        tiktok_url = publish_tiktok(video, script_path, dry_run=True)
+        if _locale_en():
+            youtube_url = publish_youtube(video, script_path, dry_run=True)
+            tiktok_url = publish_tiktok(video, script_path, dry_run=True)
         bilibili_title = publish_bilibili(video, script_path, dry_run=True)
         forum_for_bili = video.parent / video.stem
         if (forum_for_bili / "post.md").is_file():
@@ -612,8 +627,7 @@ def pipeline_after_script(
         }
 
     if (
-        youtube_enabled()
-        or tiktok_enabled()
+        _intl_video_publish_enabled()
         or bilibili_enabled()
         or wechat_enabled()
         or eastmoney_enabled()
@@ -622,8 +636,9 @@ def pipeline_after_script(
     ):
         label = _auto_publish_platforms_label()
         log(f"\n=== [{index}/{target}] API 自动发布（{label}）===")
-    youtube_url = publish_youtube(video, script_path, dry_run=False)
-    tiktok_url = publish_tiktok(video, script_path, dry_run=False)
+    if _locale_en():
+        youtube_url = publish_youtube(video, script_path, dry_run=False)
+        tiktok_url = publish_tiktok(video, script_path, dry_run=False)
     bilibili_title = publish_bilibili(video, script_path, dry_run=False)
 
     append_history_fn(script_path)
@@ -657,8 +672,7 @@ def pipeline_after_script(
         "forum": rel(archived["forum"]) if archived.get("forum") else "",
         "script": rel(script_path),
         "published": bool(
-            youtube_url
-            or tiktok_url
+            (_locale_en() and (youtube_url or tiktok_url))
             or bilibili_title
             or wechat_title
             or eastmoney_title

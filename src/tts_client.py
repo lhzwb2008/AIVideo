@@ -26,7 +26,24 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _locale_en() -> bool:
+    return _env("AIVIDEO_LOCALE", "zh").lower() in ("en", "english")
+
+
+def _ensure_us_voice_env() -> None:
+    """US 流水线：合成子进程可能被 .env 克隆音色覆盖，此处强制回写云舟等内置音色。"""
+    if not _locale_en():
+        return
+    try:
+        from us_voice import apply_voice_env
+
+        apply_voice_env()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[tts] US 音色配置失败: {exc}", file=sys.stderr)
+
+
 def provider() -> str:
+    _ensure_us_voice_env()
     return _env("TTS_PROVIDER", "doubao").lower()
 
 
@@ -107,10 +124,23 @@ def doubao_endpoint() -> str:
 
 
 def doubao_resource_id() -> str:
-    return _env("VOLCENGINE_TTS_RESOURCE_ID", "seed-icl-2.0")
+    _ensure_us_voice_env()
+    default = "seed-tts-2.0" if _locale_en() else "seed-icl-2.0"
+    return _env("VOLCENGINE_TTS_RESOURCE_ID", default)
 
 
 def doubao_speaker() -> str:
+    _ensure_us_voice_env()
+    if _locale_en():
+        try:
+            from us_voice import resolve_voice
+
+            _, cfg = resolve_voice()
+            sp = str(cfg.get("speaker") or "").strip()
+            if sp:
+                return sp
+        except Exception:
+            pass
     return _env("VOLCENGINE_TTS_SPEAKER", "S_6uN8A8f22")
 
 

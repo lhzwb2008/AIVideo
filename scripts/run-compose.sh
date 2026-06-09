@@ -3,9 +3,27 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-[[ -f .env ]] && set -a && source .env && set +a
+export ROOT
+source "$ROOT/scripts/load-dotenv.sh" "${AIVIDEO_LOCALE:-zh}"
 
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+
+# US 英文流水线：强制豆包内置音色（云舟等），勿用 .env 里的克隆 S_xxx
+if [[ "${AIVIDEO_LOCALE:-}" == "en" ]]; then
+  PY_US="$ROOT/.venv/bin/python3"
+  [[ -x "$PY_US" ]] || PY_US="python3"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && eval "$line"
+  done < <("$PY_US" -c "
+from us_voice import apply_voice_env
+import os, shlex
+apply_voice_env()
+for k in ('TTS_PROVIDER','VOLCENGINE_TTS_RESOURCE_ID','VOLCENGINE_TTS_SPEAKER','VOLCENGINE_TTS_ATEMPO','US_TTS_VOICE'):
+    v = os.environ.get(k, '')
+    if v:
+        print(f'export {k}={shlex.quote(v)}')
+")
+fi
 
 TTS_PROVIDER="${TTS_PROVIDER:-doubao}"
 if [[ "$TTS_PROVIDER" == "doubao" || "$TTS_PROVIDER" == "volcengine" || "$TTS_PROVIDER" == "volc" ]]; then

@@ -1,0 +1,28 @@
+{
+  "_comment": "Market Sketch — YouTube/TikTok 英文账号资料（方格纸漫画口播风）",
+  "brand": {
+    "name": "Market Sketch",
+    "tagline": "US markets in plain English",
+    "handle_suggestions": ["@marketsketch", "@marketsketch", "@market_sketch"]
+  },
+  "avatar": {
+    "path": "assets/market_sketch_avatar.png",
+    "alt": "Hand-drawn MS monogram with chart doodle on graph paper"
+  },
+  "display_name": "Market Sketch",
+  "youtube": {
+    "channel_name": "Market Sketch",
+    "description": "US markets in plain English — one sketch at a time.\n\nEvery Short breaks down what moved stocks today and why, without jargon or hype. Think hand-drawn explainers on graph paper: S&P 500, Nasdaq, chips, rates, jobs, CPI, and the stories behind the headlines.\n\nNew sketches regularly. Save the ones that help — and tell us what to cover next.\n\nFor education only. Not investment advice.",
+    "keywords": "stocks, US market, finance, investing, Wall Street, Nasdaq, S&P 500, market news, stock market explained"
+  },
+  "tiktok": {
+    "nickname": "Market Sketch",
+    "bio": "US markets in plain English 📈\nHand-drawn finance Shorts\nNot financial advice",
+    "bio_short": "US markets in plain English. Hand-drawn Shorts. Not advice."
+  },
+  "one_liners": [
+    "US markets in plain English — one sketch at a time.",
+    "Hand-drawn finance Shorts. No jargon. No hype.",
+    "What moved stocks today — and why it matters."
+  ]
+}

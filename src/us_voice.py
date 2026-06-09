@@ -55,6 +55,7 @@ def apply_voice_env(voice_id: str | None = None) -> str:
 
     if provider == "doubao":
         os.environ["TTS_PROVIDER"] = "doubao"
+        os.environ["US_TTS_VOICE"] = vid
         os.environ["VOLCENGINE_TTS_RESOURCE_ID"] = str(cfg.get("resource_id") or "seed-tts-2.0")
         os.environ["VOLCENGINE_TTS_SPEAKER"] = str(cfg.get("speaker") or "")
         os.environ.pop("VOLCENGINE_TTS_MODEL", None)

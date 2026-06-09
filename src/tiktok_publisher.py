@@ -129,6 +129,26 @@ def _post_mode() -> str:
     return "direct"
 
 
+def _build_post_info(title: str, *, privacy_level: str = "") -> dict:
+    """TikTok caption：title 字段支持正文 + #话题 + @mention（最多 2200 UTF-16）。"""
+    post_info: dict[str, object] = {"title": title[:2200]}
+    if privacy_level:
+        post_info["privacy_level"] = privacy_level
+    if _env_bool("TIKTOK_DISABLE_DUET", False):
+        post_info["disable_duet"] = True
+    if _env_bool("TIKTOK_DISABLE_STITCH", False):
+        post_info["disable_stitch"] = True
+    if _env_bool("TIKTOK_DISABLE_COMMENT", False):
+        post_info["disable_comment"] = True
+    if _env_bool("TIKTOK_BRAND_CONTENT", False):
+        post_info["brand_content_toggle"] = True
+    if _env_bool("TIKTOK_BRAND_ORGANIC", False):
+        post_info["brand_organic_toggle"] = True
+    if _env_bool("TIKTOK_DECLARE_AIGC", False):
+        post_info["is_aigc"] = True
+    return post_info
+
+
 def upload_video(
     video_path: Path,
     *,
@@ -152,26 +172,24 @@ def upload_video(
     session = _http_session()
     if mode == "inbox":
         init_url = "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/"
-        payload = {"source_info": source_info}
+        # 收件箱模式也必须传 post_info.title，否则 App 里只剩应用名 #aivideo 占位
+        payload = {
+            "post_info": _build_post_info(title),
+            "source_info": source_info,
+            "post_mode": "MEDIA_UPLOAD",
+        }
         privacy = ""
         username = ""
+        print(f"  Caption 预填（收件箱）:\n{title[:500]}{'…' if len(title) > 500 else ''}", flush=True)
     else:
         creator = query_creator_info(token)
         privacy = privacy_level or _resolve_privacy(creator)
         username = str(creator.get("creator_username") or "").strip()
-        post_info = {
-            "title": title[:2200],
-            "privacy_level": privacy,
-            "disable_duet": _env_bool("TIKTOK_DISABLE_DUET", False),
-            "disable_stitch": _env_bool("TIKTOK_DISABLE_STITCH", False),
-            "disable_comment": _env_bool("TIKTOK_DISABLE_COMMENT", False),
-            "brand_content_toggle": _env_bool("TIKTOK_BRAND_CONTENT", False),
-            "brand_organic_toggle": _env_bool("TIKTOK_BRAND_ORGANIC", False),
-        }
-        if _env_bool("TIKTOK_DECLARE_AIGC", False):
-            post_info["is_aigc"] = True
         init_url = "https://open.tiktokapis.com/v2/post/publish/video/init/"
-        payload = {"post_info": post_info, "source_info": source_info}
+        payload = {
+            "post_info": _build_post_info(title, privacy_level=privacy),
+            "source_info": source_info,
+        }
 
     resp = session.post(
         init_url,
@@ -180,6 +198,23 @@ def upload_video(
         timeout=_http_timeout(),
     )
     body = resp.json()
+    err = body.get("error") or {}
+    err_code = str(err.get("code") or "")
+    if (
+        mode == "inbox"
+        and resp.status_code >= 400
+        and "post_info" in payload
+        and err_code in ("invalid_param", "param_error", "bad_request")
+    ):
+        # 旧版 API 可能不认 post_mode；降级重试仅 source_info
+        print("  ⚠️  收件箱带 caption 初始化失败，降级为仅上传视频…", flush=True)
+        resp = session.post(
+            init_url,
+            headers=_headers(token),
+            json={"source_info": source_info},
+            timeout=_http_timeout(),
+        )
+        body = resp.json()
     _api_error(resp, body, action="video/init")
     data = body.get("data") or {}
     publish_id = str(data.get("publish_id") or "")

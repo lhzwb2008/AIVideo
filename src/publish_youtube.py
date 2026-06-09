@@ -55,11 +55,12 @@ def resolve_video(path: str | None) -> Path:
             raise YouTubePublishError(f"视频不存在: {video}")
         return video.resolve()
 
-    output_dir = ROOT / "output"
-    candidates = sorted(output_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates:
-        raise YouTubePublishError("output/ 下没有 mp4")
-    return candidates[0].resolve()
+    from locale_env import latest_output_video
+
+    latest = latest_output_video()
+    if latest:
+        return latest.resolve()
+    raise YouTubePublishError("output/{locale}/ 下没有 mp4")
 
 
 def _last_video_path() -> Path | None:

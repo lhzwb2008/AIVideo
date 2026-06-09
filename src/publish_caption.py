@@ -50,6 +50,15 @@ def _load_script_dict(script_path: Path) -> dict | None:
 
 
 def build_publish_fields(script: dict | None) -> dict[str, str]:
+    if _locale_en():
+        yt = build_youtube_fields(script)
+        tk = build_tiktok_fields(script)
+        tags = ", ".join(yt.get("tags") or [])
+        return {
+            "title": yt["title"],
+            "desc": (tk.get("title") or yt.get("description") or "")[:1000],
+            "tags": tags,
+        }
     return build_sau_fields(script)
 
 
@@ -68,11 +77,8 @@ def print_manual_publish_pack(
 ) -> None:
     script = _load_script_dict(script_path) or load_script(script_path)
     fields = build_publish_fields(script)
-    yt_fields = build_youtube_fields(script)
-    tk_fields = build_tiktok_fields(script)
     tags = fields.get("tags") or ""
     hashtags = " ".join(f"#{t.strip()}" for t in tags.split(",") if t.strip())
-    yt_hashtags = " ".join(f"#{t}" for t in yt_fields.get("tags") or [])
 
     video_rel = ""
     forum_rel = ""
@@ -91,7 +97,10 @@ def print_manual_publish_pack(
                 forum_rel = str(forum_dir)
 
     print("\n" + "═" * 58, flush=True)
-    print("📋 发布文案（各平台通用，复制后按需微调）", flush=True)
+    if _locale_en():
+        print("📋 发布文案（YouTube + TikTok）", flush=True)
+    else:
+        print("📋 发布文案（各平台通用，复制后按需微调）", flush=True)
     if video_rel:
         print(f"视频: {video_rel}", flush=True)
     if forum_rel:
@@ -104,15 +113,19 @@ def print_manual_publish_pack(
         desc_block = f"{desc_block}\n\n{hashtags}"
     print(f"\n简介+话题（整段复制）:\n{desc_block}", flush=True)
 
-    print("\n【YouTube 自动发布】", flush=True)
-    print(f"标题: {yt_fields['title']}", flush=True)
-    print(f"标签: {', '.join(yt_fields.get('tags') or [])}", flush=True)
-    if yt_hashtags:
-        print(f"话题: {yt_hashtags}", flush=True)
+    if _locale_en():
+        yt_fields = build_youtube_fields(script)
+        tk_fields = build_tiktok_fields(script)
+        yt_hashtags = " ".join(f"#{t}" for t in yt_fields.get("tags") or [])
+        print("\n【YouTube 自动发布】", flush=True)
+        print(f"标题: {yt_fields['title']}", flush=True)
+        print(f"标签: {', '.join(yt_fields.get('tags') or [])}", flush=True)
+        if yt_hashtags:
+            print(f"话题: {yt_hashtags}", flush=True)
 
-    print("\n【TikTok · 复制到 App 发布页】", flush=True)
-    print("（收件箱草稿不会自动带文案，请整段复制粘贴）", flush=True)
-    print(tk_fields["title"], flush=True)
+        print("\n【TikTok · 复制到 App 发布页】", flush=True)
+        print("（收件箱草稿不会自动带文案，请整段复制粘贴）", flush=True)
+        print(tk_fields["title"], flush=True)
 
     todo_kwargs = dict(
         script=script,
@@ -163,6 +176,10 @@ def _read_last_log_field(log_name: str, *keys: str) -> str:
 README_TODO_HEADING = "## 发布 TODO 清单"
 
 
+def _locale_en() -> bool:
+    return os.environ.get("AIVIDEO_LOCALE", "zh").strip().lower() in ("en", "english")
+
+
 def _env_enabled(name: str, *, default: str = "0") -> bool:
     value = os.environ.get(name)
     if value is None or value.strip() == "":
@@ -195,7 +212,15 @@ def bilibili_video_manual_needed() -> bool:
 
 def _todo_config_summary() -> str:
     """当前 .env 中与待办相关的开关摘要。"""
-    bits: list[str] = ["抖音/小红书/视频号=你手动传"]
+    if _locale_en():
+        bits: list[str] = []
+        if youtube_enabled():
+            bits.append("YouTube=自动")
+        if tiktok_enabled():
+            bits.append("TikTok=收件箱+你App内发")
+        return " · ".join(bits) if bits else "（未开启 YouTube/TikTok）"
+
+    bits = ["抖音/小红书/视频号=你手动传"]
     if bilibili_video_auto_enabled():
         bits.append("B站视频=自动")
     elif bilibili_video_manual_needed():
@@ -211,10 +236,6 @@ def _todo_config_summary() -> str:
             bits.append("知乎专栏=自动")
         else:
             bits.append("知乎专栏=草稿+你点发布")
-    if youtube_enabled():
-        bits.append("YouTube=自动")
-    if tiktok_enabled():
-        bits.append("TikTok=收件箱+你App内发")
     return " · ".join(bits) if bits else "（.env 未开启任何发布渠道）"
 
 
@@ -249,9 +270,9 @@ def _auto_publish_summary(
         names.append("东财")
     if xueqiu_enabled() and xueqiu_title:
         names.append("雪球")
-    if youtube_enabled() and youtube_url:
+    if _locale_en() and youtube_enabled() and youtube_url:
         names.append("YouTube")
-    if tiktok_enabled() and tiktok_url:
+    if _locale_en() and tiktok_enabled() and tiktok_url:
         names.append("TikTok收件箱")
     if wechat_enabled() and wechat_title:
         if _read_last_log_bool("last_wechat_publish.json", "published"):
@@ -291,7 +312,7 @@ def build_todo_checklist_items(
             headline="本次未执行自动发布（--no-publish / --dry-run）",
         )
 
-    if video_rel:
+    if video_rel and not _locale_en():
         for name, url, tip in _VIDEO_MANUAL_PLATFORMS:
             sublines = [tip, f"成片: {video_rel}"]
             _append_todo_items(
@@ -335,7 +356,7 @@ def build_todo_checklist_items(
             headline="雪球: 自动发布失败 — ./scripts/publish-xueqiu.sh",
         )
 
-    if youtube_enabled() and not skip_auto_note and not youtube_url:
+    if _locale_en() and youtube_enabled() and not skip_auto_note and not youtube_url:
         _append_todo_items(
             manual,
             mark="!",
@@ -405,7 +426,7 @@ def build_todo_checklist_items(
                 headline="微信公众号: 失败 — ./scripts/publish-wechat.sh",
             )
 
-    if tiktok_enabled():
+    if _locale_en() and tiktok_enabled():
         if skip_auto_note:
             _append_todo_items(
                 manual,
@@ -507,9 +528,12 @@ def format_todo_checklist_markdown(
             for sub in sublines:
                 lines.append(f"  - {sub}")
         lines.append("")
-    lines.append(
-        "> 提示：财经平台风控严，简介勿出现「荐股/收益/带单」等字眼。"
-    )
+    if _locale_en():
+        lines.append("> For education only. Not investment advice.")
+    else:
+        lines.append(
+            "> 提示：财经平台风控严，简介勿出现「荐股/收益/带单」等字眼。"
+        )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -583,7 +607,10 @@ def _print_todo_checklist(
     for title, items in sections:
         print(f"\n— {title} —", flush=True)
         if title.startswith("待你亲手发布"):
-            print("  复制上面「标题 / 简介 / 话题」，按链接上传后发布：", flush=True)
+            if _locale_en():
+                print("  复制上面【TikTok】文案，在 App 内粘贴后发布：", flush=True)
+            else:
+                print("  复制上面「标题 / 简介 / 话题」，按链接上传后发布：", flush=True)
         for mark, headline, sublines in items:
             bracket = f"[{mark}]" if mark.strip() else "[ ]"
             print(f"  {bracket} {headline}", flush=True)
@@ -591,29 +618,26 @@ def _print_todo_checklist(
                 print(f"        {sub}", flush=True)
 
     print("\n" + "─" * 58, flush=True)
-    print("提示: 财经平台风控严，简介勿出现「荐股/收益/带单」等字眼。", flush=True)
-    if script:
-        try:
-            from research import print_douyin_pre_publish_scan
+    if _locale_en():
+        print("提示: For education only. Not investment advice.", flush=True)
+    else:
+        print("提示: 财经平台风控严，简介勿出现「荐股/收益/带单」等字眼。", flush=True)
+        if script:
+            try:
+                from research import print_douyin_pre_publish_scan
 
-            print_douyin_pre_publish_scan(script)
-        except Exception:
-            pass
+                print_douyin_pre_publish_scan(script)
+            except Exception:
+                pass
     print("─" * 58 + "\n", flush=True)
 
 
 def youtube_enabled() -> bool:
-    value = os.environ.get("AIVIDEO_PUBLISH_YOUTUBE")
-    if value is None or value.strip() == "":
-        return True
-    return value.strip().lower() in ("1", "true", "yes", "on")
+    return _env_enabled("AIVIDEO_PUBLISH_YOUTUBE", default="0")
 
 
 def tiktok_enabled() -> bool:
-    value = os.environ.get("AIVIDEO_PUBLISH_TIKTOK")
-    if value is None or value.strip() == "":
-        return False
-    return value.strip().lower() in ("1", "true", "yes", "on")
+    return _env_enabled("AIVIDEO_PUBLISH_TIKTOK", default="0")
 
 
 def eastmoney_enabled() -> bool:
