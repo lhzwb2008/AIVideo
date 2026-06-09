@@ -113,7 +113,11 @@ def latest_video() -> Path:
 
 
 def _read_last_publish_url(log_name: str, *keys: str) -> str:
-    log_path = ROOT / "logs" / log_name
+    from locale_env import locale_logs_dir
+
+    log_path = locale_logs_dir() / log_name
+    if not log_path.is_file():
+        log_path = ROOT / "logs" / log_name
     if not log_path.is_file():
         return ""
     try:
@@ -525,7 +529,14 @@ def archive_publish_bundle(video: Path, *, date_tag: str) -> dict[str, Path | No
     video_target = dest_dir / video.name
     if video_target.exists():
         video_target = dest_dir / f"{stem}_{datetime.now().strftime('%H%M%S')}{video.suffix}"
+    caption_sidecar = video.with_suffix(".tiktok_caption.txt")
     shutil.move(str(video), str(video_target))
+    if caption_sidecar.is_file():
+        caption_target = video_target.with_suffix(".tiktok_caption.txt")
+        try:
+            shutil.move(str(caption_sidecar), str(caption_target))
+        except OSError:
+            pass
 
     forum_target: Path | None = None
     forum_src = forum_dir_for_video(video)

@@ -16,6 +16,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from locale_env import load_locale_env, locale_logs_dir, normalize_locale
 from paths import ROOT
 from publish_resolve import load_script, resolve_script_for_video
 from tiktok_auth import TikTokAuthError, account_name, run_check, run_login
@@ -24,15 +25,7 @@ from tiktok_publisher import TikTokPublishError, upload_video
 
 
 def load_env() -> None:
-    env_path = ROOT / ".env"
-    if not env_path.exists():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+    load_locale_env(os.environ.get("AIVIDEO_LOCALE"))
 
 
 def resolve_video(path: str | None) -> Path:
@@ -109,7 +102,17 @@ def main() -> int:
         print("开始上传到 TikTok…", flush=True)
         result = upload_video(video_path, title=title, privacy_level=args.privacy)
 
-        log_path = ROOT / "logs" / "last_tiktok_publish.json"
+        loc = normalize_locale()
+        logs = locale_logs_dir(loc)
+        caption_path = logs / "last_tiktok_caption.txt"
+        caption_path.write_text(title, encoding="utf-8")
+        video_caption_path = video_path.with_suffix(".tiktok_caption.txt")
+        try:
+            video_caption_path.write_text(title, encoding="utf-8")
+        except OSError:
+            video_caption_path = None
+
+        log_path = logs / "last_tiktok_publish.json"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(
             json.dumps(
@@ -122,6 +125,9 @@ def main() -> int:
                     "privacy": result["privacy"],
                     "username": result["username"],
                     "title": title,
+                    "caption_prefilled": result.get("caption_prefilled", True),
+                    "caption_file": str(caption_path),
+                    "video_caption_file": str(video_caption_path) if video_caption_path else "",
                     "script": str(script_path) if script_path else "",
                     "published_at": datetime.now(timezone.utc).isoformat(),
                 },
@@ -137,7 +143,14 @@ def main() -> int:
                 f"✅ 已上传到 TikTok 收件箱 publish_id={result['publish_id']}",
                 flush=True,
             )
-            print("   请打开 TikTok App → Inbox/收件箱，粘贴下方文案后发布。", flush=True)
+            print(
+                "   App 内默认显示 #aivideo（开发者应用名占位），不是程序写错的标签。",
+                flush=True,
+            )
+            print("   请打开 TikTok App → Inbox/收件箱，删除占位文案，粘贴下方正文后发布。", flush=True)
+            print(f"   文案已保存: {caption_path}", flush=True)
+            if video_caption_path:
+                print(f"   视频旁副本: {video_caption_path}", flush=True)
             print("\n── TikTok 发布文案（复制粘贴）──", flush=True)
             print(title, flush=True)
             print("────────────────────────────", flush=True)

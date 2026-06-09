@@ -34,6 +34,8 @@ IMAGE_AREA_H = 1500            # 图片占满顶部 78%
 BG_COLOR = (251, 246, 228)     # 暖米色，匹配方格纸
 TEXT_COLOR = (40, 40, 40)
 SUBTITLE_Y = int(os.environ.get("AIVIDEO_SUBTITLE_Y", "1480"))  # 紧贴抖音底部置顶评论/简介浮层上方
+SUBTITLE_FONT_SIZE = int(os.environ.get("AIVIDEO_SUBTITLE_FONT_SIZE", "54"))
+SUBTITLE_MAX_WIDTH = int(os.environ.get("AIVIDEO_SUBTITLE_MAX_WIDTH", "920"))  # drawtext 可用文本宽度（1080 - 边距 - boxborderw）
 IMAGE_TOP_SAFE_Y = int(os.environ.get("AIVIDEO_IMAGE_TOP_SAFE_Y", "150"))
 
 TTS_SAMPLE_RATE = 24000        # 与 DASHSCOPE_TTS_SAMPLE_RATE 保持一致
@@ -308,6 +310,37 @@ def _wrap_chinese(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[s
     return lines
 
 
+def _wrap_english_words(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
+    """英文按词折行，避免在单词中间断开。"""
+    words = (text or "").split()
+    if not words:
+        return []
+    lines: list[str] = []
+    cur = words[0]
+    for word in words[1:]:
+        candidate = f"{cur} {word}"
+        if font.getbbox(candidate)[2] <= max_w:
+            cur = candidate
+        else:
+            lines.append(cur)
+            cur = word
+    lines.append(cur)
+    return lines
+
+
+def _wrap_subtitle_lines(text: str, *, fontsize: int | None = None) -> list[str]:
+    """底部分句字幕折行：中文逐字、英文按词，宽度不超过 SUBTITLE_MAX_WIDTH。"""
+    phrase = (text or "").strip()
+    if not phrase:
+        return []
+    size = fontsize or SUBTITLE_FONT_SIZE
+    font = load_font(size)
+    max_w = SUBTITLE_MAX_WIDTH
+    if _locale_en():
+        return _wrap_english_words(phrase, font, max_w)
+    return _wrap_chinese(phrase, font, max_w)
+
+
 def render_full_cover(image_path: Path, *, out_path: Path) -> Path:
     """AI 生成的封面图直接铺满 1080x1920，按比例缩放居中。"""
     canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), BG_COLOR)
@@ -568,7 +601,8 @@ def compose_cold_open_clip(
     """
     duration = cold_open_duration_s(cold_open_text, audio_path)
     text = (cold_open_text or "").strip()
-    phrases = split_narration(text) or [text[:18] if text else "…"]
+    fallback_len = _subtitle_phrase_max_chars()
+    phrases = split_narration(text) or [text[:fallback_len] if text else "…"]
     spans = allocate_phrase_times(phrases, duration)
     delay = max(0.0, subtitle_delay_s)
     fx_mode = pick_cold_open_fx_mode(script_stem)
@@ -585,12 +619,12 @@ def compose_cold_open_clip(
         sub_start = max(start, delay)
         if sub_start >= end - 0.02:
             continue
-        tf = _make_phrase_textfile(phrase, work_dir / f"cold_phrase_{idx:02d}.txt")
+        tf = _make_phrase_textfile(phrase, work_dir / f"cold_phrase_{idx:02d}.txt", fontsize=SUBTITLE_FONT_SIZE)
         filters.append(
             _drawtext_filter(
                 textfile=tf,
                 font=font,
-                fontsize=54,
+                fontsize=SUBTITLE_FONT_SIZE,
                 y=SUBTITLE_Y,
                 start=sub_start,
                 end=end,
@@ -794,10 +828,26 @@ def ensure_outro_clip(*, script_stem: str = "") -> Path:
 _PHRASE_SPLIT = re.compile(r"[，。！？；,!?;\n]+")
 
 
+def _subtitle_phrase_max_chars() -> int:
+    """口播分句上限：中文按字数；英文按字幕单行像素宽度估算（避免 ffmpeg drawtext 溢出）。"""
+    if not _locale_en():
+        return 18
+    font = load_font(SUBTITLE_FONT_SIZE)
+    probe = "The quick brown fox jumps over the lazy dog and "
+    lo, hi = 16, len(probe)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if font.getbbox(probe[:mid])[2] <= SUBTITLE_MAX_WIDTH:
+            lo = mid
+        else:
+            hi = mid - 1
+    return max(24, lo)
+
+
 def split_narration(text: str, max_chars: int | None = None) -> list[str]:
     """按标点切句；过长再按字数切。"""
     if max_chars is None:
-        max_chars = 42 if _locale_en() else 18
+        max_chars = _subtitle_phrase_max_chars()
     text = (text or "").strip()
     if not text:
         return []
@@ -951,8 +1001,9 @@ def _escape_drawtext_path(p: str) -> str:
     return p.translate(_DRAWTEXT_ESCAPE)
 
 
-def _make_phrase_textfile(phrase: str, out: Path) -> Path:
-    out.write_text(phrase, encoding="utf-8")
+def _make_phrase_textfile(phrase: str, out: Path, *, fontsize: int | None = None) -> Path:
+    lines = _wrap_subtitle_lines(phrase, fontsize=fontsize)
+    out.write_text("\n".join(lines) if lines else phrase, encoding="utf-8")
     return out
 
 
@@ -997,7 +1048,8 @@ def compose_clip(
         duration = max(0.05, ffprobe_duration(audio_path) - audio_start_s)
     else:
         duration = ffprobe_duration(audio_path)
-    phrases = split_narration(narration) or [narration[:18]]
+    fallback_len = _subtitle_phrase_max_chars()
+    phrases = split_narration(narration) or [narration[:fallback_len]]
     spans = allocate_phrase_times(phrases, duration)
 
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -1005,12 +1057,12 @@ def compose_clip(
 
     filters: list[str] = [_kenburns_filter(kenburns_direction, duration)]
     for idx, (phrase, (start, end)) in enumerate(zip(phrases, spans)):
-        tf = _make_phrase_textfile(phrase, work_dir / f"phrase_{idx:02d}.txt")
+        tf = _make_phrase_textfile(phrase, work_dir / f"phrase_{idx:02d}.txt", fontsize=SUBTITLE_FONT_SIZE)
         filters.append(
             _drawtext_filter(
                 textfile=tf,
                 font=font,
-                fontsize=54,
+                fontsize=SUBTITLE_FONT_SIZE,
                 y=SUBTITLE_Y,
                 start=start,
                 end=end,

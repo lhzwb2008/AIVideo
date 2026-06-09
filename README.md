@@ -315,6 +315,14 @@ AI财知道。聚焦 AI 与财经交叉地带：财报拆解、行业趋势、�
 AI财知道。每天梳理一个 AI 与财经热点，拆解财报与基本面，A股·美股·港股都聊，用大白话讲清逻辑。内容仅为信息分享与个人观点，不构成投资建议，市场有风险，决策请独立判断。
 ```
 
+## 英文站账号资料（Market Sketch · 复制用）
+
+YouTube / TikTok / Instagram / Facebook / LinkedIn 的昵称、简介、后台链接等，见 **[assets/us-market-profile.md](assets/us-market-profile.md)**（Markdown，代码块可直接复制粘贴）。
+
+头像：`assets/market_sketch_avatar.png` · US 流水线：`.env.en` / `./make-us-publish.sh`
+
+---
+
 ## 常用环境变量
 
 | 变量 | 默认 | 说明 |

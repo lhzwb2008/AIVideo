@@ -170,17 +170,21 @@ def upload_video(
     }
 
     session = _http_session()
+    caption_prefilled = True
     if mode == "inbox":
         init_url = "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/"
-        # 收件箱模式也必须传 post_info.title，否则 App 里只剩应用名 #aivideo 占位
-        payload = {
-            "post_info": _build_post_info(title),
-            "source_info": source_info,
-            "post_mode": "MEDIA_UPLOAD",
-        }
+        # 官方 inbox/video/init 仅接受 source_info，不支持 post_info（照片才走 content/init）。
+        # 未预填时 TikTok App 会显示开发者应用名占位标签（如 #aivideo），需在 App 内手动粘贴文案。
+        payload = {"source_info": source_info}
         privacy = ""
         username = ""
-        print(f"  Caption 预填（收件箱）:\n{title[:500]}{'…' if len(title) > 500 else ''}", flush=True)
+        caption_prefilled = False
+        print(
+            "  ⚠️  收件箱模式：TikTok API 不支持视频预填标题/标签，"
+            "App 内会显示 #aivideo 占位，请粘贴终端文案后发布。",
+            flush=True,
+        )
+        print(f"  待粘贴文案:\n{title[:500]}{'…' if len(title) > 500 else ''}", flush=True)
     else:
         creator = query_creator_info(token)
         privacy = privacy_level or _resolve_privacy(creator)
@@ -198,23 +202,6 @@ def upload_video(
         timeout=_http_timeout(),
     )
     body = resp.json()
-    err = body.get("error") or {}
-    err_code = str(err.get("code") or "")
-    if (
-        mode == "inbox"
-        and resp.status_code >= 400
-        and "post_info" in payload
-        and err_code in ("invalid_param", "param_error", "bad_request")
-    ):
-        # 旧版 API 可能不认 post_mode；降级重试仅 source_info
-        print("  ⚠️  收件箱带 caption 初始化失败，降级为仅上传视频…", flush=True)
-        resp = session.post(
-            init_url,
-            headers=_headers(token),
-            json={"source_info": source_info},
-            timeout=_http_timeout(),
-        )
-        body = resp.json()
     _api_error(resp, body, action="video/init")
     data = body.get("data") or {}
     publish_id = str(data.get("publish_id") or "")
@@ -240,4 +227,6 @@ def upload_video(
         "username": username,
         "mode": mode,
         "status": status,
+        "caption": title,
+        "caption_prefilled": caption_prefilled,
     }

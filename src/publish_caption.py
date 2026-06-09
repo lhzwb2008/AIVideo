@@ -124,7 +124,10 @@ def print_manual_publish_pack(
             print(f"话题: {yt_hashtags}", flush=True)
 
         print("\n【TikTok · 复制到 App 发布页】", flush=True)
-        print("（收件箱草稿不会自动带文案，请整段复制粘贴）", flush=True)
+        print(
+            "（收件箱模式 API 不支持预填；App 里 #aivideo 是应用名占位，请删除后粘贴下方文案）",
+            flush=True,
+        )
         print(tk_fields["title"], flush=True)
 
     todo_kwargs = dict(
@@ -437,8 +440,11 @@ def build_todo_checklist_items(
             _append_todo_items(
                 manual,
                 mark=" ",
-                headline="TikTok: 已上传收件箱",
-                sublines=["打开 App，粘贴终端【TikTok】文案后发布"],
+                headline="TikTok: 已上传收件箱（App 内 #aivideo 是占位，非最终标签）",
+                sublines=[
+                    "打开 App → Inbox，删除 #aivideo，粘贴终端【TikTok】文案后发布",
+                    "文案副本: logs/en/last_tiktok_caption.txt",
+                ],
             )
         else:
             _append_todo_items(
