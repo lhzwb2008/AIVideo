@@ -1158,13 +1158,49 @@ async def publish_facebook(page, video: Path, caption: str, *, assist: bool) -> 
     raise SocialTestError(f"已点发布但 Reels 未增加，截图: {shot}")
 
 
+_LI_NEXT_LABELS = ("下一步", "Next", "下一页")
+_LI_POST_LABELS = ("发布", "Post", "投稿", "投稿する", "公開", "分享")
+
+
+async def _li_btn_label(loc) -> str:
+    try:
+        text = (await loc.inner_text()).strip()
+        if text:
+            return text
+        return (await loc.get_attribute("aria-label") or "").strip()
+    except Exception:
+        return ""
+
+
+def _li_label_is_next(label: str) -> bool:
+    return any(name in label for name in _LI_NEXT_LABELS)
+
+
+def _li_label_is_post(label: str) -> bool:
+    return any(name in label for name in _LI_POST_LABELS) and not _li_label_is_next(label)
+
+
+async def _li_on_compose_page(page) -> bool:
+    if await _loc_count(page, ".share-creation-state") > 0:
+        return True
+    if await _loc_count(page, "div.ql-editor") > 0:
+        return True
+    if await _loc_count(page, "div.share-creation-state__text-editor") > 0:
+        return True
+    return False
+
+
 async def _li_in_edit_modal(page) -> bool:
     if await page.get_by_text("编辑", exact=True).count():
         return True
-    for name in ("下一步", "Next", "下一页"):
+    loc = page.locator("button.share-actions__primary-action").first
+    if await loc.count() and await loc.is_visible():
+        if _li_label_is_next(await _li_btn_label(loc)):
+            return True
+    for name in _LI_NEXT_LABELS:
         try:
-            loc = page.get_by_role("button", name=name, exact=True).first
-            if await loc.count() and await loc.is_visible():
+            btn = page.get_by_role("button", name=name, exact=True).first
+            if await btn.count() and await btn.is_visible():
                 return True
         except Exception:
             pass
@@ -1175,7 +1211,17 @@ async def _li_click_next_step(page) -> bool:
     dialog = page.get_by_role("dialog").first
     roots = [dialog] if await dialog.count() else [page]
     for root in roots:
-        for name in ("下一步", "Next", "下一页"):
+        loc = root.locator("button.share-actions__primary-action").first
+        if await loc.count() and await loc.is_visible():
+            label = await _li_btn_label(loc)
+            if _li_label_is_next(label):
+                if await loc.get_attribute("disabled"):
+                    continue
+                if await loc.get_attribute("aria-disabled") == "true":
+                    continue
+                await loc.click(timeout=8000)
+                return True
+        for name in _LI_NEXT_LABELS:
             try:
                 btn = root.get_by_role("button", name=name, exact=True).first
                 if await btn.count() and await btn.is_visible():
@@ -1191,50 +1237,81 @@ async def _li_click_next_step(page) -> bool:
 
 
 async def _li_post_button_ready(page) -> bool:
-    for sel in ("button.share-actions__primary-action",):
-        try:
-            loc = page.locator(sel).first
-            if not await loc.count() or not await loc.is_visible():
-                continue
-            if await loc.get_attribute("disabled"):
-                continue
-            if await loc.get_attribute("aria-disabled") == "true":
-                continue
+    if not await _li_on_compose_page(page):
+        return False
+    loc = page.locator("button.share-actions__primary-action").first
+    if await loc.count() and await loc.is_visible():
+        if await loc.get_attribute("disabled"):
+            return False
+        if await loc.get_attribute("aria-disabled") == "true":
+            return False
+        if _li_label_is_post(await _li_btn_label(loc)):
             return True
-        except Exception:
-            pass
-    for name in ("Post", "发布", "投稿", "投稿する", "公開", "分享"):
+    for name in _LI_POST_LABELS:
         try:
-            loc = page.get_by_role("button", name=name, exact=False).first
-            if await loc.count() and await loc.is_visible():
-                if await loc.get_attribute("disabled"):
+            btn = page.get_by_role("button", name=name, exact=True).first
+            if await btn.count() and await btn.is_visible():
+                if await btn.get_attribute("disabled"):
                     continue
-                return True
+                if _li_label_is_post(await _li_btn_label(btn)):
+                    return True
         except Exception:
             pass
     return False
 
 
 async def _click_li_post(page) -> bool:
-    if await _click_if_visible(page, selector="button.share-actions__primary-action"):
-        return True
-    for name in ("发布", "Post", "投稿", "投稿する", "公開", "分享"):
+    loc = page.locator("button.share-actions__primary-action").first
+    if await loc.count() and await loc.is_visible():
+        label = await _li_btn_label(loc)
+        if _li_label_is_post(label):
+            if not await loc.get_attribute("disabled") and await loc.get_attribute("aria-disabled") != "true":
+                await loc.click(timeout=8000)
+                return True
+    for name in _LI_POST_LABELS:
         try:
             btn = page.get_by_role("button", name=name, exact=True).first
             if await btn.count() and await btn.is_visible():
                 if await btn.get_attribute("disabled"):
                     continue
-                await btn.click(timeout=8000)
-                return True
+                if _li_label_is_post(await _li_btn_label(btn)):
+                    await btn.click(timeout=8000)
+                    return True
         except Exception:
             pass
-    for name in ("发布", "Post", "投稿", "投稿する", "公開", "分享"):
-        if await _click_if_visible(page, role="button", name=name):
-            return True
-    for label in ("发布", "Post", "投稿", "投稿する", "公開"):
+    for label in _LI_POST_LABELS:
         if await _click_labeled(page, label):
             return True
     return False
+
+
+async def _li_is_background_uploading(page) -> bool:
+    """仅凭明确的上传横幅文案判断；进度条元素会误判，已弃用。"""
+    try:
+        body = (await page.locator("body").inner_text())[:3000]
+        markers = (
+            "正在上传",
+            "保持页面打开状态以完成上传",
+            "Uploading",
+            "Keep this page open",
+            "keep the page open",
+        )
+        return any(m in body for m in markers)
+    except Exception:
+        return False
+
+
+async def _li_wait_background_upload(page, *, timeout_s: int = 180) -> None:
+    """点发布后 LinkedIn 会在 feed 后台传视频；离开页面会中断上传。"""
+    for i in range(timeout_s // 2):
+        if not await _li_is_background_uploading(page):
+            if i:
+                print(f"  后台上传完成 ({i * 2}s)", flush=True)
+            return
+        if i and i % 5 == 0:
+            print(f"  后台上传中，保持页面… ({i * 2}s)", flush=True)
+        await asyncio.sleep(2)
+    print(f"  后台上传等待超时 ({timeout_s}s)，继续校验", flush=True)
 
 
 async def _verify_linkedin_published(page) -> bool:
@@ -1328,10 +1405,10 @@ async def publish_linkedin(page, video: Path, caption: str, *, assist: bool) -> 
     print("  已选择视频，等待处理…", flush=True)
 
     ready = False
-    for i in range(45):
+    for i in range(60):
         if await _li_in_edit_modal(page):
             if await _li_click_next_step(page):
-                print("  编辑 → 下一步", flush=True)
+                print("  向导 → 下一步", flush=True)
                 await asyncio.sleep(3)
                 continue
         if await _li_post_button_ready(page):
@@ -1339,12 +1416,12 @@ async def publish_linkedin(page, video: Path, caption: str, *, assist: bool) -> 
             print(f"  可发布 ({i * 2}s)", flush=True)
             break
         if i and i % 5 == 0:
-            state = "编辑页" if await _li_in_edit_modal(page) else "处理中"
+            state = "编辑向导" if await _li_in_edit_modal(page) else "处理中"
             print(f"  {state}… ({i * 2}s)", flush=True)
         await asyncio.sleep(2)
     if not ready:
-        if await _li_in_edit_modal(page) and await _li_click_next_step(page):
-            print("  编辑 → 下一步（补点）", flush=True)
+        while await _li_in_edit_modal(page) and await _li_click_next_step(page):
+            print("  向导 → 下一步（补点）", flush=True)
             await asyncio.sleep(3)
         if await _li_post_button_ready(page):
             ready = True
@@ -1389,6 +1466,8 @@ async def publish_linkedin(page, video: Path, caption: str, *, assist: bool) -> 
         await page.screenshot(path=str(shot), full_page=True)
         raise SocialTestError(f"未能点击「发布/Post」，截图: {shot}")
     print("  已点击发布", flush=True)
+    await _li_wait_background_upload(page, timeout_s=180)
+    await asyncio.sleep(5)
 
     for i in range(30):
         if await _verify_linkedin_published(page):
