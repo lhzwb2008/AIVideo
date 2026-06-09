@@ -646,6 +646,22 @@ def tiktok_enabled() -> bool:
     return _env_enabled("AIVIDEO_PUBLISH_TIKTOK", default="0")
 
 
+def instagram_enabled() -> bool:
+    return _env_enabled("AIVIDEO_PUBLISH_INSTAGRAM", default="0")
+
+
+def facebook_enabled() -> bool:
+    return _env_enabled("AIVIDEO_PUBLISH_FACEBOOK", default="0")
+
+
+def linkedin_enabled() -> bool:
+    return _env_enabled("AIVIDEO_PUBLISH_LINKEDIN", default="0")
+
+
+def us_social_enabled() -> bool:
+    return instagram_enabled() or facebook_enabled() or linkedin_enabled()
+
+
 def eastmoney_enabled() -> bool:
     value = os.environ.get("AIVIDEO_PUBLISH_EASTMONEY")
     if value is None or value.strip() == "":

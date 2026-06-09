@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# US Market：Cursor 联网写稿（不走 Exa）→ 英文漫画口播短视频 → 仅 YouTube + TikTok
+# US Market：Cursor 联网写稿（不走 Exa）→ 英文漫画口播短视频 → YouTube/TikTok/IG/FB/LinkedIn
 #
 #   ./make-us-publish.sh              # 默认一轮 4 条（四槽位各 1）
 #   ./make-us-publish.sh 1            # 只跑 1 条

@@ -17,8 +17,12 @@ from paths import ROOT
 from publish_caption import (
     bilibili_enabled,
     eastmoney_enabled,
+    facebook_enabled,
+    instagram_enabled,
+    linkedin_enabled,
     print_manual_publish_pack,
     tiktok_enabled,
+    us_social_enabled,
     wechat_enabled,
     xueqiu_enabled,
     youtube_enabled,
@@ -33,8 +37,10 @@ def _locale_en() -> bool:
 
 
 def _intl_video_publish_enabled() -> bool:
-    """YouTube/TikTok 仅英文 US 流水线使用。"""
-    return _locale_en() and (youtube_enabled() or tiktok_enabled())
+    """YouTube/TikTok/IG/FB/LinkedIn 仅英文 US 流水线使用。"""
+    return _locale_en() and (
+        youtube_enabled() or tiktok_enabled() or us_social_enabled()
+    )
 
 
 def log(message: str) -> None:
@@ -64,6 +70,12 @@ def _auto_publish_platforms_label() -> str:
             names.append("YouTube")
         if tiktok_enabled():
             names.append("TikTok")
+        if instagram_enabled():
+            names.append("Instagram")
+        if facebook_enabled():
+            names.append("Facebook")
+        if linkedin_enabled():
+            names.append("LinkedIn")
     if bilibili_enabled():
         names.append("B站视频")
     if eastmoney_enabled():
@@ -332,6 +344,58 @@ def publish_tiktok(video: Path, script_path: Path, *, dry_run: bool) -> str:
     return _publish_with_retry(_do, label="TikTok", dry_run=dry_run)
 
 
+def _us_social_headless() -> bool:
+    raw = os.environ.get("US_SOCIAL_HEADLESS", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def publish_us_social_platform(
+    platform: str,
+    video: Path,
+    script_path: Path,
+    *,
+    dry_run: bool,
+) -> str:
+    from publish_caption import facebook_enabled, instagram_enabled, linkedin_enabled
+    from us_social_publish import PLATFORM_LABEL, publish_us_social
+
+    enabled = {
+        "instagram": instagram_enabled,
+        "facebook": facebook_enabled,
+        "linkedin": linkedin_enabled,
+    }
+    if platform not in enabled or not enabled[platform]():
+        return ""
+
+    label = PLATFORM_LABEL[platform]
+
+    def _do() -> str:
+        result = publish_us_social(
+            platform,
+            video,
+            script_path,
+            dry_run=dry_run,
+            headless=_us_social_headless(),
+        )
+        if result:
+            log(f"  [{label}] 发布成功")
+        return result
+
+    return _publish_with_retry(_do, label=label, dry_run=dry_run)
+
+
+def publish_instagram(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    return publish_us_social_platform("instagram", video, script_path, dry_run=dry_run)
+
+
+def publish_facebook_reels(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    return publish_us_social_platform("facebook", video, script_path, dry_run=dry_run)
+
+
+def publish_linkedin(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    return publish_us_social_platform("linkedin", video, script_path, dry_run=dry_run)
+
+
 def publish_bilibili(
     video: Path,
     script_path: Path,
@@ -591,6 +655,9 @@ def pipeline_after_script(
 
     youtube_url = ""
     tiktok_url = ""
+    instagram_ok = ""
+    facebook_ok = ""
+    linkedin_ok = ""
     bilibili_title = ""
     eastmoney_title = ""
     xueqiu_title = ""
@@ -602,6 +669,9 @@ def pipeline_after_script(
         if _locale_en():
             youtube_url = publish_youtube(video, script_path, dry_run=True)
             tiktok_url = publish_tiktok(video, script_path, dry_run=True)
+            instagram_ok = publish_instagram(video, script_path, dry_run=True)
+            facebook_ok = publish_facebook_reels(video, script_path, dry_run=True)
+            linkedin_ok = publish_linkedin(video, script_path, dry_run=True)
         bilibili_title = publish_bilibili(video, script_path, dry_run=True)
         forum_for_bili = video.parent / video.stem
         if (forum_for_bili / "post.md").is_file():
@@ -630,6 +700,9 @@ def pipeline_after_script(
             "published": False,
             "youtube_url": youtube_url,
             "tiktok_url": tiktok_url,
+            "instagram": instagram_ok,
+            "facebook": facebook_ok,
+            "linkedin": linkedin_ok,
             "bilibili_title": bilibili_title,
             "eastmoney_title": eastmoney_title,
             "xueqiu_title": xueqiu_title,
@@ -650,6 +723,9 @@ def pipeline_after_script(
     if _locale_en():
         youtube_url = publish_youtube(video, script_path, dry_run=False)
         tiktok_url = publish_tiktok(video, script_path, dry_run=False)
+        instagram_ok = publish_instagram(video, script_path, dry_run=False)
+        facebook_ok = publish_facebook_reels(video, script_path, dry_run=False)
+        linkedin_ok = publish_linkedin(video, script_path, dry_run=False)
     bilibili_title = publish_bilibili(video, script_path, dry_run=False)
 
     append_history_fn(script_path)
@@ -683,7 +759,7 @@ def pipeline_after_script(
         "forum": rel(archived["forum"]) if archived.get("forum") else "",
         "script": rel(script_path),
         "published": bool(
-            (_locale_en() and (youtube_url or tiktok_url))
+            (_locale_en() and (youtube_url or tiktok_url or instagram_ok or facebook_ok or linkedin_ok))
             or bilibili_title
             or wechat_title
             or eastmoney_title
@@ -692,6 +768,9 @@ def pipeline_after_script(
         ),
         "youtube_url": youtube_url,
         "tiktok_url": tiktok_url,
+        "instagram": instagram_ok,
+        "facebook": facebook_ok,
+        "linkedin": linkedin_ok,
         "bilibili_title": bilibili_title,
         "wechat_title": wechat_title,
         "eastmoney_title": eastmoney_title,

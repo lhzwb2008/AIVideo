@@ -41,6 +41,9 @@ def apply_us_publish_env(*, voice_id: str | None = None) -> str:
     os.environ["AIVIDEO_FORUM_POST"] = "0"
     os.environ["AIVIDEO_PUBLISH_YOUTUBE"] = "1"
     os.environ["AIVIDEO_PUBLISH_TIKTOK"] = "1"
+    os.environ["AIVIDEO_PUBLISH_INSTAGRAM"] = "1"
+    os.environ["AIVIDEO_PUBLISH_FACEBOOK"] = "1"
+    os.environ["AIVIDEO_PUBLISH_LINKEDIN"] = "1"
     for key in (
         "AIVIDEO_PUBLISH_BILIBILI",
         "AIVIDEO_PUBLISH_DOUYIN",
@@ -102,7 +105,7 @@ def main() -> int:
 
     log(f"US Market 模式 | locale=en | voice={voice} ({voice_cfg.get('name', '')})")
     log("调研: Cursor Cloud Agent 联网写稿 | 改编: Opus 英文脚本")
-    log("发布: YouTube + TikTok only")
+    log("发布: YouTube + TikTok + Instagram + Facebook + LinkedIn")
     log(
         f"本次 {target} 条；槽位："
         + " → ".join(SLOT_LABEL.get(t["slot"], t["slot"]) for t in topics)
