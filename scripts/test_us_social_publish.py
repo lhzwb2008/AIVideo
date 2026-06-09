@@ -1314,7 +1314,22 @@ async def _li_wait_background_upload(page, *, timeout_s: int = 180) -> None:
     print(f"  后台上传等待超时 ({timeout_s}s)，继续校验", flush=True)
 
 
-async def _verify_linkedin_published(page) -> bool:
+def _li_caption_needle(caption: str) -> str:
+    """从 caption 取一段足够独特的文字，用于在动态页核对本次帖子。"""
+    first = ""
+    for line in caption.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            first = line
+            break
+    if not first:
+        first = caption.strip()
+    # 去掉结尾标点，截一段长度适中的片段
+    snippet = first[:50].strip().rstrip("?.!，。！？")
+    return snippet
+
+
+async def _verify_linkedin_published(page, needle: str = "") -> bool:
     try:
         await page.goto(
             "https://www.linkedin.com/in/me/recent-activity/all/",
@@ -1322,7 +1337,7 @@ async def _verify_linkedin_published(page) -> bool:
             timeout=120_000,
         )
         await asyncio.sleep(4)
-        body = (await page.locator("body").inner_text())[:4000]
+        body = (await page.locator("body").inner_text())[:6000]
         empty = (
             "目前没有可查看的内容",
             "No activity yet",
@@ -1333,14 +1348,13 @@ async def _verify_linkedin_published(page) -> bool:
         )
         if any(m in body for m in empty):
             return False
-        if "视频" in body or "Video" in body or "Market Sketch" in body:
-            return True
-        # 有动态列表即视为成功
-        if await _loc_count(page, ".profile-creator-shared-feed-update__container") > 0:
-            return True
+        # 必须能在动态页找到本次 caption 的独特片段，避免把旧帖当成功
+        if needle:
+            return needle in body
+        # 无 needle 时退回：有动态列表即算（仅兼容旧调用）
         if await _loc_count(page, "div.feed-shared-update-v2") > 0:
             return True
-        return "动态" in body and "目前没有" not in body
+        return False
     except Exception:
         return False
 
@@ -1452,12 +1466,14 @@ async def publish_linkedin(page, video: Path, caption: str, *, assist: bool) -> 
                 except Exception:
                     pass
 
+    needle = _li_caption_needle(caption)
+
     if assist:
         shot = PROJECT_ROOT / "logs" / "test_linkedin_assist.png"
         await page.screenshot(path=str(shot), full_page=True)
         print(f"  [assist] 请手动点「发布」。截图: {shot}", flush=True)
         await asyncio.sleep(120)
-        if not await _verify_linkedin_published(page):
+        if not await _verify_linkedin_published(page, needle):
             raise SocialTestError("assist 模式未检测到 LinkedIn 发布成功")
         return
 
@@ -1466,22 +1482,33 @@ async def publish_linkedin(page, video: Path, caption: str, *, assist: bool) -> 
         await page.screenshot(path=str(shot), full_page=True)
         raise SocialTestError(f"未能点击「发布/Post」，截图: {shot}")
     print("  已点击发布", flush=True)
-    await _li_wait_background_upload(page, timeout_s=180)
-    await asyncio.sleep(5)
 
-    for i in range(30):
-        if await _verify_linkedin_published(page):
-            print("  ✓ LinkedIn 发布成功（已校验）", flush=True)
+    # 点发布后横幅是异步出现的：先等它出现（最多 20s），再等后台上传结束。
+    # 期间务必停留在当前页，离开会中断上传。
+    for _ in range(10):
+        if await _li_is_background_uploading(page):
+            print("  检测到后台上传横幅", flush=True)
+            break
+        await asyncio.sleep(2)
+    await _li_wait_background_upload(page, timeout_s=240)
+    await asyncio.sleep(6)
+
+    # 必须核对本次 caption 片段出现在动态页，避免把旧帖当成功
+    for i in range(40):
+        if await _verify_linkedin_published(page, needle):
+            print("  ✓ LinkedIn 发布成功（已校验本次帖子）", flush=True)
             if trim_tmp and trim_tmp.is_file():
                 trim_tmp.unlink(missing_ok=True)
             return
         if i and i % 5 == 0:
-            print(f"  等待动态页更新… ({i * 3}s)", flush=True)
-        await asyncio.sleep(3)
+            print(f"  等待本次动态出现… ({i * 4}s)", flush=True)
+        await asyncio.sleep(4)
 
     shot = PROJECT_ROOT / "logs" / "test_linkedin_fail.png"
     await page.screenshot(path=str(shot), full_page=True)
-    raise SocialTestError(f"已点发布但动态页仍为空，截图: {shot}")
+    raise SocialTestError(
+        f"已点发布但动态页未出现本次帖子（needle={needle!r}），截图: {shot}"
+    )
 
 
 async def _open_publish_context(p, platform: str, *, headed: bool):
