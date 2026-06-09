@@ -180,6 +180,15 @@ _TTS_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[，。！？；])")
+_EN_SENTENCE_SPLIT = re.compile(r"(?<=[.!?;])")
+
+
+def locale() -> str:
+    return _env("AIVIDEO_LOCALE", "zh").lower()
+
+
+def is_english_locale() -> bool:
+    return locale() in ("en", "english")
 
 
 def preprocess_tts_text(text: str) -> str:
@@ -194,17 +203,24 @@ def preprocess_tts_text(text: str) -> str:
 
 
 def split_sentences(text: str) -> list[str]:
-    """按中文标点切句，保留标点。"""
+    """按标点切句；英文 locale 用 .!? 断句。"""
     text = (text or "").strip()
     if not text:
         return []
+    if is_english_locale():
+        parts = [p.strip() for p in _EN_SENTENCE_SPLIT.split(text) if p.strip()]
+        return parts or [text]
     parts = [p.strip() for p in _SENTENCE_SPLIT.split(text) if p.strip()]
     return parts or [text]
 
 
 def _break_ms_for_char(ch: str) -> int:
+    if ch in ".!?":
+        return 420
     if ch in "。！？":
         return 450
+    if ch in ",;":
+        return 260
     if ch in "，；":
         return 280
     return 200
@@ -219,7 +235,7 @@ def text_to_ssml(text: str) -> str:
     buf: list[str] = []
     for ch in t:
         buf.append(ch)
-        if ch in "，。！？；":
+        if ch in "，。！？；" or (is_english_locale() and ch in ".!?;,"):
             chunk = "".join(buf).strip()
             if chunk:
                 ms = _break_ms_for_char(ch)

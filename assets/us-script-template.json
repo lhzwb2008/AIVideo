@@ -1,0 +1,30 @@
+{
+  "title": "Why did Nvidia pop after earnings?",
+  "keyword": "Nvidia earnings",
+  "cold_open": "Your 401k probably moved today — and one chip name is why.",
+  "cold_open_type": "number",
+  "theme_cluster": "mega_cap_earnings",
+  "angle": "earnings beat vs guidance worry",
+  "hashtags": ["Nvidia", "earnings", "stocks", "S&P500", "investing"],
+  "category": "usmarket",
+  "slides": [
+    {
+      "headline": "What happened",
+      "narration": "Nvidia just reported quarterly results. Revenue beat expectations, but the market still had questions about what comes next.",
+      "image_prompt": "simple bar chart comparing expected vs actual revenue, chip icons, upward arrow",
+      "on_image_text": ["Beat estimates", "Revenue up", "After-hours move"]
+    },
+    {
+      "headline": "Why it matters",
+      "narration": "Think of Nvidia like the shovel seller in a gold rush. When everyone races to build AI, demand for its chips stays hot — but investors still argue about how long the rush lasts.",
+      "image_prompt": "gold rush metaphor with shovels and AI chip boxes, two traders debating",
+      "on_image_text": ["AI demand", "Chip cycle", "Valuation debate"]
+    },
+    {
+      "headline": "Watch next",
+      "narration": "The real test is guidance and margins, not just one headline number. If you follow this space, save this breakdown — what surprised you most about the reaction?",
+      "image_prompt": "road sign with arrows labeled guidance, margins, next quarter",
+      "on_image_text": ["Guidance", "Margins", "Next quarter"]
+    }
+  ]
+}

@@ -38,6 +38,10 @@ IMAGE_TOP_SAFE_Y = int(os.environ.get("AIVIDEO_IMAGE_TOP_SAFE_Y", "150"))
 TTS_SAMPLE_RATE = 24000        # 与 DASHSCOPE_TTS_SAMPLE_RATE 保持一致
 
 
+def _locale_en() -> bool:
+    return os.environ.get("AIVIDEO_LOCALE", "zh").strip().lower() in ("en", "english")
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -242,6 +246,11 @@ def render_base_canvas(
     return out_path
 
 
+def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
+    """按像素宽度折行（中英文通用）。"""
+    return _wrap_chinese(text, font, max_w)
+
+
 def _wrap_chinese(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
     """按字符宽度逐字换行，避免溢出。"""
     lines: list[str] = []
@@ -339,7 +348,7 @@ def render_title_cover(
     text_max_w = CANVAS_W - 220
     title_size = _fit_font_size(title, text_max_w, base_size=140, min_size=72)
     title_font = load_font(title_size)
-    title_lines = _wrap_chinese(title, title_font, text_max_w)
+    title_lines = _wrap_text(title, title_font, text_max_w)
     line_h = int(title_size * 1.18)
     total_title_h = line_h * len(title_lines)
 
@@ -349,7 +358,7 @@ def render_title_cover(
     if subtitle:
         sub_size = _fit_font_size(subtitle, text_max_w, base_size=56, min_size=36)
         sub_font = load_font(sub_size)
-        sub_lines = _wrap_chinese(subtitle, sub_font, text_max_w)
+        sub_lines = _wrap_text(subtitle, sub_font, text_max_w)
         sub_line_h = int(sub_size * 1.3)
 
     pad_top = 56
@@ -436,7 +445,7 @@ def render_cold_open_frame(
     text_max_w = CANVAS_W - 180
     hook_size = _fit_font_size(hook, text_max_w, base_size=96, min_size=56)
     hook_font = load_font(hook_size)
-    hook_lines = _wrap_chinese(hook, hook_font, text_max_w)
+    hook_lines = _wrap_text(hook, hook_font, text_max_w)
     line_h = int(hook_size * 1.2)
     total_h = line_h * len(hook_lines)
 
@@ -745,18 +754,21 @@ def ensure_outro_clip(*, script_stem: str = "") -> Path:
 _PHRASE_SPLIT = re.compile(r"[，。！？；,!?;\n]+")
 
 
-def split_narration(text: str, max_chars: int = 18) -> list[str]:
+def split_narration(text: str, max_chars: int | None = None) -> list[str]:
     """按标点切句；过长再按字数切。"""
+    if max_chars is None:
+        max_chars = 42 if _locale_en() else 18
     text = (text or "").strip()
     if not text:
         return []
     raw = [p.strip() for p in _PHRASE_SPLIT.split(text) if p.strip()]
     out: list[str] = []
+    break_chars = " ,-" if _locale_en() else " 、的了"
     for phrase in raw:
         while len(phrase) > max_chars:
             cut = max_chars
-            for i in range(max_chars - 4, max_chars):
-                if i < len(phrase) and phrase[i] in " 、的了":
+            for i in range(max_chars - 6, max_chars):
+                if i < len(phrase) and phrase[i] in break_chars:
                     cut = i + 1
                     break
             out.append(phrase[:cut])

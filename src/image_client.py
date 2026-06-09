@@ -17,6 +17,14 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def _locale() -> str:
+    return _env("AIVIDEO_LOCALE", "zh").lower()
+
+
+def _is_english() -> bool:
+    return _locale() in ("en", "english")
+
+
 def api_key() -> str:
     key = _env("AIHUBMIX_API_KEY")
     if not key:
@@ -103,17 +111,18 @@ def build_prompt(
     page_index: int = 0,
     total_pages: int = 5,
 ) -> str:
-    """白板手绘科普风：方格纸 + 黑色钢笔线 + 中文手写注释。"""
+    """白板手绘漫画口播风：方格纸 + 黑色钢笔线 + 手写注释（中/英由 locale 决定）。"""
+    lang = "English" if _is_english() else "Chinese"
     parts: list[str] = [
-        "Hand-drawn whiteboard sketch on light beige graph paper, vertical portrait 9:16 aspect ratio.",
-        "Black ballpoint pen line drawing, casual notebook illustration style, with subtle yellow and light purple highlighter accents.",
+        "Hand-drawn comic explainer panel on light beige graph paper, vertical portrait 9:16 aspect ratio.",
+        "Black ballpoint pen line drawing, casual manga-narration illustration style, with subtle yellow and light purple highlighter accents.",
         "Crisp clean lines, comfortable amount of empty white space, friendly and educational mood.",
         "Important safe area for Douyin/TikTok UI: keep all meaningful text, logos, page numbers, and icons away from the top 18% of the canvas, the leftmost 8%, the rightmost 12%, and the bottom 25%. Use the middle 58% as the main information area, leaving generous empty graph-paper space above.",
         f"Page layout: {image_prompt.strip()}" if image_prompt.strip() else "",
     ]
     if chapter_title:
         parts.append(
-            f"Place a small handwritten chapter tag in Chinese reading \"{chapter_title.strip()}\" near the upper-left of the safe area, around 18-22% from the top and 10-14% from the left, not at the extreme corner."
+            f"Place a small handwritten chapter tag in {lang} reading \"{chapter_title.strip()}\" near the upper-left of the safe area, around 18-22% from the top and 10-14% from the left, not at the extreme corner."
         )
     if page_index and total_pages:
         parts.append(
@@ -123,11 +132,11 @@ def build_prompt(
     if labels:
         joined = ", ".join(f"\"{t}\"" for t in labels)
         parts.append(
-            "Render these EXACT Chinese handwritten labels naturally placed on the drawing as part of the diagram "
+            f"Render these EXACT {lang} handwritten labels naturally placed on the drawing as part of the diagram "
             f"(annotations, callouts, comparison labels): {joined}."
         )
         parts.append(
-            "Use ONLY the listed Chinese labels above. Do not invent additional Chinese, English, or numeric text. "
+            f"Use ONLY the listed {lang} labels above. Do not invent additional text. "
             "Spelling must match exactly. Place labels with arrows / curly braces / underlines like a real notebook."
         )
     parts.append(
@@ -148,16 +157,17 @@ def build_cover_prompt(
     doodle_hint: str = "",
 ) -> str:
     """开场封面海报：方格纸 + 手写大标题 + 简单装饰；标题字必须照搬。"""
+    lang = "English" if _is_english() else "Chinese"
     parts: list[str] = [
-        "Hand-drawn whiteboard sketch on light beige graph paper, vertical portrait 9:16 aspect ratio.",
-        "Black ballpoint pen line drawing, casual notebook illustration style, with subtle yellow and light purple highlighter accents.",
-        "Composition: a bold handwritten CHINESE title fills the middle-upper portion of the page as the visual focal point.",
-        f'The big handwritten Chinese title text must read EXACTLY: "{title.strip()}". '
+        "Hand-drawn comic explainer cover on light beige graph paper, vertical portrait 9:16 aspect ratio.",
+        "Black ballpoint pen line drawing, casual manga-narration illustration style, with subtle yellow and light purple highlighter accents.",
+        f"Composition: a bold handwritten {lang} title fills the middle-upper portion of the page as the visual focal point.",
+        f'The big handwritten {lang} title text must read EXACTLY: "{title.strip()}". '
         "Write it large in two lines if needed, with a hand-drawn yellow highlighter swipe underneath the most important keyword.",
     ]
     if subtitle.strip():
         parts.append(
-            f'Below the title, a smaller handwritten Chinese subtitle reads EXACTLY: "{subtitle.strip()}". '
+            f'Below the title, a smaller handwritten {lang} subtitle reads EXACTLY: "{subtitle.strip()}". '
             "Subtitle is roughly 40% the size of the title, in plain pen, no highlight."
         )
     parts.append(
@@ -169,8 +179,8 @@ def build_cover_prompt(
     elif keyword.strip():
         parts.append(f"Doodles should loosely reference the topic keyword: {keyword.strip()}.")
     parts.append(
-        "Do NOT add any other Chinese, English, numbers, or random text besides the exact title and subtitle above. "
-        "Spelling must match exactly character by character."
+        "Do NOT add any other text besides the exact title and subtitle above. "
+        "Spelling must match exactly."
     )
     parts.append("No frames, no borders, no watermarks, no signatures, no logos, no photographic elements.")
     return " ".join(p for p in parts if p)

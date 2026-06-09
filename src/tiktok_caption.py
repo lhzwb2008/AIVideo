@@ -8,6 +8,10 @@ from douyin_caption import _env, _strip_urls, build_sau_fields
 from platform_tags import build_bilingual_tags, format_hashtag_line
 
 
+def _locale_en() -> bool:
+    return os.environ.get("AIVIDEO_LOCALE", "zh").strip().lower() in ("en", "english")
+
+
 def build_tiktok_fields(script: dict | None) -> dict:
     """返回 {title, tags}。TikTok 用 title 字段承载 caption（可含 # 与 @）。"""
     base = build_sau_fields(script)
@@ -24,12 +28,16 @@ def build_tiktok_fields(script: dict | None) -> dict:
     lines = [raw_title or base.get("title", "")]
     if keyword and keyword not in lines[0]:
         lines.append(keyword)
-    brand = _env("AIVIDEO_BRAND_NAME", "AI财知道").replace(" ", "")
+    brand_default = "Market Sketch" if _locale_en() else "AI财知道"
+    brand = _env("AIVIDEO_BRAND_NAME", brand_default).replace(" ", "")
     if brand:
-        lines.append(f"{brand} — 每天一个 AI 与财经热点解读。")
+        if _locale_en():
+            lines.append(f"{brand} — US markets in plain English.")
+        else:
+            lines.append(f"{brand} — 每天一个 AI 与财经热点解读。")
     disclaimer = _env(
         "TIKTOK_DISCLAIMER",
-        "本内容仅供学习交流，不构成投资建议。",
+        "For education only. Not investment advice." if _locale_en() else "本内容仅供学习交流，不构成投资建议。",
     )
     if disclaimer:
         lines.append(disclaimer)

@@ -1,0 +1,46 @@
+{
+  "_comment": "US Market 口播：仅豆包/字节官方 2.0 内置男声（seed-tts-2.0，非克隆）。试听: ./scripts/preview-us-voices.sh",
+  "default": "yunzhou",
+  "voices": {
+    "yunzhou": {
+      "name": "云舟 · 成熟磁性",
+      "desc": "低沉稳重，适合财经解说；读英文带轻微口音但节奏自然。推荐默认。",
+      "provider": "doubao",
+      "speaker": "zh_male_m191_uranus_bigtts",
+      "resource_id": "seed-tts-2.0",
+      "atempo": 1.08
+    },
+    "dayi": {
+      "name": "大壹 · 低沉旁白",
+      "desc": "纪录片感旁白男声，英文叙述有分量感。",
+      "provider": "doubao",
+      "speaker": "zh_male_dayi_uranus_bigtts",
+      "resource_id": "seed-tts-2.0",
+      "atempo": 1.06
+    },
+    "xiaotian": {
+      "name": "小天 · 清晰温暖",
+      "desc": "年轻清晰，语速略快，适合快节奏热点解读。",
+      "provider": "doubao",
+      "speaker": "zh_male_taocheng_uranus_bigtts",
+      "resource_id": "seed-tts-2.0",
+      "atempo": 1.1
+    },
+    "ahu": {
+      "name": "温暖阿虎",
+      "desc": "偏口语、有亲和力，像朋友聊天讲行情。",
+      "provider": "doubao",
+      "speaker": "zh_male_wennuanahu_uranus_bigtts",
+      "resource_id": "seed-tts-2.0",
+      "atempo": 1.08
+    },
+    "yangguang": {
+      "name": "阳光青年",
+      "desc": "明亮青年男声，活力感强，适合突发新闻类。",
+      "provider": "doubao",
+      "speaker": "zh_male_yangguangqingnian_uranus_bigtts",
+      "resource_id": "seed-tts-2.0",
+      "atempo": 1.1
+    }
+  }
+}

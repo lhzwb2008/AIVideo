@@ -28,5 +28,15 @@ for arg in "$@"; do
   esac
 done
 
+if [[ "$ACTION" == "login" && ${#EXTRA[@]} -eq 0 ]]; then
+  TOKEN="$ROOT/credentials/youtube/${YOUTUBE_ACCOUNT:-main}_token.json"
+  if [[ -f "$TOKEN" ]]; then
+    echo "提示: token 若已过期，请用 ./youtube-login.sh --force 重新授权" >&2
+  fi
+  if [[ -z "${YOUTUBE_HTTP_PROXY:-}" ]]; then
+    echo "提示: 国内访问 Google 需在 .env 设置 YOUTUBE_HTTP_PROXY=http://127.0.0.1:7897" >&2
+  fi
+fi
+
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 exec "$PY" "$ROOT/src/publish_youtube.py" "$ACTION" ${EXTRA[@]+"${EXTRA[@]}"}

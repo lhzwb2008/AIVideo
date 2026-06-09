@@ -42,6 +42,11 @@ CATEGORIES: dict[str, dict] = {
         "accent": (109, 196, 199),   # 青
         "aliases": ("基础", "基础知识", "basic", "入门", "科普", "扫盲", "名词解释"),
     },
+    "usmarket": {
+        "label": "US Market",
+        "accent": (96, 165, 250),    # 亮蓝
+        "aliases": ("usmarket", "us market", "美股", "wall street", "s&p", "nasdaq"),
+    },
 }
 
 

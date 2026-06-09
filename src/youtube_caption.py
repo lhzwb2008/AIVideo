@@ -13,9 +13,14 @@ def _shorts_tag_enabled() -> bool:
     return value not in ("0", "false", "no", "off")
 
 
+def _locale_en() -> bool:
+    return os.environ.get("AIVIDEO_LOCALE", "zh").strip().lower() in ("en", "english")
+
+
 def build_youtube_fields(script: dict | None) -> dict:
     """返回 {title, description, tags}。tags 为 list[str]，不含 #。"""
-    brand = _env("AIVIDEO_BRAND_NAME", "AI财知道").replace(" ", "")
+    brand_default = "Market Sketch" if _locale_en() else "AI财知道"
+    brand = _env("AIVIDEO_BRAND_NAME", brand_default).replace(" ", "")
     keyword = str((script or {}).get("keyword") or "").strip()
     raw_title = str((script or {}).get("title") or keyword or "AI财经热点").strip()
     prefix = _env("YOUTUBE_TITLE_PREFIX", "0").lower()
@@ -45,15 +50,18 @@ def build_youtube_fields(script: dict | None) -> dict:
     if topic_kw:
         desc_lines.append(f"相关：{'、'.join(topic_kw)}")
     if brand:
-        desc_lines.append(
-            f"{brand} — 每天一个 AI 与财经热点解读，A股、美股、港股都聊。欢迎订阅。"
-        )
+        if _locale_en():
+            desc_lines.append(f"{brand} — US markets explained in plain English. Subscribe for daily breakdowns.")
+        else:
+            desc_lines.append(
+                f"{brand} — 每天一个 AI 与财经热点解读，A股、美股、港股都聊。欢迎订阅。"
+            )
     hash_line = format_hashtag_line(tag_parts)
     if hash_line:
         desc_lines.append(hash_line)
     disclaimer = _env(
         "YOUTUBE_DISCLAIMER",
-        "本内容仅供学习交流，不构成投资建议。",
+        "For education only. Not investment advice." if _locale_en() else "本内容仅供学习交流，不构成投资建议。",
     )
     if disclaimer:
         desc_lines.append(disclaimer)

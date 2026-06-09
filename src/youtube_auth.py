@@ -79,16 +79,21 @@ def http_proxy_url() -> str:
     return _env("YOUTUBE_HTTP_PROXY")
 
 
-def build_requests_session():
-    """直连 Google API；trust_env=False 避免误用终端里的 http_proxy。"""
-    import requests
-
-    sess = requests.Session()
+def _apply_http_proxy(sess) -> None:
+    """给 requests / OAuth2Session 挂代理；trust_env=False 避免误用终端 http_proxy。"""
     sess.trust_env = False
     proxy = http_proxy_url()
     if proxy:
         sess.proxies.update({"http": proxy, "https": proxy})
     sess.request = _wrap_request_with_timeout(sess.request)  # type: ignore[method-assign]
+
+
+def build_requests_session():
+    """直连 Google API；trust_env=False 避免误用终端里的 http_proxy。"""
+    import requests
+
+    sess = requests.Session()
+    _apply_http_proxy(sess)
     return sess
 
 
@@ -137,9 +142,25 @@ def _load_credentials():
         return creds
 
     if creds and creds.expired and creds.refresh_token:
-        refresh_credentials(creds)
-        _save_credentials(creds)
-        return creds
+        try:
+            refresh_credentials(creds)
+            _save_credentials(creds)
+            return creds
+        except Exception as exc:
+            err = str(exc).lower()
+            if "invalid_grant" in err or "revoked" in err or "expired" in err:
+                print(
+                    "旧 token 已失效，将重新打开浏览器授权…"
+                    "（也可手动: ./youtube-login.sh --force）",
+                    flush=True,
+                )
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                creds = None
+            else:
+                raise
 
     secrets = client_secrets_path()
     if not secrets.is_file():
@@ -151,14 +172,29 @@ def _load_credentials():
         )
 
     flow = InstalledAppFlow.from_client_secrets_file(str(secrets), SCOPES)
-    flow.oauth2session.session = build_requests_session()
+    # OAuth2Session 本身就是 requests.Session，不能 flow.oauth2session.session = ...
+    _apply_http_proxy(flow.oauth2session)
     port_raw = _env("YOUTUBE_OAUTH_PORT", "0")
     port = int(port_raw) if port_raw.isdigit() else 0
+    timeout_raw = _env("YOUTUBE_OAUTH_TIMEOUT", "180")
+    try:
+        timeout_seconds = max(60, int(timeout_raw))
+    except ValueError:
+        timeout_seconds = 180
+    proxy = http_proxy_url()
+    if proxy:
+        print(f"OAuth 走代理: {proxy}", flush=True)
     print(
-        "正在打开浏览器授权…（若超时请检查网络后重跑 ./youtube-login.sh --force）",
+        "正在打开浏览器授权… 浏览器显示完成后终端应几秒内出现 ✅；"
+        "若仍卡住请重跑 ./youtube-login.sh --force",
         flush=True,
     )
-    creds = flow.run_local_server(port=port, prompt="consent", open_browser=True)
+    creds = flow.run_local_server(
+        port=port,
+        prompt="consent",
+        open_browser=True,
+        timeout_seconds=timeout_seconds,
+    )
     _save_credentials(creds)
     return creds
 
