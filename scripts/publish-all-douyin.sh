@@ -8,7 +8,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-[[ -f .env ]] && source .env
+source "$ROOT/scripts/load-dotenv.sh" "${AIVIDEO_LOCALE:-zh}"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 exec python3 "$ROOT/src/publish_all_douyin.py" "$@"

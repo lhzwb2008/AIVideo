@@ -7,7 +7,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
-[[ -f .env ]] && source .env
+source "$ROOT/scripts/load-dotenv.sh" "${AIVIDEO_LOCALE:-zh}"
 
 SAU_HOME="${SAU_HOME:-$ROOT/vendor/social-auto-upload}"
 SAU_BIN="${SAU_BIN:-$SAU_HOME/.venv/bin/sau}"

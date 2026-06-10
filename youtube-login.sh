@@ -7,7 +7,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
-[[ -f .env ]] && set -a && source .env && set +a
+source "$ROOT/scripts/load-dotenv.sh" "${AIVIDEO_LOCALE:-en}"
 # 默认直连；仅当 .env 显式设置 YOUTUBE_HTTP_PROXY 时走代理（勿依赖终端 http_proxy）
 if [[ -n "${YOUTUBE_HTTP_PROXY:-}" ]]; then
   echo "使用 YOUTUBE_HTTP_PROXY=$YOUTUBE_HTTP_PROXY"

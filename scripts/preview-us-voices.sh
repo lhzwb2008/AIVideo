@@ -3,7 +3,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-[[ -f .env ]] && set -a && source .env && set +a
+source "$ROOT/scripts/load-dotenv.sh" "${AIVIDEO_LOCALE:-en}"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 PY="$ROOT/.venv/bin/python3"
 [[ -x "$PY" ]] || PY="python3"

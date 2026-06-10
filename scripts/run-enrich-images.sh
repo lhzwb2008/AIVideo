@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-[[ -f .env ]] && source .env
+source "$ROOT/scripts/load-dotenv.sh" "${AIVIDEO_LOCALE:-zh}"
 
 SCRIPT="${1:-${AIVIDEO_SCRIPT:-$ROOT/logs/last_script.json}}"
 if [[ "$SCRIPT" != /* ]]; then

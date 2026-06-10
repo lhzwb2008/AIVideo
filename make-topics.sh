@@ -12,7 +12,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
-[[ -f .env ]] && set -a && source .env && set +a
+source "$ROOT/scripts/load-dotenv.sh" "${AIVIDEO_LOCALE:-zh}"
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # 默认发布前检查抖音登录态；可追加 --no-publish / --dry-run

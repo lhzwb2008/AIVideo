@@ -14,7 +14,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
-[[ -f .env ]] && set -a && source .env && set +a
+source "$ROOT/scripts/load-dotenv.sh" "${AIVIDEO_LOCALE:-en}"
 
 SAU_HOME="${SAU_HOME:-$ROOT/vendor/social-auto-upload}"
 SAU_PY="${SAU_HOME}/.venv/bin/python3"

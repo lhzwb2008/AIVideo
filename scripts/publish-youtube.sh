@@ -7,7 +7,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-[[ -f .env ]] && set -a && source .env && set +a
+source "$ROOT/scripts/load-dotenv.sh" "${AIVIDEO_LOCALE:-en}"
 # 代理仅由 Python 读取 YOUTUBE_HTTP_PROXY，不 export 到环境，避免误伤其它请求
 if [[ -n "${YOUTUBE_HTTP_PROXY:-}" ]]; then
   echo "YouTube: 使用 .env 中的 YOUTUBE_HTTP_PROXY"
