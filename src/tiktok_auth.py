@@ -271,21 +271,51 @@ def run_login(*, force: bool = False) -> int:
     return 0
 
 
-def run_check() -> int:
-    token_data = _load_token_file()
-    if not token_data:
-        raise TikTokAuthError(f"未找到 token: {token_path()}\n请先运行: ./tiktok-login.sh")
-    scopes = str(token_data.get("scope") or "")
+_direct_post_ready_cache: tuple[bool, str] | None = None
+
+
+def reset_tiktok_direct_post_cache() -> None:
+    global _direct_post_ready_cache
+    _direct_post_ready_cache = None
+
+
+def tiktok_direct_post_ready(*, refresh: bool = False) -> tuple[bool, str]:
+    """判断 TikTok Direct Post 自动直发是否就绪（非收件箱/草稿模式）。
+
+    流水线在未就绪时会跳过 TikTok，避免把视频堆进 App 草稿箱。
+    """
+    global _direct_post_ready_cache
+    if _direct_post_ready_cache is not None and not refresh:
+        return _direct_post_ready_cache
+
     mode = (_env("TIKTOK_POST_MODE", "direct") or "direct").strip().lower()
     if mode in ("inbox", "draft", "upload"):
-        if "video.upload" not in scopes:
-            raise TikTokAuthError(f"token 缺少 video.upload scope: {scopes}")
-        print(f"✅ TikTok token 有效 — scope: {scopes}（inbox 模式）", flush=True)
-        print("   上传成功后请在 TikTok App → 收件箱/Inbox 完成发布。", flush=True)
-        return 0
+        result = (False, f"TIKTOK_POST_MODE={mode}（收件箱模式，非自动直发）")
+        _direct_post_ready_cache = result
+        return result
 
-    token = get_access_token()
-    import requests
+    token_data = _load_token_file()
+    if not token_data:
+        result = (False, "未授权 TikTok token（运行 ./tiktok-login.sh）")
+        _direct_post_ready_cache = result
+        return result
+
+    scopes = str(token_data.get("scope") or "")
+    if "video.publish" not in scopes:
+        result = (
+            False,
+            f"token 缺少 video.publish scope（当前: {scopes or '无'}；"
+            "过审后重新授权: TIKTOK_SCOPES=user.info.basic,video.upload,video.publish ./tiktok-login.sh --force）",
+        )
+        _direct_post_ready_cache = result
+        return result
+
+    try:
+        token = get_access_token()
+    except TikTokAuthError as exc:
+        result = (False, str(exc))
+        _direct_post_ready_cache = result
+        return result
 
     session = _http_session()
     resp = session.post(
@@ -299,9 +329,53 @@ def run_check() -> int:
     )
     body = resp.json()
     err = (body.get("error") or {}).get("code") or ""
+    if err == "scope_not_authorized":
+        result = (False, "video.publish scope 未获用户授权")
+        _direct_post_ready_cache = result
+        return result
     if resp.status_code >= 400 or (err and err != "ok"):
-        raise TikTokAuthError(f"token 校验失败: {body}")
+        result = (False, f"creator_info 查询失败: {body}")
+        _direct_post_ready_cache = result
+        return result
+
     info = body.get("data") or {}
-    print(f"✅ TikTok token 有效 — @{info.get('creator_username', '?')}", flush=True)
-    print(f"   可用隐私: {', '.join(info.get('privacy_level_options') or [])}", flush=True)
+    privacy_options = [str(x).upper() for x in (info.get("privacy_level_options") or [])]
+    preferred = (_env("TIKTOK_PRIVACY", "PUBLIC_TO_EVERYONE") or "PUBLIC_TO_EVERYONE").upper()
+    if preferred not in privacy_options:
+        if privacy_options:
+            result = (
+                False,
+                f"无法使用 TIKTOK_PRIVACY={preferred}（可用: {', '.join(privacy_options)}；"
+                "应用未过审时通常仅 SELF_ONLY）",
+            )
+        else:
+            result = (False, "creator_info 未返回 privacy_level_options")
+        _direct_post_ready_cache = result
+        return result
+
+    username = str(info.get("creator_username") or "?").strip()
+    result = (True, f"@{username} · privacy={preferred}")
+    _direct_post_ready_cache = result
+    return result
+
+
+def run_check() -> int:
+    token_data = _load_token_file()
+    if not token_data:
+        raise TikTokAuthError(f"未找到 token: {token_path()}\n请先运行: ./tiktok-login.sh")
+    scopes = str(token_data.get("scope") or "")
+    mode = (_env("TIKTOK_POST_MODE", "direct") or "direct").strip().lower()
+    if mode in ("inbox", "draft", "upload"):
+        if "video.upload" not in scopes:
+            raise TikTokAuthError(f"token 缺少 video.upload scope: {scopes}")
+        print(f"✅ TikTok token 有效 — scope: {scopes}（inbox 模式）", flush=True)
+        print("   上传成功后请在 TikTok App → 收件箱/Inbox 完成发布。", flush=True)
+        print("   ⚠️  自动流水线会跳过 TikTok（未开启 Direct Post）。", flush=True)
+        return 0
+
+    ready, detail = tiktok_direct_post_ready(refresh=True)
+    if not ready:
+        raise TikTokAuthError(f"TikTok Direct Post 未就绪: {detail}")
+    print(f"✅ TikTok Direct Post 就绪 — {detail}", flush=True)
+    print(f"   scope: {scopes}", flush=True)
     return 0

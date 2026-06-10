@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import cost_tracker
 from paths import ROOT
 from publish_pipeline import log, pipeline_after_script
+from publish_caption import tiktok_enabled
 from locale_env import load_locale_env, locale_logs_dir
 from research import load_env
 from us_cursor_topics import (
@@ -83,7 +84,7 @@ def main() -> int:
         "--count",
         type=int,
         default=int(os.environ.get("AIVIDEO_MAX_VIDEOS_PER_RUN", str(default_count))),
-        help=f"本次制作条数（默认 {default_count}，四槽位各 1）",
+        help=f"本次制作条数（默认 {default_count}，三槽位各 1）",
     )
     parser.add_argument("--topic", help="手动指定英文话题（仅做 1 条）")
     parser.add_argument("--voice", help="音色 ID，见 assets/us-voices.json")
@@ -106,6 +107,14 @@ def main() -> int:
     log(f"US Market 模式 | locale=en | voice={voice} ({voice_cfg.get('name', '')})")
     log("调研: Cursor Cloud Agent 联网写稿 | 改编: Opus 英文脚本")
     log("发布: YouTube + TikTok + Instagram + Facebook + LinkedIn")
+    try:
+        from tiktok_auth import tiktok_direct_post_ready
+
+        tk_ready, tk_reason = tiktok_direct_post_ready()
+        if tiktok_enabled() and not tk_ready:
+            log(f"TikTok: 跳过自动发布（{tk_reason}）")
+    except Exception:
+        pass
     log(
         f"本次 {target} 条；槽位："
         + " → ".join(SLOT_LABEL.get(t["slot"], t["slot"]) for t in topics)

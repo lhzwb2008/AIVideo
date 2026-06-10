@@ -334,11 +334,20 @@ def publish_tiktok(video: Path, script_path: Path, *, dry_run: bool) -> str:
         return ""
 
     def _do() -> str:
-        url = publish_tiktok_api(video, script_path, dry_run=dry_run)
+        from tiktok_auth import tiktok_direct_post_ready
+
+        ready, reason = tiktok_direct_post_ready()
+        if not ready:
+            log(f"  ↳ [TikTok] 跳过自动发布：{reason}")
+            return ""
+        if dry_run:
+            log(f"  ↳ [TikTok] Direct Post 就绪（{reason}），dry-run 不上传")
+            return ""
+        url = publish_tiktok_api(video, script_path, dry_run=False)
         if url:
             log(f"  [TikTok] {url}")
-        elif not dry_run:
-            log("  [TikTok] 已上传到收件箱，请在 App 内粘贴终端文案后发布")
+        else:
+            log(f"  [TikTok] 直发完成（{reason}）")
         return url
 
     return _publish_with_retry(_do, label="TikTok", dry_run=dry_run)

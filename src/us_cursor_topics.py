@@ -2,7 +2,7 @@
 """US Market Cursor 写稿：联网调研英文长文 → Opus 深读 → 英文短视频脚本。
 
 不走 Exa 搜文；模仿 cursor_daily_topics / make_publish_new。
-每次 1 条，槽位轮换：大盘速览 → 巨头热点 → 宏观 → 板块。
+每次 1 条，槽位轮换：大盘速览 → 巨头热点 → 宏观。
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ US_SLOT_ORDER = (
     "us_wrap",
     "mega_cap",
     "macro",
-    "sector",
 )
 
 SLOT_LABEL: dict[str, str] = {

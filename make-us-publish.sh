@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # US Market：Cursor 联网写稿（不走 Exa）→ 英文漫画口播短视频 → YouTube/TikTok/IG/FB/LinkedIn
 #
-#   ./make-us-publish.sh              # 默认一轮 4 条（四槽位各 1）
+#   ./make-us-publish.sh              # 默认一轮 3 条（三槽位各 1）
 #   ./make-us-publish.sh 1            # 只跑 1 条
 #   US_TTS_VOICE=yunzhou ./make-us-publish.sh
 #   ./make-us-publish.sh --topic "Why did the Fed pause rate cuts?"
@@ -14,7 +14,7 @@ export ROOT
 source "$ROOT/scripts/load-dotenv.sh" en
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
-COUNT="${1:-${AIVIDEO_MAX_VIDEOS_PER_RUN:-4}}"
+COUNT="${1:-${AIVIDEO_MAX_VIDEOS_PER_RUN:-3}}"
 if [[ "$COUNT" =~ ^[0-9]+$ ]]; then
   shift || true
   EXTRA=(--count "$COUNT")

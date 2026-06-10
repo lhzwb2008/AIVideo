@@ -65,6 +65,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def max_video_duration_s() -> float:
+    """成片最长时长（秒）；英文频道默认 3 分钟。"""
+    default = 180.0 if _locale_en() else 0.0
+    raw = os.environ.get("AIVIDEO_MAX_VIDEO_DURATION_S", str(default) if default else "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return default
+
+
 def cover_duration_s() -> float:
     """旧版静音封面帧时长；有 cold_open 时不再使用（首帧取自冷开场）。"""
     raw = os.environ.get("AIVIDEO_COVER_DURATION_S", "0.8").strip()
@@ -1452,6 +1464,16 @@ def compose_video(
         mix_bgm(video_path=voice_only, bgm_path=bgm, out_path=output)
     else:
         concat_clips(clips, output, work_dir)
+    dur_s = ffprobe_duration(output)
+    max_dur = max_video_duration_s()
+    if max_dur > 0 and dur_s > max_dur + 0.5:
+        print(
+            f"⚠️  成片 {dur_s:.1f}s 超过上限 {max_dur:.0f}s（AIVIDEO_MAX_VIDEO_DURATION_S）；"
+            "建议缩短脚本口播或减页数",
+            file=sys.stderr,
+        )
+    elif max_dur > 0:
+        print(f"[duration] {dur_s:.1f}s / {max_dur:.0f}s", file=sys.stderr)
     print(f"完成：{output} ({output.stat().st_size//1024} KB)", file=sys.stderr)
 
     last_video = locale_logs_dir() / "last_video.txt"

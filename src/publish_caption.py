@@ -123,11 +123,15 @@ def print_manual_publish_pack(
         if yt_hashtags:
             print(f"话题: {yt_hashtags}", flush=True)
 
-        print("\n【TikTok · 复制到 App 发布页】", flush=True)
-        print(
-            "（收件箱模式 API 不支持预填；App 里 #aivideo 是应用名占位，请删除后粘贴下方文案）",
-            flush=True,
-        )
+        print("\n【TikTok】", flush=True)
+        tk_ready, tk_reason = _tiktok_direct_post_ready()
+        if not tiktok_enabled():
+            print("（未开启 AIVIDEO_PUBLISH_TIKTOK）", flush=True)
+        elif tk_ready:
+            print("（Direct Post 自动发布，下方为 caption 预览）", flush=True)
+        else:
+            print(f"（已跳过自动发布：{tk_reason}）", flush=True)
+            print("下方文案仅供参考；过审后 ./tiktok-login.sh --force 重新授权即可自动发。", flush=True)
         print(tk_fields["title"], flush=True)
 
     todo_kwargs = dict(
@@ -220,7 +224,9 @@ def _todo_config_summary() -> str:
         if youtube_enabled():
             bits.append("YouTube=自动")
         if tiktok_enabled():
-            bits.append("TikTok=收件箱+你App内发")
+            label = _tiktok_config_label()
+            if label:
+                bits.append(label)
         return " · ".join(bits) if bits else "（未开启 YouTube/TikTok）"
 
     bits = ["抖音/小红书/视频号=你手动传"]
@@ -276,7 +282,7 @@ def _auto_publish_summary(
     if _locale_en() and youtube_enabled() and youtube_url:
         names.append("YouTube")
     if _locale_en() and tiktok_enabled() and tiktok_url:
-        names.append("TikTok收件箱")
+        names.append("TikTok")
     if wechat_enabled() and wechat_title:
         if _read_last_log_bool("last_wechat_publish.json", "published"):
             names.append("公众号")
@@ -430,27 +436,33 @@ def build_todo_checklist_items(
             )
 
     if _locale_en() and tiktok_enabled():
+        tk_ready, tk_reason = _tiktok_direct_post_ready()
         if skip_auto_note:
-            _append_todo_items(
-                manual,
-                mark=" ",
-                headline="TikTok: 将上传收件箱，你需在 App 内粘贴文案后发布",
-            )
+            if tk_ready:
+                _append_todo_items(
+                    notes,
+                    mark="·",
+                    headline="TikTok: 将 Direct Post 自动发布",
+                )
+            else:
+                _append_todo_items(
+                    notes,
+                    mark="·",
+                    headline=f"TikTok: 将跳过自动发布（{tk_reason}）",
+                )
         elif tiktok_url:
+            pass
+        elif not tk_ready:
             _append_todo_items(
-                manual,
-                mark=" ",
-                headline="TikTok: 已上传收件箱（App 内 #aivideo 是占位，非最终标签）",
-                sublines=[
-                    "打开 App → Inbox，删除 #aivideo，粘贴终端【TikTok】文案后发布",
-                    "文案副本: logs/en/last_tiktok_caption.txt",
-                ],
+                notes,
+                mark="·",
+                headline=f"TikTok: 已跳过自动发布（{tk_reason}）",
             )
         else:
             _append_todo_items(
                 manual,
                 mark="!",
-                headline="TikTok: 未上传 — ./scripts/publish-tiktok.sh",
+                headline="TikTok: 自动发布失败 — ./scripts/publish-tiktok.sh",
             )
 
     if forum_rel and not has_forum and (
@@ -612,11 +624,8 @@ def _print_todo_checklist(
 
     for title, items in sections:
         print(f"\n— {title} —", flush=True)
-        if title.startswith("待你亲手发布"):
-            if _locale_en():
-                print("  复制上面【TikTok】文案，在 App 内粘贴后发布：", flush=True)
-            else:
-                print("  复制上面「标题 / 简介 / 话题」，按链接上传后发布：", flush=True)
+        if title.startswith("待你亲手发布") and not _locale_en():
+            print("  复制上面「标题 / 简介 / 话题」，按链接上传后发布：", flush=True)
         for mark, headline, sublines in items:
             bracket = f"[{mark}]" if mark.strip() else "[ ]"
             print(f"  {bracket} {headline}", flush=True)
@@ -644,6 +653,22 @@ def youtube_enabled() -> bool:
 
 def tiktok_enabled() -> bool:
     return _env_enabled("AIVIDEO_PUBLISH_TIKTOK", default="0")
+
+
+def _tiktok_direct_post_ready() -> tuple[bool, str]:
+    try:
+        from tiktok_auth import tiktok_direct_post_ready
+
+        return tiktok_direct_post_ready()
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+def _tiktok_config_label() -> str:
+    if not tiktok_enabled():
+        return ""
+    ready, _ = _tiktok_direct_post_ready()
+    return "TikTok=自动" if ready else "TikTok=跳过"
 
 
 def instagram_enabled() -> bool:
