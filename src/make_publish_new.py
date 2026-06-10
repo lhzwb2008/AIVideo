@@ -18,13 +18,38 @@ from batch_aivideo import append_history_from_script
 from cursor_daily_topics import (
     CURSOR_SLOT_ORDER,
     SLOT_LABEL,
+    SLOT_TO_CATEGORY,
     build_cursor_topic_research,
+    china_today,
     discover_cursor_topics,
+    topic_plan_for_slot,
 )
 from paths import ROOT
 from publish_pipeline import log, process_topic
 from locale_env import load_locale_env, locale_logs_dir
 from research import load_env
+
+
+def _topic_for_slot(slot: str) -> dict:
+    """为 --slot 指定槽位构建话题（与 discover_cursor_topics 单条结构一致）。"""
+    label = SLOT_LABEL[slot]
+    today = china_today().isoformat()
+    plan = topic_plan_for_slot(slot)
+    row = {
+        "index": 1,
+        "slot": slot,
+        "direction": slot,
+        "cursor_slot": slot,
+        "title_hint": plan.get("title_hint") or f"{today} {label}",
+        "category": SLOT_TO_CATEGORY.get(slot, "ai"),
+        "theme_cluster": plan.get("theme_cluster") or f"cursor_{slot}",
+        "angle": plan.get("angle") or label,
+        "reason": f"指定槽位重跑：{label}",
+    }
+    for key in ("suggested_video_title", "cold_open", "script_mode"):
+        if plan.get(key):
+            row[key] = plan[key]
+    return row
 
 
 def main() -> int:
@@ -41,6 +66,11 @@ def main() -> int:
         default=int(os.environ.get("AIVIDEO_MAX_VIDEOS_PER_RUN", str(default_count))),
         help=f"本次制作条数（默认 {default_count}，最大建议 {default_count}）",
     )
+    parser.add_argument(
+        "--slot",
+        choices=CURSOR_SLOT_ORDER,
+        help="只跑指定槽位（如重跑失败的 astock_market），忽略今日队列偏移",
+    )
     parser.add_argument("--dry-run", action="store_true", help="只预演发布参数")
     parser.add_argument("--no-publish", action="store_true", help="只生成视频，跳过发布")
     parser.add_argument(
@@ -50,8 +80,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    target = max(1, min(args.count, len(CURSOR_SLOT_ORDER)))
-    topics = discover_cursor_topics(target=target)
+    if args.slot:
+        target = 1
+        topics = [_topic_for_slot(args.slot)]
+    else:
+        target = max(1, min(args.count, len(CURSOR_SLOT_ORDER)))
+        topics = discover_cursor_topics(target=target)
     if not topics:
         log("没有可用槽位。")
         return 0

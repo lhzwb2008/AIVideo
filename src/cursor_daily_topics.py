@@ -248,23 +248,39 @@ def derive_market_recap_video_title(markdown: str) -> str:
         traits.append("普涨")
     if re.search(r"分化|结构性|跷跷板", trait_src) and not traits:
         traits.append("分化")
-    if re.search(r"缩量|成交萎缩|量能不足", trait_src):
-        traits.append("缩量")
-    elif re.search(r"放量|成交放大", trait_src):
+    # 「而非缩量阴跌」「不是放量」等否定语境不算；放量/缩量同时出现时取未被否定的那个
+    def _has_volume_trait(word: str) -> bool:
+        for m in re.finditer(word, trait_src):
+            ctx = trait_src[max(0, m.start() - 6): m.start()]
+            if re.search(r"而非|并非|不是|不算|没有|非", ctx):
+                continue
+            return True
+        return False
+
+    if _has_volume_trait("放量") or _has_volume_trait("成交放大"):
         traits.append("放量")
+    elif _has_volume_trait("缩量") or _has_volume_trait("成交萎缩") or _has_volume_trait("量能不足"):
+        traits.append("缩量")
 
     sh_pct: float | None = None
     for pat in (
-        r"上证指数[^。\n]{0,40}?([+-]?\d+\.?\d*)%",
-        r"沪指[^。\n]{0,30}?([+-]?\d+\.?\d*)%",
+        r"上证指数[^。\n]{0,40}?(涨|跌|上涨|下跌)\s*([+-]?\d+\.?\d*)%",
+        r"沪指[^。\n]{0,30}?(涨|跌|上涨|下跌)\s*([+-]?\d+\.?\d*)%",
+        r"上证指数[^。\n]{0,40}?([+-]\d+\.?\d*)%",
+        r"沪指[^。\n]{0,30}?([+-]\d+\.?\d*)%",
     ):
         m = re.search(pat, md)
-        if m:
-            try:
+        if not m:
+            continue
+        try:
+            if m.lastindex and m.lastindex >= 2:
+                value = abs(float(m.group(2)))
+                sh_pct = -value if "跌" in m.group(1) else value
+            else:
                 sh_pct = float(m.group(1))
-                break
-            except ValueError:
-                continue
+            break
+        except ValueError:
+            continue
 
     lead = ""
     for pat in (

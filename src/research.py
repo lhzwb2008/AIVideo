@@ -1446,7 +1446,8 @@ _COVER_WEAK_HOOK = re.compile(
 # 冷开场须带生活化入口（路人 3 秒能建立关联）
 _COLD_OPEN_LIFE = re.compile(
     r"你|大家|普通人|手机|电脑|家电|奶茶|外卖|买菜|超市|房租|工资|涨价|便宜了|贵了|"
-    r"没想到|其实|就像|好比|家里|日常|生活|用电|充电|追剧|刷视频|工资条|账单"
+    r"没想到|其实|就像|好比|家里|日常|生活|用电|充电|追剧|刷视频|工资条|账单|"
+    r"账户|钱包|手里|股民|攒钱|满屏|钱去哪|亏|赚"
 )
 _COLD_OPEN_JARGON_ONLY = re.compile(
     r"(?i)MLCC|CPO|HBM|GPU|EPS|PE\b|硅光|800G|1\.6T|换手率|市盈率|概念股|涨停潮|"
@@ -1483,22 +1484,26 @@ def validate_article_script(data: dict, article: dict) -> dict:
             raise ValueError(f"缺少 {key}")
 
     cold_open = str(data.get("cold_open") or "").strip()
+    daily_recap = _is_daily_recap(article)
     if not cold_open:
         raise ValueError("缺少 cold_open（12-28 字冷开场，一句话说完）")
     if not (12 <= len(cold_open) <= 28):
         raise ValueError(f"cold_open 须 12-28 字，当前 {len(cold_open)}: {cold_open!r}")
-    if _COVER_WEAK_HOOK.match(cold_open):
-        raise ValueError(f"cold_open 禁止平铺开头: {cold_open!r}")
-    if not _COLD_OPEN_LIFE.search(cold_open):
-        raise ValueError(
-            f"cold_open 必须含生活化入口（你/手机/涨价/买菜等），让路人 3 秒听懂: {cold_open!r}"
-        )
-    if _COLD_OPEN_JARGON_ONLY.search(cold_open) and not re.search(
-        r"手机|电脑|家电|买菜|奶茶|工资|账单|涨价|贵了|便宜", cold_open
-    ):
-        raise ValueError(
-            f"cold_open 勿以纯财经术语开场，请改成生活场景+反差: {cold_open!r}"
-        )
+    # 报盘槽位（daily_recap）prompt 明确允许「今天收盘了，帮你看懂行情」风格，
+    # 不强制反差悬念/生活化入口，否则与 _daily_recap_adapt_block 的指示矛盾、必然重试失败。
+    if not daily_recap:
+        if _COVER_WEAK_HOOK.match(cold_open):
+            raise ValueError(f"cold_open 禁止平铺开头: {cold_open!r}")
+        if not _COLD_OPEN_LIFE.search(cold_open):
+            raise ValueError(
+                f"cold_open 必须含生活化入口（你/手机/涨价/买菜等），让路人 3 秒听懂: {cold_open!r}"
+            )
+        if _COLD_OPEN_JARGON_ONLY.search(cold_open) and not re.search(
+            r"手机|电脑|家电|买菜|奶茶|工资|账单|涨价|贵了|便宜", cold_open
+        ):
+            raise ValueError(
+                f"cold_open 勿以纯财经术语开场，请改成生活场景+反差: {cold_open!r}"
+            )
     for p in _reco_banned_for(article=article):
         if p in cold_open:
             raise ValueError(f"cold_open 含违规词「{p}」")
