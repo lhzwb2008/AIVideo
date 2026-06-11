@@ -430,28 +430,39 @@ async def _set_files_via_chooser(page, video: Path, labels: tuple[str, ...]) -> 
     return False
 
 
-async def _set_files_on_input(page, video: Path, *, chooser_labels: tuple[str, ...] = ()) -> None:
+async def _try_set_files_on_input(
+    page,
+    video: Path,
+    *,
+    chooser_labels: tuple[str, ...] = (),
+    attempts: int = 90,
+) -> bool:
     if chooser_labels and await _set_files_via_chooser(page, video, chooser_labels):
-        return
+        return True
     selectors = (
         "input[type='file'][accept*='video']",
         "input[type='file']",
     )
-    for attempt in range(90):
+    for attempt in range(attempts):
         for sel in selectors:
             loc = page.locator(sel).first
             if await loc.count():
                 try:
                     await loc.set_input_files(str(video), timeout=120_000)
-                    return
+                    return True
                 except Exception:
                     pass
         if chooser_labels and await _set_files_via_chooser(page, video, chooser_labels):
-            return
+            return True
         if attempt and attempt % 10 == 0:
             print(f"  等待 file input… ({attempt}s)", flush=True)
         await asyncio.sleep(1)
-    raise SocialTestError("未找到视频 file input")
+    return False
+
+
+async def _set_files_on_input(page, video: Path, *, chooser_labels: tuple[str, ...] = ()) -> None:
+    if not await _try_set_files_on_input(page, video, chooser_labels=chooser_labels):
+        raise SocialTestError("未找到视频 file input")
 
 
 async def _click_if_visible(page, *, role: str | None = None, name: str | None = None, selector: str | None = None) -> bool:
@@ -1359,6 +1370,88 @@ async def _verify_linkedin_published(page, needle: str = "") -> bool:
         return False
 
 
+async def _wait_li_feed_ready(page, *, timeout_s: int = 45) -> None:
+    markers = ("发动态", "Start a post", "视频", "Video")
+    for _ in range(timeout_s):
+        for marker in markers:
+            try:
+                if await page.get_by_text(marker, exact=False).count():
+                    return
+            except Exception:
+                pass
+        await asyncio.sleep(1)
+    raise SocialTestError("LinkedIn feed 未加载完成")
+
+
+async def _li_select_video(page, upload_video: Path) -> None:
+    """Feed 上点「视频」或打开发帖框后选文件；headless 下 chooser 失败时回退 file input。"""
+    await _wait_li_feed_ready(page)
+
+    for label in ("视频", "Video", "動画"):
+        try:
+            loc = page.get_by_role("button", name=label, exact=True).first
+            if await loc.count() and await loc.is_visible():
+                try:
+                    async with page.expect_file_chooser(timeout=8000) as fc_info:
+                        await loc.click(timeout=5000)
+                    chooser = await fc_info.value
+                    await chooser.set_files(str(upload_video))
+                    print(f"  已通过 {label} 选择视频", flush=True)
+                    return
+                except Exception:
+                    await loc.click(timeout=5000)
+                    await asyncio.sleep(2)
+                    if await _try_set_files_on_input(page, upload_video, attempts=25):
+                        print(f"  已通过 {label} + file input 选择视频", flush=True)
+                        return
+        except Exception:
+            pass
+        if await _click_labeled(page, label):
+            await asyncio.sleep(2)
+            if await _try_set_files_on_input(page, upload_video, attempts=25):
+                print(f"  已通过 {label}(labeled) 选择视频", flush=True)
+                return
+
+    opened = False
+    for text in ("发动态", "Start a post", "投稿を開始"):
+        try:
+            loc = page.get_by_placeholder(text, exact=False).first
+            if await loc.count() and await loc.is_visible():
+                await loc.click(timeout=5000)
+                print(f"  已点击发帖框: {text}", flush=True)
+                opened = True
+                break
+        except Exception:
+            if await _click_labeled(page, text):
+                print(f"  已点击: {text}", flush=True)
+                opened = True
+                break
+    if not opened:
+        for sel in (
+            "button.share-box-feed-entry__trigger",
+            ".share-box-feed-entry__trigger",
+        ):
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() and await loc.is_visible():
+                    await loc.click(timeout=5000)
+                    print("  已点击 share-box 发帖入口", flush=True)
+                    opened = True
+                    break
+            except Exception:
+                pass
+    await asyncio.sleep(2)
+    chooser_labels = ("Add a video", "添加视频", "動画を追加", "Upload video", "视频", "Video")
+    for label in ("视频", "Video", "動画"):
+        await _click_labeled(page, label)
+    if await _try_set_files_on_input(
+        page, upload_video, chooser_labels=chooser_labels, attempts=90
+    ):
+        print("  已通过 composer 选择视频", flush=True)
+        return
+    raise SocialTestError("未找到视频 file input")
+
+
 async def publish_linkedin(page, video: Path, caption: str, *, assist: bool) -> None:
     await page.goto(
         "https://www.linkedin.com/feed/",
@@ -1383,39 +1476,7 @@ async def publish_linkedin(page, video: Path, caption: str, *, assist: bool) -> 
         await asyncio.sleep(2)
 
     upload_video, trim_tmp = _prepare_ig_video(video)
-    video_clicked = False
-    for label in ("视频", "Video", "動画"):
-        try:
-            loc = page.get_by_role("button", name=label, exact=True).first
-            if await loc.count() and await loc.is_visible():
-                async with page.expect_file_chooser(timeout=8000) as fc_info:
-                    await loc.click(timeout=5000)
-                chooser = await fc_info.value
-                await chooser.set_files(str(upload_video))
-                video_clicked = True
-                print(f"  已通过 {label} 选择视频", flush=True)
-                break
-        except Exception:
-            pass
-
-    if not video_clicked:
-        for text in ("发动态", "Start a post", "投稿を開始"):
-            try:
-                loc = page.get_by_placeholder(text, exact=False).first
-                if await loc.count() and await loc.is_visible():
-                    await loc.click(timeout=5000)
-                    print(f"  已点击发帖框: {text}", flush=True)
-                    break
-            except Exception:
-                if await _click_labeled(page, text):
-                    print(f"  已点击: {text}", flush=True)
-                    break
-        await asyncio.sleep(2)
-        chooser_labels = ("Add a video", "添加视频", "動画を追加", "Upload video", "视频", "Video")
-        for label in ("视频", "Video", "動画"):
-            await _click_labeled(page, label)
-        if not await _set_files_via_chooser(page, upload_video, chooser_labels):
-            await _set_files_on_input(page, upload_video, chooser_labels=chooser_labels)
+    await _li_select_video(page, upload_video)
     print("  已选择视频，等待处理…", flush=True)
 
     ready = False
