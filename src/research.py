@@ -1052,7 +1052,7 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
   "cold_open_type": "conflict|number|question|myth_bust",
   "theme_cluster": "optical_module|ai_chip|ev_auto|macro_rates|consumer_platform|general",
   "angle": "10-24字本篇唯一角度",
-  "hashtags": ["3-5个能蹭上的热点大词，优先用大家真会搜的赛事/事件/公司名，别自创窄词或写品牌名"],
+  "hashtags": ["2-3个内容相关话题词，如板块/公司/事件名，可加A股或股市；禁止写AI、财经、复盘、收盘等泛标签"],
   "slides": [
     {
       "headline": "6-14字上屏标题",
@@ -1072,10 +1072,9 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
 - 注意：以上「生动口语」要求不能突破后面的合规红线（不荐股、不喊单、不出现股票代码等）。
 
 规则：
-- hashtags：写 3-5 个**这条视频能蹭上、且大家真的会去搜的「热点大词」**，目的是借现成的流量入口被刷到。挑选优先级：①本条强相关的**当下热点事件/赛事/节日/热门话题大词**（如 世界杯、欧冠、NBA总决赛、双十一、英伟达财报），这类词搜索量大、有现成话题广场，优先放前面；②核心主角（公司/产品/个股名）；③所属市场（A股 / 美股 / 港股 / 中概股，按真实归属写，A股 个股就写 A股，别乱加美股）；④所属板块或概念（如 半导体、算力、电力、机器人、体育经济）。
-  - **宁可用大家都在搜的大词，也不要自己造没人搜的窄词**（如「赛事生意」「体育超级月」这种自创短语就别用，换成「世界杯」「NBA总决赛」这种通用热词）。
-  - **不要写品牌频道名（如 AI财知道）**当标签——新号自创话题没人搜，纯属浪费坑位，发布程序也不会再补品牌标签。
-  - 每个一般 2-8 字（英文公司名/赛事名可稍长），不带 # 号，宁少勿多、不要凑无关泛词。例：讲 A股 电力股涨停写 ["A股","电力股","涨停"]；讲英伟达财报写 ["英伟达","美股","财报"]；讲三大体育决赛扎堆写 ["世界杯","欧冠","NBA总决赛","体育经济"]。
+- hashtags：写 **2-3 个**与本条内容直接相关的话题词（板块名、公司名、事件名等大家会搜的词）。
+  - 可按需加 1 个市场词（A股 / 美股 / 港股 / 股市），**不要写 AI、财经、复盘、收盘、行情、投资 等泛标签**，也不要写品牌名。
+  - 例：讲 A股 电力股 → ["A股","电力股"]；讲英伟达财报 → ["英伟达","美股"]；收盘概述 → ["A股","收评"]。
 - slides 3-4 页（最多 4 页）；第 1 页是封面正文页（非冷开场），封面 narration 必须 40-120 字；其余页 narration 50-180 字；最后一页是结论/影响/警示。
 - 最后一页的 narration 收尾时，要**先根据这个话题自然抛出一个开放式问题**引导观众去评论区讨论（结合本期具体内容，不要套「你怎么看」这种空话，要有具体钩子），**再**引导互动：**必须明确提到「收藏」**（财经类收藏权重高），例如「觉得有用就收藏下来，对照看盘用」；可顺带提关注，但**不要只喊点赞**；不要生硬。
 - title 必须是问句，优先使用「什么是 X？」「X 为什么火了？」「X 到底意味着什么？」「X 财报到底好不好？」「X 为什么大涨/大跌？」这类搜索友好标题。
@@ -1196,16 +1195,17 @@ def soft_sanitize_script(data: dict) -> dict:
             data["angle"] = _trim_to(str(plan["angle"]), 24)
         if data.get("theme_cluster") in ("", "general") and plan.get("theme_cluster"):
             data["theme_cluster"] = str(plan["theme_cluster"])
-    # 规范化 hashtags：去 # / 去空 / 去重 / 去股票代码 / 每个 ≤8 字 / 最多 5 个
+    # 规范化 hashtags：去 # / 去空 / 去重 / 去股票代码 / 过滤泛标签 / 最多 3 个
+    _noise_tags = {"ai", "财经", "复盘", "收盘", "行情", "投资", "热点", "标签"}
     raw_tags = data.get("hashtags")
     if isinstance(raw_tags, list):
         clean_tags: list[str] = []
         for t in raw_tags:
             t = re.sub(r"^#+", "", str(t or "")).strip(" ，。、：；#,.!?！？")
             t = _strip_stock_codes(t)
-            if t and len(t) <= 14 and t not in clean_tags:
+            if t and t.lower() not in _noise_tags and len(t) <= 14 and t not in clean_tags:
                 clean_tags.append(t)
-        data["hashtags"] = clean_tags[:5]
+        data["hashtags"] = clean_tags[:3]
     else:
         data["hashtags"] = []
     slides = data.get("slides")
@@ -1489,7 +1489,7 @@ def validate_article_script(data: dict, article: dict) -> dict:
         raise ValueError("缺少 cold_open（12-28 字冷开场，一句话说完）")
     if not (12 <= len(cold_open) <= 28):
         raise ValueError(f"cold_open 须 12-28 字，当前 {len(cold_open)}: {cold_open!r}")
-    # 报盘槽位（daily_recap）prompt 明确允许「今天收盘了，帮你看懂行情」风格，
+    # 报盘槽位（daily_recap）prompt 明确允许「X月X日收评，先看三大指数」平实开场，
     # 不强制反差悬念/生活化入口，否则与 _daily_recap_adapt_block 的指示矛盾、必然重试失败。
     if not daily_recap:
         if _COVER_WEAK_HOOK.match(cold_open):
@@ -1671,8 +1671,8 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
         )
     elif _is_daily_recap(article):
         title_rule = (
-            "收盘报盘 title 须点出今日盘面特点（参考上文 suggested 标题），"
-            "禁止「大盘」与「X月X日」模板，可陈述或轻问句；"
+            "收盘概述 title 须为 4-24 字**陈述句**，直接点出盘面特点（如「放量普涨，沪指站上4000点」），"
+            "禁止问句（怎么看/为什么/吗）；禁止「大盘」与「X月X日」开头；"
         )
     else:
         title_rule = "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
@@ -1713,38 +1713,10 @@ def _resolve_suggested_video_title(article: dict) -> str:
     return ""
 
 
-def _sanitize_daily_recap_video_title(title: str) -> str:
-    try:
-        from cursor_daily_topics import sanitize_market_recap_video_title
-
-        return sanitize_market_recap_video_title(title)
-    except Exception:  # noqa: BLE001
-        t = re.sub(r"^\d{1,2}月\d{1,2}日[：:、\s]*", "", (title or "").strip())
-        return t.replace("大盘", "").strip()
-
-
-def _apply_daily_recap_video_title(script: dict, article: dict) -> dict:
-    """收盘报盘：标题点出盘面特点，禁止「大盘」与日期模板。"""
-    suggested = _sanitize_daily_recap_video_title(_resolve_suggested_video_title(article))
-    title = _sanitize_daily_recap_video_title(str(script.get("title") or ""))
-    if len(title) < 4:
-        title = suggested
-    if len(title) < 4:
-        title = "今日收盘速览"
-    script["title"] = _compact_title(title, 24)
-    if not str(script.get("keyword") or "").strip():
-        script["keyword"] = "A股收盘"
-    tags = script.get("hashtags")
-    if isinstance(tags, list):
-        clean = [str(t).strip() for t in tags if str(t).strip() and "大盘" not in str(t)]
-        script["hashtags"] = clean[:5] or ["A股", "收盘", "复盘", "行情"]
-    return script
-
-
 def _apply_fixed_video_title(script: dict, article: dict) -> dict:
-    """非报盘槽位可固定标题；收盘报盘走灵活标题逻辑。"""
+    """非报盘槽位可固定标题；其余沿用模型输出的 title。"""
     if _is_daily_recap(article):
-        return _apply_daily_recap_video_title(script, article)
+        return script
     fixed = _resolve_fixed_video_title(article)
     if fixed:
         script["title"] = fixed
@@ -1762,29 +1734,29 @@ def _is_daily_recap(article: dict) -> bool:
 
 
 def _daily_recap_adapt_block(article: dict) -> str:
-    suggested = _sanitize_daily_recap_video_title(_resolve_suggested_video_title(article))
     if not _is_daily_recap(article):
         return ""
-    suggested_line = (
-        f"- title 参考（可微调，须保留盘面特点）：{suggested}\n"
+    suggested = str(_resolve_suggested_video_title(article) or "").strip()
+    example_line = (
+        f"- title 示例（陈述句，可参照）：{suggested}\n"
         if suggested
-        else ""
+        else "- title 示例：「放量普涨，沪指站上4000点」「缩量分化，创业板领跌」\n"
     )
     return (
-        "【本篇类型：A股每日收盘报盘视频（必须服从，禁止跑题）】\n"
-        + suggested_line
-        + "- title 规则：4-24 字，点出今日盘面最大特点（涨跌/量能/分化/领涨行业），陈述或轻问句均可\n"
-        + "- title 禁止：出现「大盘」；禁止「X月X日」开头；禁止「A股大盘分析」类模板\n"
-        + "- keyword 建议：A股收盘\n"
-        + "- 这是「帮观众快速看懂今天收盘」的报盘视频，不是板块专题、不是个股故事\n"
+        "【本篇类型：A股每日收盘概述（必须服从，禁止跑题）】\n"
+        + example_line
+        + "- title 规则：4-24 字**陈述句**，直接说盘面特点（涨跌/量能/分化），禁止问句\n"
+        + "- title 禁止：「大盘」「X月X日」开头、「怎么看」「为什么」等悬念问句\n"
+        + "- keyword 建议：A股收评\n"
+        + "- hashtags：2 个即可，如 [\"A股\",\"收评\"] 或 [\"A股\",\"股市\"]，不要 AI/复盘/收盘\n"
+        + "- 与第二槽位「热点与新闻」分工：本篇只讲全盘概述，行业只点名不展开\n"
         + "- slides 固定 4 页分工（不得改成 MLCC/半导体深度解读）：\n"
-        + "  · 第1页 cover：三大指数+科创50收盘数字报盘（口播念出点位与涨跌幅）\n"
+        + "  · 第1页 cover：三大指数+科创50收盘数字（口播念出点位与涨跌幅）\n"
         + "  · 第2页：成交额、较昨日缩量/放量、上涨/下跌家数\n"
-        + "  · 第3页：领涨与领跌行业各 2–3 个（只报名字与涨跌，各 1 句）\n"
-        + "  · 第4页：一句话总结今日结构（普涨/普跌/分化）+ 明日 1 条客观观察，不要操作建议\n"
+        + "  · 第3页：今日结构一句话（普涨/普跌/分化）+ 领涨/领跌行业各 1–2 个（只报名字与涨跌，各半句）\n"
+        + "  · 第4页：客观总结今日量能与情绪 + 明日 1 条观察线索，不要操作建议\n"
         + "- 任一概念板块（MLCC、存储、CPO 等）全文合计不得超过 1 句、15 字\n"
-        + "- cold_open 可用「今天X月X日收盘，帮你看懂行情」风格，不必强行反差悬念\n"
-        + "- hashtags 优先：A股、收盘、复盘、行情（不要「大盘」）\n\n"
+        + "- cold_open：「X月X日收评，先看三大指数和成交」平实陈述即可\n\n"
     )
 
 
@@ -1796,7 +1768,7 @@ def _topic_plan_block(article: dict) -> str:
     suggested = str(plan.get("suggested_video_title") or "").strip()
     fixed = str(plan.get("fixed_video_title") or "").strip()
     if suggested and _is_daily_recap(article):
-        parts.append(f"- 视频标题参考（点出盘面特点，禁止「大盘」）: {suggested}")
+        parts.append(f"- 视频标题示例（陈述句，禁止问句）: {suggested}")
     elif fixed:
         parts.append(f"- 视频标题（必须一字不改）: {fixed}")
     elif plan.get("title_hint") and not _is_daily_recap(article):

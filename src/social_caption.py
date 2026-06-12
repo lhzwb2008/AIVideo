@@ -11,9 +11,9 @@ import re
 
 from douyin_caption import (
     _env,
-    _strip_hashtag,
+    _normalize_publish_tags,
     _strip_urls,
-    _topic_keywords,
+    _build_publish_desc,
 )
 
 # 各平台标题硬上限（留点余量，避免平台侧再截断把话说半截）
@@ -40,23 +40,6 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 1].rstrip("，。、：；,. ") + "…"
 
 
-def _evergreen_tags(platform: str) -> list[str]:
-    env_key = {
-        "xiaohongshu": "XHS_HASHTAGS",
-        "tencent": "SHIPINHAO_HASHTAGS",
-    }.get(platform, "")
-    raw = _env(env_key, "#财经 #股市 #投资 #AI")
-    return [t for t in (_strip_hashtag(x) for x in raw.split()) if t]
-
-
-def _desc_suffix(platform: str) -> str:
-    env_key = {
-        "xiaohongshu": "XHS_DESC_SUFFIX",
-        "tencent": "SHIPINHAO_DESC_SUFFIX",
-    }.get(platform, "")
-    return _strip_urls(_env(env_key))
-
-
 def build_social_fields(script: dict | None, platform: str) -> dict:
     """返回 {title, desc, tags(list[str]), short_title}。
 
@@ -71,39 +54,12 @@ def build_social_fields(script: dict | None, platform: str) -> dict:
 
     title = _truncate(raw_title, TITLE_LIMIT.get(platform, 20))
 
-    # 内容关键词（大模型写好的 script.hashtags 优先，否则启发式财经词）
-    topic_kw = _topic_keywords(script)
-    tags: list[str] = []
-    for kw in topic_kw:
-        if kw and kw not in tags:
-            tags.append(kw)
-    for kw in _evergreen_tags(platform):
-        if kw and kw not in tags:
-            tags.append(kw)
-    # 品牌名不进标签：新号自创话题没人搜，把坑位让给能蹭流量的热点大词。
-    # 话题最多 5 个，超出后面的会被平台截断/糊成乱码。
-    tags = tags[:5]
+    topic_kw = _normalize_publish_tags(script)
+    tags = topic_kw[:3]
 
-    # 正文：钩子标题 + 关键词 + CTA + 行内话题（小红书/视频号习惯把 #话题 写进正文）
+    desc = _build_publish_desc(script, raw_title, brand)
     if platform == "xiaohongshu":
-        bits = [f"{raw_title} 📈"]
-        if keyword and keyword not in raw_title:
-            bits.append(f"今天聊聊「{keyword}」。")
-        bits.append(f"💡 {brand}：每天一个 AI 和股市的为什么，A股·美股·港股都聊。")
-        bits.append("⚠️ 内容仅为信息分享，不构成投资建议。")
-    else:
-        bits = [raw_title]
-        if keyword and keyword not in raw_title:
-            bits.append(f"关键词：{keyword}。")
-        bits.append(f"{brand}，每天一个 AI 和股市的为什么，点关注追更新。")
-
-    suffix = _desc_suffix(platform)
-    if suffix:
-        bits.append(suffix)
-
-    # 注意：不在正文里内联 #标签——各平台 uploader 会单独用 tags 列表去填话题，
-    # 否则会和正文里的 # 文本重复。
-    desc = _strip_urls(" ".join(bits)).strip()[:1000]
+        desc = _truncate(desc, 1000)
 
     short_title = _truncate(raw_title, TENCENT_SHORT_TITLE_MAX)
     if len(short_title) < TENCENT_SHORT_TITLE_MIN and brand:

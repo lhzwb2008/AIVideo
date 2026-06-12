@@ -2,8 +2,8 @@
 """Cursor Cloud Agent 固定五槽位日更：联网调研 → 长文草稿 → Opus 深读 → 短视频改编。
 
 槽位顺序（每天按序，可接昨日进度续排）：
-  1. astock_market  — A股大盘报盘与分析
-  2. astock_sector  — A股热点板块分析
+  1. astock_market  — A股收盘概述（指数/成交/结构）
+  2. astock_sector  — A股热点与新闻（配合槽位1，不写全盘收评）
   3. domestic       — 国内财经新闻分析
   4. ai             — AI 新闻热点分析
   5. world          — 世界财经新闻分析
@@ -32,8 +32,8 @@ CURSOR_SLOT_ORDER = (
 )
 
 SLOT_LABEL: dict[str, str] = {
-    "astock_market": "A股大盘报盘与分析",
-    "astock_sector": "A股热点板块分析",
+    "astock_market": "A股收盘概述",
+    "astock_sector": "A股热点与新闻",
     "domestic": "国内财经新闻分析",
     "ai": "AI新闻热点分析",
     "world": "世界财经新闻分析",
@@ -140,7 +140,7 @@ def fixed_market_video_title(d: date | None = None) -> str:
 
 def astock_market_cold_open(d: date | None = None) -> str:
     d = d or date.today()
-    return f"{d.month}月{d.day}日收盘了，3分钟帮你看懂今天行情"
+    return f"{d.month}月{d.day}日收评，先看三大指数和成交"
 
 
 def _safe_date(year: int, month: int, day: int) -> date | None:
@@ -312,8 +312,11 @@ def derive_market_recap_video_title(markdown: str) -> str:
         short = re.sub(r"指数|市场|A股", "", short)
         segments.append(short[:18])
 
-    raw = "：".join(segments) if len(segments) > 1 else (segments[0] if segments else "")
-    return sanitize_market_recap_video_title(raw) or "今日收盘速览"
+    raw = "，".join(segments) if len(segments) > 1 else (segments[0] if segments else "")
+    titled = sanitize_market_recap_video_title(raw)
+    if titled:
+        return titled
+    return sanitize_market_recap_video_title(one_liner[:18]) or "今日A股收评"
 
 
 def topic_plan_for_slot(slot: str, *, d: date | None = None) -> dict:
@@ -323,9 +326,9 @@ def topic_plan_for_slot(slot: str, *, d: date | None = None) -> dict:
         return {
             "slot": slot,
             "script_mode": "daily_recap",
-            "title_hint": "收盘报盘：标题由盘面特点自动生成",
+            "title_hint": "收盘概述：陈述句标题，由盘面特点自动生成",
             "cold_open": astock_market_cold_open(d),
-            "angle": "收盘数据报盘+简要解读，不写板块专题",
+            "angle": "只讲指数、成交、涨跌家数与整体结构；行业点到为止，热点留给第二槽位",
             "theme_cluster": "astock_daily_recap",
         }
     label = SLOT_LABEL.get(slot, slot)
@@ -347,8 +350,9 @@ _COMMON_RULES = """
 """
 
 _SLOT_PROMPTS: dict[str, str] = {
-    "astock_market": """你是 A 股**收盘播报编辑**（不是板块研究员、不是个股故事写手）。
-请联网核对 A 股「最近一个**已完整收盘**的交易日」的收盘数据，写一篇 **每日报盘 + 简单分析**（全文 1000–1600 字，宁可短也不要跑题）。
+    "astock_market": """你是 A 股**收盘概述编辑**（不是板块研究员、不是个股故事写手）。
+请联网核对 A 股「最近一个**已完整收盘**的交易日」的收盘数据，写一篇 **收盘概述**（全文 800–1400 字，宁可短也不要跑题）。
+本篇与同日第二槽位「热点与新闻」配合：你只管全盘数字和结构，**不要**把某一板块/概念写成专题。
 
 【交易日判定（重要）】
 - 写的是「最近一个已经收盘的交易日」，不是日历上的今天。例如：周六/周日或交易日盘中、收盘前运行，都要取**上一个已收盘交易日**（周一早上跑 → 取上周五）。
@@ -369,10 +373,10 @@ _SLOT_PROMPTS: dict[str, str] = {
 ## 二、盘面一句话（不超过 60 字）
 用一句话概括今日市场性格（如：指数小跌、个股普跌、缩量观望、结构分化等）。
 
-## 三、行业涨跌一览（不超过 200 字）
-- 领涨行业 3 个：只写行业名 + 大致涨跌幅，每个行业最多补 1 句事实
-- 领跌行业 3 个：同上
-禁止：把某一概念（MLCC、存储、CPO、某只个股）写成半篇文章。
+## 三、结构速览（不超过 120 字）
+- 今天是普涨、普跌还是分化（1 句）
+- 领涨/领跌行业各 1–2 个：只写行业名 + 涨跌幅，**每个行业不超过 8 字**，不写原因
+禁止：把某一概念（MLCC、存储、CPO、某只个股）展开分析——留给第二槽位热点专题。
 
 ## 四、简单分析（不超过 350 字，共 3 点，每点 2–3 句）
 只回答：
@@ -389,18 +393,20 @@ _SLOT_PROMPTS: dict[str, str] = {
 - 禁止国际宏观（美联储、美股）占篇幅
 - 禁止「加仓」「减仓」「割肉」「抄底」等操作建议措辞；资金描述用「净流入/净流出」
 """ + _COMMON_RULES,
-    "astock_sector": """你是 A 股板块研究员。请联网搜索 A 股「最新一个交易日」盘面。
+    "astock_sector": """你是 A 股**热点与新闻编辑**。请联网搜索 A 股「最新一个交易日」最受关注的一条主线。
 
-先判断 **唯一** 最值得写的最热板块/概念（如 MLCC、存储芯片、工业气体等），再写一篇 **该方向的专题分析**（1500–2500 字），结构：
-1. 约 200 字说明为何选它（大盘背景 + 为何不做全盘收评）
-2. 一句话结论
-3. 板块是什么、产业链位置（小白能懂）
-4. 今天为什么涨（盘面事实 + 消息催化，要有数字）
+与同日第一槽位「收盘概述」分工：第一槽已讲指数/成交/整体结构，**本篇不要再写全盘收评**，只深挖当日最热的一条。
+
+先判断 **唯一** 最值得写的热点（板块异动、政策消息、产业新闻等，如 MLCC、存储芯片、工业气体等），再写一篇 **热点专题**（1500–2500 字），结构：
+1. 约 150 字交代今日大盘背景（3–4 句即可，不重复第一槽的指数报盘）
+2. 一句话结论：这条热点今天为什么上头条
+3. 热点是什么、产业链位置（小白能懂）
+4. 今天为什么火（盘面事实 + 消息催化，要有数字）
 5. 逻辑能否持续（供需/涨价/政策/海外映射）
 6. 风险提示 3 条
 7. 结语
 
-只写一个板块，不要罗列多个题材。
+只写一个热点，不要罗列多个题材，不要写成日报列表。
 """ + _COMMON_RULES,
     "domestic": """你是国内财经评论员。请联网搜索中国大陆 **最近 48 小时** 最受关注的财经新闻（宏观政策、监管、产业、消费、地产、金融等，不限于股市）。
 

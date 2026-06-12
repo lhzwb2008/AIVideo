@@ -137,9 +137,57 @@ def _finance_seo_keywords(script: dict | None) -> list[str]:
     return keywords[:3]
 
 
+def _cover_subtitle(script: dict | None) -> str:
+    for slide in (script or {}).get("slides") or []:
+        if isinstance(slide, dict):
+            sub = str(slide.get("subtitle") or "").strip()
+            if sub:
+                return sub
+    return ""
+
+
+# 泛标签/营销词：发布时不自动补，模型写了也过滤掉
+_GENERIC_NOISE_TAGS = frozenset({
+    "ai", "财经", "复盘", "收盘", "行情", "投资", "标签", "热点",
+})
+
+
+def _normalize_publish_tags(script: dict | None, *, max_tags: int = 3) -> list[str]:
+    """2–3 个话题：优先内容词，必要时补 A股/股市，不写 AI 等泛标签。"""
+    kws = _topic_keywords(script)
+    tags: list[str] = []
+    for t in kws:
+        if not t or t.lower() in _GENERIC_NOISE_TAGS:
+            continue
+        if t not in tags:
+            tags.append(t)
+        if len(tags) >= max_tags:
+            return tags
+
+    subject = _subject_text(script).lower()
+    if any(sig in subject for sig in _ASTOCK_SIGNAL) and "A股" not in tags:
+        tags.insert(0, "A股")
+    for mkt in ("美股", "港股", "中概股"):
+        if mkt in subject and mkt not in tags:
+            tags.append(mkt)
+            break
+    if "股市" not in tags and len(tags) < max_tags:
+        tags.append("股市")
+    return tags[:max_tags]
+
+
+def _build_publish_desc(script: dict | None, raw_title: str, brand: str) -> str:
+    """简介：封面副标题或标题 + 一句合规说明 + 短品牌署名，无关键词堆砌。"""
+    subtitle = _cover_subtitle(script)
+    lead = subtitle or raw_title
+    bits = [lead, "内容仅为信息梳理，不构成投资建议。"]
+    if brand:
+        bits.append(f"——{brand}")
+    return _strip_urls(" ".join(bits))
+
+
 def _topic_keywords(script: dict | None) -> list[str]:
-    """本条视频的内容关键词：优先用脚本里大模型按内容写好的 hashtags；
-    旧脚本没有 hashtags 时，回退到轻量启发式（公司/A股 信号）。最多 5 个。"""
+    """本条视频的内容关键词：优先 script.hashtags；旧脚本回退启发式。最多 3 个。"""
     raw = (script or {}).get("hashtags")
     kws: list[str] = []
     if isinstance(raw, list):
@@ -147,7 +195,7 @@ def _topic_keywords(script: dict | None) -> list[str]:
             _append_unique(kws, str(t or ""), max_len=14)
     if not kws:  # 兼容旧脚本
         kws = _finance_seo_keywords(script)
-    return kws[:5]
+    return kws[:3]
 
 
 def build_sau_fields(script: dict | None) -> dict[str, str]:
@@ -165,35 +213,12 @@ def build_sau_fields(script: dict | None) -> dict[str, str]:
     else:
         title = raw_title
 
-    topic_kw = _topic_keywords(script)
+    topic_kw = _normalize_publish_tags(script)
 
-    # tags = 能蹭上的热点话题优先（script.hashtags 由大模型按内容挑大词），
-    # 常青泛标签只在凑不满 5 个时补位。品牌名不进标签：新号自创话题没人搜，纯浪费坑位。
-    tag_parts: list[str] = []
-    for kw in topic_kw:
-        if kw not in tag_parts:
-            tag_parts.append(kw)
-    for raw in _env("DOUYIN_HASHTAGS", "#AI #财经 #股市").split():
-        if len(tag_parts) >= 5:
-            break
-        t = _strip_hashtag(raw)
-        if t and t not in tag_parts:
-            tag_parts.append(t)
-
-    desc_bits = [raw_title]
-    if keyword and keyword not in raw_title:
-        desc_bits.append(keyword)
-    if topic_kw:
-        desc_bits.append(f"相关：{'、'.join(topic_kw)}。")
-    if brand:
-        desc_bits.append(f"——{brand}，每天一个 AI 和股市的为什么，A股、美股、港股都聊，点关注追更新。")
-    extra = _env("DOUYIN_DESC_SUFFIX")
-    if extra:
-        desc_bits.append(_strip_urls(extra))
+    desc = _build_publish_desc(script, raw_title, brand)
 
     return {
         "title": title[:100],
-        "desc": _strip_urls(" ".join(desc_bits))[:1000],
-        # 抖音话题最多 5 个，超出会被截断/糊成乱码，这里硬性封顶 5 个。
-        "tags": ",".join(tag_parts[:5]),
+        "desc": desc[:1000],
+        "tags": ",".join(topic_kw),
     }
