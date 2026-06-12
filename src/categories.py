@@ -6,7 +6,7 @@
 - label：角标后缀，展示成「AI财知道 · A股」。
 - aliases：从话题标签 [xxx] 里识别该栏目的别名。
 
-量化栏目不改选题逻辑，内容由人工用 make-topics 指定（在话题前加 [量化] 标签即可）。
+量化栏目由脚本 category 字段指定。
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """US Market Cursor 写稿：联网调研英文长文 → Opus 深读 → 英文短视频脚本。
 
-不走 Exa 搜文；模仿 cursor_daily_topics / make_publish_new。
+不走 Exa 搜文；结构与 cursor_daily_topics / make_publish 一致。
 每次 1 条，槽位轮换：大盘速览 → 巨头热点 → 宏观。
 """
 

@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# AI财知道：每日热点 → 问句话题 → 搜文深读改编 → 生成视频 → 发布
-# 默认每天 3 条（A股 / AI / 港美股 各 1），与 make-topics 实验模式一致
+# AI财知道：固定五槽位 → Cursor Cloud Agent 联网写稿 → Opus 深读改编 → 生图合成发布
+# 顺序：A股大盘 → A股板块 → 国内财经 → AI → 世界财经
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 export ROOT
 source "$ROOT/scripts/load-dotenv.sh" zh
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+export AIVIDEO_SOURCE=cursor
+export AIVIDEO_COMPLIANCE_RELAXED=1
 
-COUNT="${1:-${AIVIDEO_MAX_VIDEOS_PER_RUN:-3}}"
-DAYS="${AIVIDEO_DAYS:-${DAILY_RUN_DAYS:-3}}"
+COUNT="${1:-${AIVIDEO_MAX_VIDEOS_PER_RUN:-5}}"
 
 PY="$ROOT/.venv/bin/python3"
 if [[ ! -x "$PY" ]]; then
   PY="python3"
 fi
-exec "$PY" "$ROOT/src/make_publish.py" --count "$COUNT" --days "$DAYS"
+exec "$PY" "$ROOT/src/make_publish.py" --count "$COUNT" "${@:2}"

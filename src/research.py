@@ -641,7 +641,7 @@ def score_articles(
     *,
     recent_topics: list[str] | None = None,
 ) -> tuple[list[dict], dict]:
-    """用 Opus 给候选逐条打分（遗留 API；主流程已改用 daily_topics 问句话题选题）。"""
+    """用 Opus 给候选逐条打分（遗留 API；主流程已改用 Cursor 槽位选题）。"""
     max_candidates = int(os.environ.get("AIVIDEO_SCORE_MAX_CANDIDATES", "40"))
     cand_view = []
     for i, c in enumerate(candidates, 1):
@@ -1411,7 +1411,7 @@ _RECO_BANNED = _RECO_BANNED_STRICT  # 兼容旧引用
 
 
 def compliance_relaxed(*, article: dict | None = None, script: dict | None = None) -> bool:
-    """新流水线（make-and-publish-new）用宽松合规：不单禁「买入/卖出」二字。"""
+    """Cursor 流水线用宽松合规：不单禁「买入/卖出」二字。"""
     flag = os.environ.get("AIVIDEO_COMPLIANCE_RELAXED", "").strip().lower()
     if flag in ("1", "true", "yes", "on"):
         return True
