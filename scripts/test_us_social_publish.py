@@ -1118,15 +1118,25 @@ async def publish_facebook(page, video: Path, caption: str, *, assist: bool) -> 
 
     upload_video, trim_tmp = _prepare_ig_video(video)
 
-    await page.goto("https://www.facebook.com/reels/create", wait_until="domcontentloaded", timeout=120_000)
-    await _dismiss_common(page)
-    await asyncio.sleep(5)
-    if "login" in page.url.lower():
-        raise SocialTestError("Facebook 未登录")
-
     chooser_labels = ("添加视频", "Add video", "Add Video", "上传")
-    if not await _set_files_via_chooser(page, upload_video, chooser_labels):
-        await _set_files_on_input(page, upload_video, chooser_labels=chooser_labels)
+    selected = False
+    for nav_round in range(3):
+        await page.goto("https://www.facebook.com/reels/create", wait_until="domcontentloaded", timeout=120_000)
+        await _dismiss_common(page)
+        await asyncio.sleep(5)
+        if "login" in page.url.lower():
+            raise SocialTestError("Facebook 未登录")
+        if await _set_files_via_chooser(page, upload_video, chooser_labels):
+            selected = True
+            break
+        if await _try_set_files_on_input(page, upload_video, chooser_labels=chooser_labels, attempts=20):
+            selected = True
+            break
+        print(f"  未找到上传入口，重新加载创建页（第 {nav_round + 1} 次）…", flush=True)
+    if not selected:
+        shot = PROJECT_ROOT / "logs" / "test_facebook_fail.png"
+        await page.screenshot(path=str(shot), full_page=True)
+        raise SocialTestError(f"未找到视频 file input，截图: {shot}")
     print("  已选择视频", flush=True)
     await asyncio.sleep(8)
 
