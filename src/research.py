@@ -1605,6 +1605,8 @@ def validate_article_script(data: dict, article: dict) -> dict:
     if formal_count > 0:
         raise ValueError(f"口播禁止显性引用文章/作者/外部观点，当前 {formal_count} 次")
 
+    _validate_offday_astock_script(data, article)
+
     return data
 
 
@@ -1659,6 +1661,7 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
     )
     topic_block = _topic_plan_block(article)
     recap_block = _daily_recap_adapt_block(article)
+    offday_block = _offday_astock_ban_block(article)
     relaxed_note = ""
     if compliance_relaxed(article=article):
         relaxed_note = (
@@ -1677,7 +1680,7 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
     else:
         title_rule = "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
     return (
-        f"{recap_block}{topic_block}{meta_block}\n\n{details_block}\n{relaxed_note}\n"
+        f"{recap_block}{offday_block}{topic_block}{meta_block}\n\n{details_block}\n{relaxed_note}\n"
         "请严格根据上面的「原文深读细节」改编。输出字段须含 title / keyword / cold_open / "
         "cold_open_type / theme_cluster / angle / hashtags / slides；"
         f"{title_rule}"
@@ -1731,6 +1734,54 @@ def _is_daily_recap(article: dict) -> bool:
         return True
     st = str(article.get("source_type") or "")
     return st == "cursor:astock_market"
+
+
+def _needs_offday_astock_ban(article: dict) -> bool:
+    """非交易日 domestic/world 槽位：禁止短视频/长文写成 A 股收评。"""
+    if _is_daily_recap(article):
+        return False
+    plan = article.get("_topic_plan")
+    if isinstance(plan, dict) and plan.get("offday_no_astock_recap"):
+        return True
+    return False
+
+
+_OFFDAY_ASTOCK_SCRIPT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"4000\s*点"), "非交易日禁止写「4000点」收评"),
+    (re.compile(r"站上\d{3,5}点|重回\d{3,5}点"), "非交易日禁止指数点位收评"),
+    (re.compile(r"沪指|上证指数|深成指|深证成指|创业板指|科创50"), "非交易日禁止写 A 股指数"),
+    (re.compile(r"涨跌家数|上涨家数|下跌家数"), "非交易日禁止写涨跌家数"),
+    (re.compile(r"成交额.{0,6}(?:万亿|亿元)"), "非交易日禁止写两市成交额收评"),
+)
+
+
+def _offday_astock_ban_block(article: dict) -> str:
+    if not _needs_offday_astock_ban(article):
+        return ""
+    return (
+        "【非交易日·禁止 A 股收评化（必须服从）】\n"
+        "- title / cold_open / slides 禁止以沪指、4000点、成交额、涨跌家数、板块涨跌为主线\n"
+        "- 深读材料里若有周五收盘数字，**不要写进口播**；短视频 4 页须紧扣本篇宏观/产业/国际主线\n"
+        "- 最后一页总结政策/事件对普通人的含义，不要总结盘面\n"
+    )
+
+
+def _validate_offday_astock_script(data: dict, article: dict) -> None:
+    if not _needs_offday_astock_ban(article):
+        return
+    blobs = [str(data.get("title") or ""), str(data.get("cold_open") or "")]
+    for slide in data.get("slides") or []:
+        if isinstance(slide, dict):
+            blobs.extend(
+                str(slide.get(k) or "")
+                for k in ("headline", "narration", "chapter_title", "concept", "lead_in", "subtitle")
+            )
+            blobs.extend(str(x) for x in (slide.get("on_image_text") or []) if x)
+            blobs.append(str(slide.get("image_prompt") or ""))
+    text = "\n".join(blobs)
+    for pat, msg in _OFFDAY_ASTOCK_SCRIPT_PATTERNS:
+        if pat.search(text):
+            raise ValueError(msg)
 
 
 def _daily_recap_adapt_block(article: dict) -> str:

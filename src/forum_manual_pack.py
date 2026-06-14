@@ -557,9 +557,15 @@ def _generate_professional_forum_sections(
             "- 简单分析即可，禁止写成 MLCC/半导体/个股专题；行业名点到为止\n"
             "- 少用「加仓」「割肉」；资金用净流入/净流出\n"
         )
+    plan = script.get("_topic_plan")
+    if isinstance(plan, dict) and plan.get("offday_no_astock_recap"):
+        base_user += (
+            "\n\n【非交易日】正文禁止写 A 股指数收盘、4000点、成交额、涨跌家数；"
+            "与视频一致，只写宏观/产业/国际主线。\n"
+        )
     last_err: Exception | None = None
     user = base_user
-    attempts = int(os.environ.get("AIVIDEO_FORUM_ARTICLE_RETRIES", "2"))
+    attempts = int(os.environ.get("AIVIDEO_FORUM_ARTICLE_RETRIES", "4"))
     for attempt in range(max(1, attempts)):
         raw = chat_complete(
             system=FORUM_ARTICLE_SYSTEM,
@@ -568,7 +574,13 @@ def _generate_professional_forum_sections(
             response_format_json=True,
         )
         try:
-            data = extract_json(raw)
+            try:
+                data = extract_json(raw)
+            except ValueError:
+                stripped = re.sub(
+                    r"^```(?:json)?\s*|\s*```$", "", (raw or "").strip(), flags=re.MULTILINE
+                )
+                data = extract_json(stripped)
             title = _sanitize_forum_title(str(data.get("title") or script.get("title") or "未命名"))
             if _is_daily_recap_script(script, article):
                 title = _sanitize_forum_title(str(script.get("title") or title))
@@ -812,6 +824,8 @@ def build_forum_pack(
     script_path: Path,
     video_path: Path,
     out_dir: Path | None = None,
+    *,
+    allow_fallback: bool | None = None,
 ) -> dict:
     script, script_meta = _load_script_meta(script_path)
     title = _sanitize_forum_title((script.get("title") or "未命名").strip())
@@ -839,9 +853,16 @@ def build_forum_pack(
                 details=_details_for_forum(script_meta),
             )
         except Exception as exc:  # noqa: BLE001
-            allow_fallback = os.environ.get("AIVIDEO_FORUM_ALLOW_FALLBACK", "0").strip().lower()
-            if allow_fallback in ("1", "true", "yes"):
-                print(f"[forum] 叙事长文生成失败，按配置回退口播扩展稿：{exc}")
+            use_fallback = allow_fallback
+            if use_fallback is None:
+                use_fallback = os.environ.get("AIVIDEO_FORUM_ALLOW_FALLBACK", "0").strip().lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+            if use_fallback:
+                print(f"[forum] 叙事长文生成失败，回退口播扩展稿：{exc}")
+                title = _sanitize_forum_title(str(script.get("title") or "未命名"))
                 sections = _fallback_forum_sections(slides, image_paths)
             else:
                 raise RuntimeError(

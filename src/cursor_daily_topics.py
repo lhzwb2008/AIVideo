@@ -319,9 +319,38 @@ def derive_market_recap_video_title(markdown: str) -> str:
     return sanitize_market_recap_video_title(one_liner[:18]) or "今日A股收评"
 
 
+_OFFDAY_DRAFT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"4000\s*点"), "4000点收评"),
+    (re.compile(r"站上\d{3,5}点|重回\d{3,5}点"), "指数点位收评"),
+    (re.compile(r"上证指数收涨|沪指收涨|沪指涨\d"), "沪指涨跌幅收评"),
+    (re.compile(r"沪深两市成交额"), "两市成交额收评"),
+)
+
+
+def _offday_draft_violations(slot: str, markdown: str) -> list[str]:
+    if slot not in ("domestic", "world") or not should_skip_astock_market_today():
+        return []
+    hits: list[str] = []
+    for pat, label in _OFFDAY_DRAFT_PATTERNS:
+        if pat.search(markdown):
+            hits.append(label)
+    return hits
+
+
+def _slot_prompt(slot: str) -> str:
+    """按槽位与是否交易日返回 Cursor 写稿 prompt。"""
+    raw = _SLOT_PROMPTS[slot]
+    if slot in ("domestic", "world") and should_skip_astock_market_today():
+        extra = _OFFDAY_ASTOCK_BAN
+        if slot == "world":
+            extra += _OFFDAY_WORLD_ASTOCK_EXTRA
+        raw += extra
+    return raw
+
+
 def topic_plan_for_slot(slot: str, *, d: date | None = None) -> dict:
     """各槽位写入 _topic_plan，供 Opus 改编时约束形态。"""
-    d = d or date.today()
+    d = d or china_today()
     if slot == "astock_market":
         return {
             "slot": slot,
@@ -332,12 +361,16 @@ def topic_plan_for_slot(slot: str, *, d: date | None = None) -> dict:
             "theme_cluster": "astock_daily_recap",
         }
     label = SLOT_LABEL.get(slot, slot)
-    return {
+    plan: dict = {
         "slot": slot,
         "title_hint": f"{d.isoformat()} {label}",
         "angle": label,
         "theme_cluster": f"cursor_{slot}",
     }
+    if slot in ("domestic", "world") and should_skip_astock_market_today():
+        plan["offday_no_astock_recap"] = True
+        plan["angle"] = f"{label}；非交易日不写A股收盘/指数/4000点"
+    return plan
 
 
 _COMMON_RULES = """
@@ -347,6 +380,19 @@ _COMMON_RULES = """
 - 禁止股票代码、荐股、目标价、买卖建议、仓位建议
 - 全文中文 Markdown；文末一行：*免责声明：本文为信息梳理，不构成投资建议。*
 - 把完整 Markdown 正文直接输出，不要只给提纲，不要说「见附件」
+"""
+
+_OFFDAY_ASTOCK_BAN = """
+【非交易日约束（违反则视为失败）】
+今日 A 股休市，读者不会看到新收盘。本篇**禁止**写成大盘收评或把 A 股行情当主线：
+- 禁止写上证指数/深成指/创业板指/科创50 收盘点位、涨跌幅、成交额、涨跌家数
+- 禁止「站上4000点」「重回4000点」「沪指涨X%」「放量X万亿」等收评式表述（正文、标题、结语均不可）
+- 禁止把 A 股板块轮动、领涨领跌行业当作本篇重点
+- 只写本篇主线（宏观政策/监管/产业/国际事件）；若与股市有关，最多 1 句点到「风险偏好/流动性预期」，不写具体指数数字
+"""
+
+_OFFDAY_WORLD_ASTOCK_EXTRA = """
+- 「与中国的关联」禁止写 A 股指数收盘与成交额；可写宏观、产业链、大宗商品、汇率影响
 """
 
 _SLOT_PROMPTS: dict[str, str] = {
@@ -597,17 +643,24 @@ def run_cursor_draft(
     *,
     agent_id: str | None = None,
     on_assistant=None,
+    extra_prompt: str = "",
 ) -> tuple[str, str, str]:
     """调用 Cloud Agent 生成该槽位 Markdown 草稿。返回 (markdown, agent_id, status)。"""
     if slot not in _SLOT_PROMPTS:
         raise ValueError(f"未知槽位: {slot}")
-    today = date.today().isoformat()
-    raw = _SLOT_PROMPTS[slot]
+    today = china_today().isoformat()
+    raw = _slot_prompt(slot)
+    offday_note = ""
+    if slot in ("domestic", "world") and should_skip_astock_market_today():
+        offday_note = "（今日非 A 股交易日：禁止写指数收盘/4000点/成交额收评）\n"
     prompt = (
-        f"【当前日期参考】{today}（注意：A股大盘报盘要写最近一个已收盘交易日，未必是今天）\n"
+        f"【当前日期参考】{today}{offday_note}"
+        f"（注意：A股大盘报盘要写最近一个已收盘交易日，未必是今天）\n"
         f"【本任务类型】{SLOT_LABEL[slot]}\n\n"
         + raw
     )
+    if extra_prompt.strip():
+        prompt += f"\n\n{extra_prompt.strip()}\n"
     print(f"  ☁️  Cursor Cloud Agent · {SLOT_LABEL[slot]} · model={model_id()}", flush=True)
     if agent_id:
         run_id = create_run(agent_id, prompt)
@@ -647,6 +700,28 @@ def build_cursor_topic_research(
     markdown, agent_id, status = run_cursor_draft(
         slot, agent_id=agent_id, on_assistant=on_assistant,
     )
+    violations = _offday_draft_violations(slot, markdown)
+    if violations:
+        print(
+            f"  ⚠️  草稿含非交易日禁写内容（{', '.join(violations)}），要求 Agent 重写…",
+            flush=True,
+        )
+        fix = (
+            "【重写要求】上一版不合格：非 A 股交易日禁止写指数收盘、4000点、成交额、涨跌家数。"
+            "请删掉所有 A 股盘面数据，只保留本篇宏观/产业/国际主线，重新输出完整 Markdown。"
+        )
+        markdown, agent_id, status = run_cursor_draft(
+            slot,
+            agent_id=agent_id,
+            on_assistant=on_assistant,
+            extra_prompt=fix,
+        )
+        violations = _offday_draft_violations(slot, markdown)
+        if violations:
+            print(
+                f"  ⚠️  重写后仍含禁写内容（{', '.join(violations)}），继续流程但改编阶段会再拦截",
+                file=sys.stderr,
+            )
     if status != "FINISHED":
         print(f"  ⚠️  Agent 状态={status}，仍尝试用已返回正文继续", file=sys.stderr)
 

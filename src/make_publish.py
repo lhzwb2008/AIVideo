@@ -25,7 +25,7 @@ from cursor_daily_topics import (
     topic_plan_for_slot,
 )
 from paths import ROOT
-from publish_pipeline import log, process_topic
+from publish_pipeline import log, process_topic, recover_missing_forum_packs
 from locale_env import load_locale_env, locale_logs_dir
 from research import load_env
 
@@ -181,6 +181,7 @@ def main() -> int:
         for item in failed:
             log(f"  ✗ {SLOT_LABEL.get(item.get('slot'), '?')} → {item.get('error')}")
     if not args.draft_only:
+        recover_missing_forum_packs(made)
         log("\n" + cost_tracker.report_window(run_start, videos=len([m for m in made if m.get("video")])))
     return 0 if len(made) >= target and not failed else (1 if failed else 0)
 

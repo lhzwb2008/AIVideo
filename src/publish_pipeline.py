@@ -21,6 +21,7 @@ from publish_caption import (
     instagram_enabled,
     linkedin_enabled,
     print_manual_publish_pack,
+    shipinhao_enabled,
     tiktok_enabled,
     us_social_enabled,
     wechat_enabled,
@@ -78,6 +79,8 @@ def _auto_publish_platforms_label() -> str:
             names.append("LinkedIn")
     if bilibili_enabled():
         names.append("B站视频")
+    if shipinhao_enabled():
+        names.append("视频号")
     if eastmoney_enabled():
         names.append("东方财富")
     if xueqiu_enabled():
@@ -195,6 +198,21 @@ def publish_bilibili_api(
     if dry_run:
         return ""
     return _read_last_publish_url("last_bilibili_publish.json", "title")
+
+
+def publish_shipinhao_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    cmd = [
+        str(ROOT / "scripts" / "publish-shipinhao.sh"),
+        rel(video),
+        "--script",
+        rel(script_path),
+    ]
+    if dry_run:
+        cmd.append("--dry-run")
+    run(cmd, label="发布视频号")
+    if dry_run:
+        return ""
+    return _read_last_publish_url("last_tencent_publish.json", "title")
 
 
 def publish_tiktok_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
@@ -434,6 +452,19 @@ def publish_bilibili(
     )
 
 
+def publish_shipinhao(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    if not shipinhao_enabled():
+        return ""
+
+    def _do() -> str:
+        title = publish_shipinhao_api(video, script_path, dry_run=dry_run)
+        if title:
+            log(f"  [视频号] 已提交: {title}")
+        return title
+
+    return _publish_with_retry(_do, label="视频号", dry_run=dry_run)
+
+
 def _bilibili_non_retryable(exc: BaseException) -> bool:
     from sau_client import bilibili_video_upload_skippable
 
@@ -622,19 +653,63 @@ def archive_publish_bundle(video: Path, *, date_tag: str) -> dict[str, Path | No
     return {"video": video_target, "forum": forum_target}
 
 
+def recover_missing_forum_packs(made: list[dict]) -> None:
+    """批次结束后补救：有视频归档目录但缺 post.md 的，再尝试生成论坛图文。"""
+    if not made:
+        return
+    fixed = 0
+    for item in made:
+        video_rel = str(item.get("video") or "").strip()
+        script_rel = str(item.get("script") or "").strip()
+        if not video_rel or not script_rel:
+            continue
+        video = (ROOT / video_rel).resolve()
+        script_path = (ROOT / script_rel).resolve()
+        if not video.is_file() or not script_path.is_file():
+            continue
+        forum_dir = video.parent / video.stem
+        if (forum_dir / "post.md").is_file():
+            continue
+        title = item.get("title") or video.stem
+        log(f"\n[补救] 论坛图文缺失 post.md，重试：{title}")
+        if generate_forum_pack(script_path, video):
+            fixed += 1
+    if fixed:
+        log(f"[补救] 已补全 {fixed} 个论坛图文包")
+
+
 def generate_forum_pack(script_path: Path, video: Path) -> Path | None:
     if os.environ.get("AIVIDEO_FORUM_POST", "1").strip().lower() in ("0", "false", "no"):
         return None
-    try:
-        from forum_manual_pack import build_forum_pack, forum_dir_for_video
+    from forum_manual_pack import build_forum_pack, forum_dir_for_video
 
-        forum_dir = forum_dir_for_video(video)
-        build_forum_pack(script_path, video, forum_dir)
-        log(f"论坛图文：{rel(forum_dir)}/（post.md + cover.jpg + cover_landscape.jpg + images/）")
-        return forum_dir
-    except Exception as exc:  # noqa: BLE001
-        log(f"论坛图文生成跳过: {exc}")
-        return None
+    forum_dir = forum_dir_for_video(video)
+    rounds = max(1, int(os.environ.get("AIVIDEO_FORUM_PACK_ROUNDS", "3")))
+    pause = max(1.0, float(os.environ.get("AIVIDEO_FORUM_PACK_RETRY_PAUSE", "8")))
+    last_exc: Exception | None = None
+    for rnd in range(rounds):
+        allow_fallback = rnd == rounds - 1
+        try:
+            build_forum_pack(
+                script_path,
+                video,
+                forum_dir,
+                allow_fallback=allow_fallback,
+            )
+            post_md = forum_dir / "post.md"
+            if not post_md.is_file():
+                raise RuntimeError(f"论坛图文未生成 post.md: {forum_dir}")
+            log(f"论坛图文：{rel(forum_dir)}/（post.md + cover.jpg + cover_landscape.jpg + images/）")
+            return forum_dir
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if rnd + 1 < rounds:
+                log(
+                    f"论坛图文生成失败（{rnd + 1}/{rounds}），{pause:.0f}s 后重试：{exc}"
+                )
+                time.sleep(pause)
+    log(f"论坛图文生成失败（已重试 {rounds} 次）: {last_exc}")
+    return None
 
 
 def pipeline_after_script(
@@ -672,6 +747,7 @@ def pipeline_after_script(
     xueqiu_title = ""
     wechat_title = ""
     zhihu_title = ""
+    shipinhao_title = ""
 
     if dry_run:
         log(f"\n=== [{index}/{target}] 预演 API 发布 ===")
@@ -682,6 +758,7 @@ def pipeline_after_script(
             facebook_ok = publish_facebook_reels(video, script_path, dry_run=True)
             linkedin_ok = publish_linkedin(video, script_path, dry_run=True)
         bilibili_title = publish_bilibili(video, script_path, dry_run=True)
+        shipinhao_title = publish_shipinhao(video, script_path, dry_run=True)
         forum_for_bili = video.parent / video.stem
         if (forum_for_bili / "post.md").is_file():
             wechat_title = publish_wechat(forum_for_bili, dry_run=True)
@@ -700,6 +777,7 @@ def pipeline_after_script(
             xueqiu_title=xueqiu_title,
             wechat_title=wechat_title,
             zhihu_title=zhihu_title,
+            shipinhao_title=shipinhao_title,
             skip_auto_note=True,
         )
         return {
@@ -713,6 +791,7 @@ def pipeline_after_script(
             "facebook": facebook_ok,
             "linkedin": linkedin_ok,
             "bilibili_title": bilibili_title,
+            "shipinhao_title": shipinhao_title,
             "eastmoney_title": eastmoney_title,
             "xueqiu_title": xueqiu_title,
             "wechat_title": wechat_title,
@@ -722,6 +801,7 @@ def pipeline_after_script(
     if (
         _intl_video_publish_enabled()
         or bilibili_enabled()
+        or shipinhao_enabled()
         or wechat_enabled()
         or eastmoney_enabled()
         or xueqiu_enabled()
@@ -736,6 +816,7 @@ def pipeline_after_script(
         facebook_ok = publish_facebook_reels(video, script_path, dry_run=False)
         linkedin_ok = publish_linkedin(video, script_path, dry_run=False)
     bilibili_title = publish_bilibili(video, script_path, dry_run=False)
+    shipinhao_title = publish_shipinhao(video, script_path, dry_run=False)
 
     append_history_fn(script_path)
     date_tag = datetime.now().strftime("%Y%m%d")
@@ -760,6 +841,7 @@ def pipeline_after_script(
         xueqiu_title=xueqiu_title,
         wechat_title=wechat_title,
         zhihu_title=zhihu_title,
+        shipinhao_title=shipinhao_title,
     )
 
     return {
@@ -770,6 +852,7 @@ def pipeline_after_script(
         "published": bool(
             (_locale_en() and (youtube_url or tiktok_url or instagram_ok or facebook_ok or linkedin_ok))
             or bilibili_title
+            or shipinhao_title
             or wechat_title
             or eastmoney_title
             or xueqiu_title
@@ -781,6 +864,7 @@ def pipeline_after_script(
         "facebook": facebook_ok,
         "linkedin": linkedin_ok,
         "bilibili_title": bilibili_title,
+        "shipinhao_title": shipinhao_title,
         "wechat_title": wechat_title,
         "eastmoney_title": eastmoney_title,
         "xueqiu_title": xueqiu_title,
