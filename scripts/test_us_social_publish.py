@@ -85,14 +85,6 @@ def _ensure_patchright() -> None:
         raise SocialTestError("未安装 patchright，请先 ./setup-sau.sh") from exc
 
 
-def _http_proxy() -> str:
-    for key in ("US_SOCIAL_HTTP_PROXY", "YOUTUBE_HTTP_PROXY", "HTTPS_PROXY", "https_proxy"):
-        val = _env(key)
-        if val:
-            return val
-    return ""
-
-
 def _launch_kwargs(*, headed: bool) -> dict:
     launch = {
         "headless": not headed,
@@ -103,9 +95,6 @@ def _launch_kwargs(*, headed: bool) -> dict:
             "--window-size=1440,900",
         ],
     }
-    proxy = _http_proxy()
-    if proxy:
-        launch["proxy"] = {"server": proxy}
     chrome = _chrome_path()
     if chrome:
         launch["executable_path"] = chrome
@@ -251,10 +240,7 @@ async def login_platform(platform: str, *, force: bool = False, manual: bool = F
         "facebook": "https://www.facebook.com/login/",
         "linkedin": "https://www.linkedin.com/login",
     }
-    proxy = _http_proxy()
     print(f"\n[{PLATFORM_LABEL[platform]}] 打开浏览器，请手动完成登录…", flush=True)
-    if proxy:
-        print(f"  代理: {proxy}", flush=True)
     if manual:
         print("  手动模式：在浏览器完成登录后，回到终端按 Enter 保存 cookie", flush=True)
     else:
@@ -272,7 +258,6 @@ async def login_platform(platform: str, *, force: bool = False, manual: bool = F
             locale="en-US",
             timezone_id="America/New_York",
             viewport={"width": 1440, "height": 900},
-            proxy=launch.get("proxy"),
             executable_path=launch.get("executable_path"),
             channel=None if launch.get("executable_path") else launch.get("channel", "chrome"),
             args=launch.get("args", []),
@@ -1601,8 +1586,6 @@ async def _open_publish_context(p, platform: str, *, headed: bool):
             "viewport": {"width": 1440, "height": 900},
             "args": launch.get("args", []),
         }
-        if launch.get("proxy"):
-            kw["proxy"] = launch["proxy"]
         if launch.get("executable_path"):
             kw["executable_path"] = launch["executable_path"]
         else:

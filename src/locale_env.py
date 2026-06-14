@@ -17,28 +17,62 @@ def normalize_locale(raw: str | None = None) -> str:
     return "zh"
 
 
-def _apply_env_file(path: Path, *, force: bool) -> None:
+_SECTION_RE = __import__("re").compile(r"^#==\s*section:\s*(\w+)\s*==")
+
+# 仅在某 locale 分块里定义；切换语言时需清掉，避免从另一套流水线残留
+_LOCALE_SCOPED_KEYS = (
+    "AIVIDEO_BRAND_NAME",
+    "AIVIDEO_BRAND_TAGLINE",
+    "AIVIDEO_OUTRO_HEADLINE",
+    "AIVIDEO_OUTRO_SUBLINE",
+    "AIVIDEO_OUTRO_NARRATION",
+    "AIVIDEO_OUTRO_NARRATION_VARIANTS",
+)
+
+
+def _parse_env_line(line: str) -> tuple[str, str] | None:
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        return None
+    key, _, val = line.partition("=")
+    key = key.strip()
+    val = val.strip().strip('"').strip("'")
+    if not key:
+        return None
+    return key, val
+
+
+def _apply_env_sections(path: Path, want_locale: str, *, force_overlay: bool) -> None:
+    """按 .env 分块加载，行为与 scripts/load-dotenv.sh 一致。"""
     if not path.is_file():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    section = "shared"
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        m = _SECTION_RE.match(raw.strip())
+        if m:
+            section = m.group(1).lower()
             continue
-        key, _, val = line.partition("=")
-        key = key.strip()
-        val = val.strip().strip('"').strip("'")
-        if not key:
+        parsed = _parse_env_line(raw)
+        if not parsed:
             continue
-        if force or key not in os.environ:
-            os.environ[key] = val
+        key, val = parsed
+        if section == "shared":
+            if key not in os.environ:
+                os.environ[key] = val
+        elif section == want_locale:
+            if force_overlay or key not in os.environ:
+                os.environ[key] = val
 
 
 def load_locale_env(locale: str | None = None, *, force_overlay: bool = True) -> str:
-    """加载 .env（共享密钥）+ .env.{zh|en}（语言专属配置，默认覆盖同名项）。"""
+    """加载 .env 分块：shared + 当前 locale（与 load-dotenv.sh 一致）。"""
     loc = normalize_locale(locale)
     os.environ["AIVIDEO_LOCALE"] = loc
-    _apply_env_file(ROOT / ".env", force=False)
-    _apply_env_file(ROOT / f".env.{loc}", force=force_overlay)
+    for key in _LOCALE_SCOPED_KEYS:
+        os.environ.pop(key, None)
+    _apply_env_sections(ROOT / ".env", loc, force_overlay=force_overlay)
+    # 兼容旧版独立文件 .env.zh / .env.en
+    _apply_env_sections(ROOT / f".env.{loc}", loc, force_overlay=True)
     if loc == "zh":
         # 中文流水线走国内平台；YouTube/TikTok 仅 make-us-publish.sh（.env.en）
         os.environ["AIVIDEO_PUBLISH_YOUTUBE"] = "0"

@@ -74,26 +74,16 @@ def token_path() -> Path:
     return credentials_dir() / f"{account_name()}_token.json"
 
 
-def http_proxy_url() -> str:
-    """仅当 .env 显式设置 YOUTUBE_HTTP_PROXY 时使用代理；不读系统 https_proxy。"""
-    return _env("YOUTUBE_HTTP_PROXY")
-
-
-def _apply_http_proxy(sess) -> None:
-    """给 requests / OAuth2Session 挂代理；trust_env=False 避免误用终端 http_proxy。"""
-    sess.trust_env = False
-    proxy = http_proxy_url()
-    if proxy:
-        sess.proxies.update({"http": proxy, "https": proxy})
+def _wrap_request_timeout(sess) -> None:
     sess.request = _wrap_request_with_timeout(sess.request)  # type: ignore[method-assign]
 
 
 def build_requests_session():
-    """直连 Google API；trust_env=False 避免误用终端里的 http_proxy。"""
+    """构建带超时的 requests Session（走系统网络，不额外配置代理）。"""
     import requests
 
     sess = requests.Session()
-    _apply_http_proxy(sess)
+    _wrap_request_timeout(sess)
     return sess
 
 
@@ -116,8 +106,7 @@ def refresh_credentials(creds) -> None:
         if "SSL" in exc_name or "Transport" in exc_name:
             raise YouTubeAuthError(
                 "刷新 token 时 SSL/网络异常（oauth2.googleapis.com）。"
-                " 请确认本机可直连 Google；勿在终端设置 http_proxy。"
-                " 仅在国内无法访问时再于 .env 设置 YOUTUBE_HTTP_PROXY。"
+                " 请确认本机网络/VPN 可访问 Google 后重试。"
             ) from exc
         raise
 
@@ -172,8 +161,7 @@ def _load_credentials():
         )
 
     flow = InstalledAppFlow.from_client_secrets_file(str(secrets), SCOPES)
-    # OAuth2Session 本身就是 requests.Session，不能 flow.oauth2session.session = ...
-    _apply_http_proxy(flow.oauth2session)
+    _wrap_request_timeout(flow.oauth2session)
     port_raw = _env("YOUTUBE_OAUTH_PORT", "0")
     port = int(port_raw) if port_raw.isdigit() else 0
     timeout_raw = _env("YOUTUBE_OAUTH_TIMEOUT", "180")
@@ -181,9 +169,6 @@ def _load_credentials():
         timeout_seconds = max(60, int(timeout_raw))
     except ValueError:
         timeout_seconds = 180
-    proxy = http_proxy_url()
-    if proxy:
-        print(f"OAuth 走代理: {proxy}", flush=True)
     print(
         "正在打开浏览器授权… 浏览器显示完成后终端应几秒内出现 ✅；"
         "若仍卡住请重跑 ./youtube-login.sh --force",
@@ -229,23 +214,11 @@ def run_check() -> int:
 
 
 def _build_http(creds):
-    """googleapiclient 默认 httplib2 不读 http_proxy，需显式配置。"""
     import httplib2
     from google_auth_httplib2 import AuthorizedHttp
 
     timeout = _http_timeout()
-    proxy_url = http_proxy_url()
-    if proxy_url:
-        from urllib.parse import urlparse
-
-        parsed = urlparse(proxy_url)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or (7897 if host == "127.0.0.1" else 8080)
-        # 3 = HTTP proxy（不依赖 PySocks）
-        proxy_info = httplib2.ProxyInfo(3, host, port)
-        http = httplib2.Http(proxy_info=proxy_info, timeout=timeout)
-    else:
-        http = httplib2.Http(timeout=timeout)
+    http = httplib2.Http(timeout=timeout)
     return AuthorizedHttp(creds, http=http)
 
 

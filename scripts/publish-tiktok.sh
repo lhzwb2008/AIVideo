@@ -4,9 +4,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/load-dotenv.sh" "${AIVIDEO_LOCALE:-en}"
-if [[ -n "${TIKTOK_HTTP_PROXY:-}" ]]; then
-  export http_proxy="$TIKTOK_HTTP_PROXY" https_proxy="$TIKTOK_HTTP_PROXY"
-fi
 
 PY="$ROOT/.venv/bin/python3"
 if [[ ! -x "$PY" ]]; then

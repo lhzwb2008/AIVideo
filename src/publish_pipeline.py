@@ -288,7 +288,7 @@ def _retry_config() -> tuple[int, int]:
 
 
 def _publish_with_retry(do_fn, *, label: str, dry_run: bool) -> str:
-    """发布失败不退出：提示翻墙并一直重试，直到成功或达到上限。
+    """发布失败不退出：提示检查网络并一直重试，直到成功或达到上限。
 
     AIVIDEO_PUBLISH_MAX_RETRIES<=0（默认）= 无限重试；交互式终端可直接回车立即重试、
     输入 s 跳过本平台（本轮后续视频同渠道也跳过）。
@@ -308,7 +308,7 @@ def _publish_with_retry(do_fn, *, label: str, dry_run: bool) -> str:
                 log(f"  ↳ [{label}] 已达重试上限，跳过自动发布（不影响成片/手动发布）。")
                 return ""
             remain = f"剩余 {max_attempts - attempt} 次" if max_attempts > 0 else "将持续重试"
-            log(f"  🔌 [{label}] 请确认已【翻墙/开启代理】，{sleep_s}s 后自动重试…（{remain}）")
+            log(f"  🔌 [{label}] 请确认网络/VPN 正常，{sleep_s}s 后自动重试…（{remain}）")
             if sys.stdin and sys.stdin.isatty():
                 log(f"     （回车=立即重试；输入 s 回车=跳过 {label}）")
                 if _wait_or_skip(sleep_s):

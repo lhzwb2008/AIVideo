@@ -46,5 +46,11 @@ _load_env() {
 }
 
 ROOT="${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# 切换 locale 时清掉另一套流水线的品牌/尾页变量，避免同 shell 先跑 en 再跑 zh 时残留英文
+for _k in AIVIDEO_BRAND_NAME AIVIDEO_BRAND_TAGLINE \
+  AIVIDEO_OUTRO_HEADLINE AIVIDEO_OUTRO_SUBLINE \
+  AIVIDEO_OUTRO_NARRATION AIVIDEO_OUTRO_NARRATION_VARIANTS; do
+  unset "$_k" 2>/dev/null || true
+done
 _load_env "$ROOT/.env" "$_locale"
 export AIVIDEO_LOCALE="$_locale"

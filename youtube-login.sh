@@ -8,10 +8,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/load-dotenv.sh" "${AIVIDEO_LOCALE:-en}"
-# 默认直连；仅当 .env 显式设置 YOUTUBE_HTTP_PROXY 时走代理（勿依赖终端 http_proxy）
-if [[ -n "${YOUTUBE_HTTP_PROXY:-}" ]]; then
-  echo "使用 YOUTUBE_HTTP_PROXY=$YOUTUBE_HTTP_PROXY"
-fi
 
 PY="$ROOT/.venv/bin/python3"
 if [[ ! -x "$PY" ]]; then
@@ -32,9 +28,6 @@ if [[ "$ACTION" == "login" && ${#EXTRA[@]} -eq 0 ]]; then
   TOKEN="$ROOT/credentials/youtube/${YOUTUBE_ACCOUNT:-main}_token.json"
   if [[ -f "$TOKEN" ]]; then
     echo "提示: token 若已过期，请用 ./youtube-login.sh --force 重新授权" >&2
-  fi
-  if [[ -z "${YOUTUBE_HTTP_PROXY:-}" ]]; then
-    echo "提示: 国内访问 Google 需在 .env 设置 YOUTUBE_HTTP_PROXY=http://127.0.0.1:7897" >&2
   fi
 fi
 

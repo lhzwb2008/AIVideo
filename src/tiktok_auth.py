@@ -89,17 +89,7 @@ def _load_client_config() -> dict:
 def _http_session():
     import requests
 
-    session = requests.Session()
-    proxy = (
-        _env("TIKTOK_HTTP_PROXY")
-        or _env("https_proxy")
-        or _env("HTTPS_PROXY")
-        or _env("http_proxy")
-        or _env("HTTP_PROXY")
-    )
-    if proxy:
-        session.proxies.update({"http": proxy, "https": proxy})
-    return session
+    return requests.Session()
 
 
 def _http_timeout() -> int:
