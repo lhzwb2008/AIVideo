@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from paths import ROOT
@@ -17,7 +18,7 @@ def normalize_locale(raw: str | None = None) -> str:
     return "zh"
 
 
-_SECTION_RE = __import__("re").compile(r"^#==\s*section:\s*(\w+)\s*==")
+_SECTION_RE = re.compile(r"^#==\s*section:\s*(\w+)\s*==")
 
 # 仅在某 locale 分块里定义；切换语言时需清掉，避免从另一套流水线残留
 _LOCALE_SCOPED_KEYS = (

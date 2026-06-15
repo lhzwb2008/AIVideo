@@ -61,7 +61,7 @@ def build_youtube_fields(script: dict | None) -> dict:
         desc_lines.append(hash_line)
     disclaimer = _env(
         "YOUTUBE_DISCLAIMER",
-        "For education only. Not investment advice." if _locale_en() else "本内容仅供学习交流，不构成投资建议。",
+        "For education only. Not investment advice." if _locale_en() else "",
     )
     if disclaimer:
         desc_lines.append(disclaimer)

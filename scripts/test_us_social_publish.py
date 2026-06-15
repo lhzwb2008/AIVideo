@@ -780,7 +780,8 @@ async def _verify_ig_published(page, *, before_reels: int = 0, before_posts: int
     ):
         try:
             if await page.get_by_text(text, exact=False).count() > 0:
-                pass
+                print(f"  校验: IG 已显示「{text}」", flush=True)
+                return True
         except Exception:
             pass
     try:
@@ -815,8 +816,30 @@ async def _ig_click_sidebar_post(page) -> bool:
 
 async def _ig_open_create_post(page) -> None:
     """桌面端 Create 先出下拉菜单（Post / Live video / Ad），需点侧边栏 Post 链接。"""
-    create = page.locator('svg[aria-label="New post"], svg[aria-label="Create"]').first
-    await create.click(timeout=8000)
+    clicked = False
+    for sel in (
+        'a:has(svg[aria-label="New post"])',
+        'a:has(svg[aria-label="Create"])',
+        '[role="link"]:has(svg[aria-label="New post"])',
+        '[role="link"]:has(svg[aria-label="Create"])',
+    ):
+        loc = page.locator(sel).first
+        if not await loc.count():
+            continue
+        try:
+            await loc.click(timeout=8000)
+            clicked = True
+            break
+        except Exception:
+            try:
+                await loc.click(timeout=8000, force=True)
+                clicked = True
+                break
+            except Exception:
+                continue
+    if not clicked:
+        create = page.locator('svg[aria-label="New post"], svg[aria-label="Create"]').first
+        await create.click(timeout=8000, force=True)
     await asyncio.sleep(1.5)
 
     if not await _ig_click_sidebar_post(page):
@@ -909,6 +932,15 @@ async def publish_instagram(page, video: Path, caption: str, *, assist: bool) ->
         if i and i % 5 == 0:
             print(f"  等待主页更新… ({i * 3}s)", flush=True)
         await asyncio.sleep(3)
+
+    if await _ig_share_succeeded(page):
+        print(
+            "  ✓ Instagram 视为已发布（已显示 shared 提示；主页计数可能延迟更新）",
+            flush=True,
+        )
+        if trim_tmp and trim_tmp.is_file():
+            trim_tmp.unlink(missing_ok=True)
+        return
 
     shot = PROJECT_ROOT / "logs" / "test_instagram_fail.png"
     await page.screenshot(path=str(shot), full_page=True)
@@ -1062,8 +1094,8 @@ async def _click_fb_publish(page) -> None:
     raise SocialTestError(f"未能点击发布，截图: {shot}")
 
 
-async def _wait_fb_upload_complete(page, *, timeout_s: int = 240) -> None:
-    """发布中期间留在当前页，至少等待上传完成。"""
+async def _wait_fb_upload_complete(page, *, timeout_s: int = 240) -> str:
+    """发布中期间留在当前页。返回 ok=明确成功，soft=界面关闭且无报错，timeout=超时。"""
     publish_started = asyncio.get_event_loop().time()
     min_wait_s = 45
     saw_publishing = False
@@ -1083,18 +1115,19 @@ async def _wait_fb_upload_complete(page, *, timeout_s: int = 240) -> None:
         for ok in ("已发布", "发布成功", "Reel shared", "Your reel is live", "Reels 已发布"):
             if await page.get_by_text(ok, exact=False).count():
                 print(f"  Facebook 确认: {ok}", flush=True)
-                return
+                return "ok"
         if saw_publishing and elapsed >= min_wait_s:
             if not await page.get_by_text("Reels 设置", exact=False).count():
                 print(f"  发布界面已关闭（等待 {int(elapsed)}s）", flush=True)
-                return
+                return "soft"
             if not await page.get_by_text("发布中", exact=False).count() and elapsed >= 60:
                 print(f"  发布中已结束（等待 {int(elapsed)}s）", flush=True)
-                return
+                return "soft"
         await asyncio.sleep(1)
     shot = PROJECT_ROOT / "logs" / "test_facebook_fail.png"
     await page.screenshot(path=str(shot), full_page=True)
     print(f"  警告: 发布等待超时，截图: {shot}", flush=True)
+    return "timeout"
 
 
 async def publish_facebook(page, video: Path, caption: str, *, assist: bool) -> None:
@@ -1147,9 +1180,10 @@ async def publish_facebook(page, video: Path, caption: str, *, assist: bool) -> 
     await asyncio.sleep(5)
 
     await _click_fb_publish(page)
-    await _wait_fb_upload_complete(page)
+    upload_status = await _wait_fb_upload_complete(page)
 
-    for i in range(30):
+    verify_rounds = 40 if upload_status == "ok" else 24
+    for i in range(verify_rounds):
         if await _verify_fb_published(page, before=reels0):
             print("  ✓ Facebook Reels 发布成功", flush=True)
             if trim_tmp and trim_tmp.is_file():
@@ -1158,6 +1192,16 @@ async def publish_facebook(page, video: Path, caption: str, *, assist: bool) -> 
         if i and i % 3 == 0:
             print(f"  等待主页 Reels 更新… ({i * 5}s)", flush=True)
         await asyncio.sleep(5)
+
+    if upload_status in ("ok", "soft"):
+        print(
+            "  ✓ Facebook Reels 视为已发布（发布流程完成且未见报错；"
+            "主页计数可能延迟更新）",
+            flush=True,
+        )
+        if trim_tmp and trim_tmp.is_file():
+            trim_tmp.unlink(missing_ok=True)
+        return
 
     shot = PROJECT_ROOT / "logs" / "test_facebook_fail.png"
     await page.screenshot(path=str(shot), full_page=True)

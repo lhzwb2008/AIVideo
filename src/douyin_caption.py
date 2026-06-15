@@ -177,10 +177,10 @@ def _normalize_publish_tags(script: dict | None, *, max_tags: int = 3) -> list[s
 
 
 def _build_publish_desc(script: dict | None, raw_title: str, brand: str) -> str:
-    """简介：封面副标题或标题 + 一句合规说明 + 短品牌署名，无关键词堆砌。"""
+    """简介：封面副标题或标题 + 短品牌署名，无关键词堆砌。"""
     subtitle = _cover_subtitle(script)
     lead = subtitle or raw_title
-    bits = [lead, "内容仅为信息梳理，不构成投资建议。"]
+    bits = [lead]
     if brand:
         bits.append(f"——{brand}")
     return _strip_urls(" ".join(bits))

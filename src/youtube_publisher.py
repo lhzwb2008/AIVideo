@@ -118,6 +118,65 @@ def _set_thumbnail_with_retry(
         raise last_exc
 
 
+def _upload_video_requests(video_path: Path, body: dict) -> dict:
+    """走 requests 的 resumable 上传，绕开 httplib2 的 RedirectMissingLocation。"""
+    from youtube_auth import _load_credentials, build_requests_session
+
+    creds = _load_credentials()
+    if not creds.valid:
+        refresh_credentials(creds)
+    session = build_requests_session()
+
+    timeout = 600
+    try:
+        timeout = max(60, int(_env("YOUTUBE_HTTP_TIMEOUT", "600")))
+    except ValueError:
+        pass
+
+    file_size = video_path.stat().st_size
+
+    init_url = (
+        "https://youtube.googleapis.com/upload/youtube/v3/videos"
+        "?uploadType=resumable&part=snippet,status"
+    )
+    init_headers = {
+        "Authorization": f"Bearer {creds.token}",
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": "video/mp4",
+        "X-Upload-Content-Length": str(file_size),
+    }
+    init = session.post(init_url, headers=init_headers, json=body, timeout=timeout)
+    if init.status_code >= 400:
+        raise YouTubePublishError(
+            f"resumable init HTTP {init.status_code}: {init.text[:500]}"
+        )
+    session_url = init.headers.get("Location") or init.headers.get("location")
+    if not session_url:
+        raise YouTubePublishError("resumable init 未返回上传会话 URL（Location 头）")
+
+    print(f"  上传中…（{file_size // 1024} KB）", flush=True)
+    put_headers = {
+        "Authorization": f"Bearer {creds.token}",
+        "Content-Type": "video/mp4",
+        "Content-Length": str(file_size),
+    }
+    with video_path.open("rb") as fh:
+        resp = session.put(
+            session_url,
+            headers=put_headers,
+            data=fh,
+            timeout=timeout,
+        )
+    if resp.status_code not in (200, 201):
+        raise YouTubePublishError(
+            f"视频上传 HTTP {resp.status_code}: {resp.text[:500]}"
+        )
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise YouTubePublishError(f"上传成功但响应非 JSON: {resp.text[:300]}") from exc
+
+
 def upload_video(
     video_path: Path,
     *,
@@ -159,25 +218,9 @@ def upload_video(
     if tags:
         body["snippet"]["tags"] = [t[:30] for t in tags[:30] if t.strip()]
 
+    # httplib2 resumable 上传偶发 RedirectMissingLocation，默认走 requests。
+    response = _upload_video_requests(video_path, body)
     youtube = build_youtube_service()
-    media = MediaFileUpload(
-        str(video_path),
-        mimetype="video/mp4",
-        resumable=True,
-        chunksize=1024 * 1024 * 8,
-    )
-    request = youtube.videos().insert(
-        part="snippet,status",
-        body=body,
-        media_body=media,
-    )
-
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status:
-            pct = int(status.progress() * 100)
-            print(f"  上传进度: {pct}%", flush=True)
 
     video_id = response.get("id") or ""
     if not video_id:

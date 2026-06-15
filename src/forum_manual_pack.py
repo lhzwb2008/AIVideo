@@ -13,11 +13,7 @@ from paths import ROOT
 from research import extract_json, load_env
 from text_client import chat_complete
 
-DISCLAIMER = (
-    "【风险提示】以上内容仅供学习交流，不构成任何投资建议。"
-    "市场有风险，投资需谨慎。"
-    "文中数据与观点仅供参考，请独立判断。"
-)
+DISCLAIMER = ""
 
 # 财富号/雪球：弱化标题党、连板炒作等表述
 _FORUM_TITLE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
@@ -776,7 +772,7 @@ def _render_forum_markdown(title: str, sections: list[dict]) -> str:
         if image:
             lines.append(f"**【插入配图 {i}】** `images/{i:02d}.jpg`")
             lines.append("")
-    if not has_risk_section:
+    if not has_risk_section and DISCLAIMER.strip():
         lines.extend(["---", "", DISCLAIMER, ""])
     return "\n".join(lines)
 
