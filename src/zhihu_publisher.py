@@ -115,7 +115,7 @@ async def _open_draft_by_title(page, title: str) -> bool:
     if not snippet:
         return False
     candidates = [
-        page.locator(f'a:has-text("{snippet}")').first,
+        page.locator("a").filter(has_text=snippet).first,
         page.get_by_text(snippet, exact=False).first,
         page.locator('[class*="Draft"]').filter(has_text=snippet).first,
     ]

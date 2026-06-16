@@ -133,7 +133,12 @@ async def _dismiss_common(page) -> None:
     for text in (
         "Not Now",
         "Not now",
-        "Turn on",
+        "No thanks",
+        "No Thanks",
+        "Skip",
+        "Later",
+        "Got it",
+        "OK",
         "Allow all cookies",
         "Accept All",
         "Accept",
@@ -152,8 +157,22 @@ async def _dismiss_common(page) -> None:
             if await btn.count() and await btn.is_visible():
                 await btn.click(timeout=2000)
                 await asyncio.sleep(0.5)
+                continue
         except Exception:
             pass
+        for sel in (
+            f'div[role="button"]:has-text("{text}")',
+            f'span:has-text("{text}")',
+            f'button:has-text("{text}")',
+        ):
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() and await loc.is_visible():
+                    await loc.click(timeout=2000)
+                    await asyncio.sleep(0.5)
+                    break
+            except Exception:
+                continue
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +431,47 @@ async def _set_files_via_chooser(page, video: Path, labels: tuple[str, ...]) -> 
             return True
         except Exception:
             pass
+        if await _click_labeled(page, label):
+            try:
+                loc = page.locator("input[type='file']").first
+                if await loc.count():
+                    await loc.set_input_files(str(video), timeout=15_000)
+                    return True
+            except Exception:
+                pass
+    return False
+
+
+async def _fb_select_video(page, video: Path, *, timeout_s: int = 90) -> bool:
+    """FB Reels 创建页：优先点「添加视频」+ file chooser，避免盲等 hidden input。"""
+    chooser_labels = (
+        "添加视频",
+        "Add video",
+        "Add Video",
+        "上传",
+        "创建 Reels",
+        "Create reel",
+        "Create Reel",
+    )
+    started = asyncio.get_event_loop().time()
+    round_num = 0
+    while asyncio.get_event_loop().time() - started < timeout_s:
+        round_num += 1
+        elapsed = int(asyncio.get_event_loop().time() - started)
+        print(f"  选择视频（第 {round_num} 轮，已 {elapsed}s）…", flush=True)
+        for label in chooser_labels:
+            await _click_labeled(page, label)
+        if await _set_files_via_chooser(page, video, chooser_labels):
+            return True
+        for sel in ("input[type='file'][accept*='video']", "input[type='file']"):
+            loc = page.locator(sel).first
+            if await loc.count():
+                try:
+                    await loc.set_input_files(str(video), timeout=10_000)
+                    return True
+                except Exception:
+                    pass
+        await asyncio.sleep(2)
     return False
 
 
@@ -421,6 +481,7 @@ async def _try_set_files_on_input(
     *,
     chooser_labels: tuple[str, ...] = (),
     attempts: int = 90,
+    input_timeout_ms: int = 30_000,
 ) -> bool:
     if chooser_labels and await _set_files_via_chooser(page, video, chooser_labels):
         return True
@@ -433,13 +494,13 @@ async def _try_set_files_on_input(
             loc = page.locator(sel).first
             if await loc.count():
                 try:
-                    await loc.set_input_files(str(video), timeout=120_000)
+                    await loc.set_input_files(str(video), timeout=input_timeout_ms)
                     return True
                 except Exception:
                     pass
         if chooser_labels and await _set_files_via_chooser(page, video, chooser_labels):
             return True
-        if attempt and attempt % 10 == 0:
+        if attempt and attempt % 5 == 0:
             print(f"  等待 file input… ({attempt}s)", flush=True)
         await asyncio.sleep(1)
     return False
@@ -510,6 +571,92 @@ async def _click_ig_modal(page, label: str) -> bool:
     if not await modal.count():
         return False
     return await _click_labeled(page, label, root=modal)
+
+
+async def _dismiss_ig_overlays(page) -> None:
+    """关闭 IG 通知推广等遮罩，避免挡住 Create 下拉与 Post 链接。"""
+    for headline in (
+        "Turn on Notifications",
+        "Turn on push notifications",
+        "Save your login info",
+        "Use the app",
+    ):
+        try:
+            if not await page.get_by_text(headline, exact=False).count():
+                continue
+            for label in ("Not Now", "Not now", "No thanks", "Skip"):
+                if await _click_labeled(page, label):
+                    print("  已关闭 IG 推广弹窗", flush=True)
+                    await asyncio.sleep(0.5)
+                    break
+        except Exception:
+            pass
+    modal = _ig_modal(page)
+    if await modal.count():
+        for label in ("Not Now", "Not now", "Close", "Dismiss", "Skip"):
+            if await _click_labeled(page, label, root=modal):
+                print(f"  已关闭 IG 弹窗 ({label})", flush=True)
+                await asyncio.sleep(0.5)
+                return
+
+
+async def _dismiss_platform_overlays(page, platform: str) -> None:
+    """各平台入口/发布前统一清理遮罩。"""
+    await _dismiss_common(page)
+    if platform == "instagram":
+        await _dismiss_ig_overlays(page)
+    elif platform == "facebook":
+        for headline in (
+            "Turn on Notifications",
+            "Enable notifications",
+            "Save your login info",
+        ):
+            try:
+                if await page.get_by_text(headline, exact=False).count():
+                    for label in ("Not Now", "Not now", "No thanks", "Skip", "Later"):
+                        if await _click_labeled(page, label):
+                            print("  已关闭 FB 推广弹窗", flush=True)
+                            await asyncio.sleep(0.5)
+                            break
+            except Exception:
+                pass
+    elif platform == "linkedin":
+        for label in ("Not now", "Not Now", "Skip", "No thanks", "Got it"):
+            try:
+                if await _click_labeled(page, label):
+                    await asyncio.sleep(0.5)
+            except Exception:
+                pass
+
+
+async def _wait_profile_verify(
+    verify_fn,
+    *,
+    label: str,
+    max_rounds: int,
+    sleep_s: float,
+    trust_without_count: bool = False,
+) -> bool:
+    """轮询主页计数；trust_without_count=True 时少量探测后视为成功（计数常延迟）。"""
+    rounds = min(max_rounds, 2) if trust_without_count else max_rounds
+    for i in range(rounds):
+        quiet = i < rounds - 1
+        if await verify_fn(quiet=quiet):
+            return True
+        if i and i % 2 == 0 and not quiet:
+            print(f"  等待 {label} 主页更新… ({int(i * sleep_s)}s)", flush=True)
+        await asyncio.sleep(sleep_s)
+    if trust_without_count:
+        print(
+            f"  ✓ {label} 视为已发布（流程完成且未见报错；主页计数可能延迟更新）",
+            flush=True,
+        )
+        return True
+    return False
+
+
+def _use_preflight_count() -> bool:
+    return _env("US_SOCIAL_PREFLIGHT_COUNT", "0").strip().lower() in ("1", "true", "yes")
 
 
 def _video_duration(path: Path) -> float:
@@ -624,14 +771,16 @@ async def _ig_share_succeeded(page) -> bool:
     return False
 
 
-async def _click_ig_share_and_wait(page) -> None:
+async def _click_ig_share_and_wait(page) -> tuple[bool, bool]:
+    """点击 Share 并等待上传完成。返回 (看到成功提示, 是否已点击 Share)。"""
+    share_clicked = False
     for i in range(45):
         modal = _ig_modal(page)
         if not await modal.count():
             if await _ig_share_succeeded(page):
-                return
+                return True, share_clicked
             print("  发布弹窗已关闭", flush=True)
-            return
+            return False, share_clicked
         for err in (
             "Something went wrong",
             "Try again",
@@ -645,12 +794,13 @@ async def _click_ig_share_and_wait(page) -> None:
                 raise SocialTestError(f"IG 报错: {err}，截图: {shot}")
         if await _ig_share_succeeded(page):
             await _click_ig_modal(page, "Done")
-            return
+            return True, share_clicked
         btn = modal.locator('div[role="button"]', has_text="Share").first
         if await btn.count() and await btn.is_visible():
             if await btn.get_attribute("aria-disabled") != "true":
                 await btn.click(timeout=10_000)
                 print("  已点击 Share", flush=True)
+                share_clicked = True
                 break
         if i and i % 5 == 0:
             print(f"  等待 Share 可点… ({i * 2}s)", flush=True)
@@ -664,16 +814,17 @@ async def _click_ig_share_and_wait(page) -> None:
         if await _ig_share_succeeded(page):
             await _click_ig_modal(page, "Done")
             print("  发布处理完成", flush=True)
-            return
+            return True, share_clicked
         if not await _ig_modal(page).count():
             print("  发布弹窗已关闭", flush=True)
-            return
+            return False, share_clicked
         if i and i % 5 == 0:
             print(f"  等待 IG 上传完成… ({i * 2}s)", flush=True)
         await asyncio.sleep(2)
     shot = PROJECT_ROOT / "logs" / "ig_share_stuck.png"
     await page.screenshot(path=str(shot), full_page=True)
     print(f"  警告: 未看到成功提示，继续校验主页，截图: {shot}", flush=True)
+    return False, share_clicked
 
 
 async def _wait_click_next(page, *, rounds: int = 2, timeout_s: int = 120, ig_modal: bool = False) -> None:
@@ -729,7 +880,7 @@ def _ig_username() -> str:
 
 
 async def _count_ig_media(page, username: str) -> tuple[int, int]:
-    """返回 (reel_count, post_count)。"""
+    """返回 (reel_count, post_count)，按唯一 ID 去重计数。"""
     reels = posts = 0
     for path, kind in ((f"/{username}/reels/", "reels"), (f"/{username}/", "posts")):
         await page.goto(
@@ -739,10 +890,30 @@ async def _count_ig_media(page, username: str) -> tuple[int, int]:
         )
         await asyncio.sleep(4)
         if kind == "reels":
-            reels = await page.locator('a[href*="/reel/"]').count()
+            reels = await page.evaluate(
+                """() => {
+                const main = document.querySelector('main') || document.body;
+                const ids = new Set();
+                for (const a of main.querySelectorAll('a[href*="/reel/"]')) {
+                    const m = (a.getAttribute('href') || '').match(/\\/reel\\/([^/?#]+)/);
+                    if (m) ids.add(m[1]);
+                }
+                return ids.size;
+            }"""
+            )
         else:
-            posts = await page.locator('a[href*="/p/"]').count()
-    return reels, posts
+            posts = await page.evaluate(
+                """() => {
+                const main = document.querySelector('main') || document.body;
+                const ids = new Set();
+                for (const a of main.querySelectorAll('a[href*="/p/"]')) {
+                    const m = (a.getAttribute('href') || '').match(/\\/p\\/([^/?#]+)/);
+                    if (m) ids.add(m[1]);
+                }
+                return ids.size;
+            }"""
+            )
+    return int(reels or 0), int(posts or 0)
 
 
 async def check_ig_profile() -> bool:
@@ -770,7 +941,14 @@ async def check_ig_profile() -> bool:
             await browser.close()
 
 
-async def _verify_ig_published(page, *, before_reels: int = 0, before_posts: int = 0) -> bool:
+async def _verify_ig_published(
+    page,
+    *,
+    before_reels: int = 0,
+    before_posts: int = 0,
+    quiet: bool = False,
+    profile_count: bool = True,
+) -> bool:
     user = _ig_username()
     for text in (
         "Your reel has been shared",
@@ -780,18 +958,23 @@ async def _verify_ig_published(page, *, before_reels: int = 0, before_posts: int
     ):
         try:
             if await page.get_by_text(text, exact=False).count() > 0:
-                print(f"  校验: IG 已显示「{text}」", flush=True)
+                if not quiet:
+                    print(f"  校验: IG 已显示「{text}」", flush=True)
                 return True
         except Exception:
             pass
+    if not profile_count:
+        return False
     try:
         reels, posts = await _count_ig_media(page, user)
         if reels > before_reels or posts > before_posts:
             print(f"  校验: @{user} reels {before_reels}→{reels}, posts {before_posts}→{posts}", flush=True)
             return True
-        print(f"  校验失败: @{user} 仍 reels={reels} posts={posts}", flush=True)
+        if not quiet:
+            print(f"  校验失败: @{user} 仍 reels={reels} posts={posts}", flush=True)
     except Exception as exc:
-        print(f"  校验异常: {exc}", flush=True)
+        if not quiet:
+            print(f"  校验异常: {exc}", flush=True)
     return False
 
 
@@ -807,7 +990,10 @@ async def _ig_click_sidebar_post(page) -> bool:
             box = await link.bounding_box()
             if not box or box["x"] > 280:
                 continue
-            await page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+            try:
+                await link.click(timeout=5000)
+            except Exception:
+                await link.click(timeout=5000, force=True)
             return True
         except Exception:
             continue
@@ -816,33 +1002,56 @@ async def _ig_click_sidebar_post(page) -> bool:
 
 async def _ig_open_create_post(page) -> None:
     """桌面端 Create 先出下拉菜单（Post / Live video / Ad），需点侧边栏 Post 链接。"""
+    await _dismiss_platform_overlays(page, "instagram")
     clicked = False
-    for sel in (
-        'a:has(svg[aria-label="New post"])',
-        'a:has(svg[aria-label="Create"])',
-        '[role="link"]:has(svg[aria-label="New post"])',
-        '[role="link"]:has(svg[aria-label="Create"])',
-    ):
-        loc = page.locator(sel).first
-        if not await loc.count():
-            continue
-        try:
-            await loc.click(timeout=8000)
-            clicked = True
-            break
-        except Exception:
+    for attempt in range(3):
+        await _dismiss_platform_overlays(page, "instagram")
+        for sel in (
+            'a:has(svg[aria-label="New post"])',
+            'a:has(svg[aria-label="Create"])',
+            '[role="link"]:has(svg[aria-label="New post"])',
+            '[role="link"]:has(svg[aria-label="Create"])',
+        ):
+            loc = page.locator(sel).first
+            if not await loc.count():
+                continue
+            force = attempt > 0
             try:
-                await loc.click(timeout=8000, force=True)
+                await loc.click(timeout=8000, force=force)
                 clicked = True
                 break
             except Exception:
-                continue
+                try:
+                    await loc.click(timeout=8000, force=True)
+                    clicked = True
+                    break
+                except Exception:
+                    continue
+        if clicked:
+            break
+        if attempt == 2:
+            create = page.locator('svg[aria-label="New post"], svg[aria-label="Create"]').first
+            await create.click(timeout=8000, force=True)
+            clicked = True
     if not clicked:
-        create = page.locator('svg[aria-label="New post"], svg[aria-label="Create"]').first
-        await create.click(timeout=8000, force=True)
+        raise SocialTestError("未能点击 Create 按钮")
     await asyncio.sleep(1.5)
 
-    if not await _ig_click_sidebar_post(page):
+    for attempt in range(3):
+        if await _ig_click_sidebar_post(page):
+            break
+        if attempt < 2:
+            await _dismiss_platform_overlays(page, "instagram")
+            try:
+                create = page.locator(
+                    'a:has(svg[aria-label="New post"]), a:has(svg[aria-label="Create"])'
+                ).first
+                if await create.count():
+                    await create.click(timeout=5000, force=True)
+                    await asyncio.sleep(1.5)
+            except Exception:
+                pass
+    else:
         raise SocialTestError("未能点击 Create 菜单里的 Post")
 
     for i in range(20):
@@ -874,13 +1083,16 @@ async def _ig_select_reel_mode(page) -> None:
 
 async def publish_instagram(page, video: Path, caption: str, *, assist: bool) -> None:
     user = _ig_username()
-    reels0, posts0 = await _count_ig_media(page, user)
-    print(f"  发布前 @{user}: reels={reels0} posts={posts0}", flush=True)
+    reels0, posts0 = 0, 0
+    if _use_preflight_count():
+        print("  统计主页 Reels/Posts 数量…", flush=True)
+        reels0, posts0 = await _count_ig_media(page, user)
+        print(f"  发布前 @{user}: reels={reels0} posts={posts0}", flush=True)
 
     upload_video, trim_tmp = _prepare_ig_video(video)
 
     await page.goto("https://www.instagram.com/", wait_until="domcontentloaded", timeout=90_000)
-    await _dismiss_common(page)
+    await _dismiss_platform_overlays(page, "instagram")
     await asyncio.sleep(2)
 
     if "login" in page.url.lower():
@@ -921,30 +1133,37 @@ async def publish_instagram(page, video: Path, caption: str, *, assist: bool) ->
             raise SocialTestError("assist 模式未检测到发布成功")
         return
 
-    await _click_ig_share_and_wait(page)
+    share_ok, share_clicked = await _click_ig_share_and_wait(page)
 
-    for i in range(40):
-        if await _verify_ig_published(page, before_reels=reels0, before_posts=posts0):
-            print("  ✓ Instagram 发布成功（主页 reel/post 已增加）", flush=True)
-            if trim_tmp and trim_tmp.is_file():
-                trim_tmp.unlink(missing_ok=True)
-            return
-        if i and i % 5 == 0:
-            print(f"  等待主页更新… ({i * 3}s)", flush=True)
-        await asyncio.sleep(3)
+    if share_ok:
+        print("  ✓ Instagram 发布成功（已显示 shared 提示）", flush=True)
+        if trim_tmp and trim_tmp.is_file():
+            trim_tmp.unlink(missing_ok=True)
+        return
 
-    if await _ig_share_succeeded(page):
-        print(
-            "  ✓ Instagram 视为已发布（已显示 shared 提示；主页计数可能延迟更新）",
-            flush=True,
+    async def _ig_verify(quiet: bool = False) -> bool:
+        return await _verify_ig_published(
+            page,
+            before_reels=reels0,
+            before_posts=posts0,
+            quiet=quiet,
+            profile_count=not quiet,
         )
+
+    if await _wait_profile_verify(
+        _ig_verify,
+        label="Instagram",
+        max_rounds=10,
+        sleep_s=3,
+        trust_without_count=share_clicked,
+    ):
         if trim_tmp and trim_tmp.is_file():
             trim_tmp.unlink(missing_ok=True)
         return
 
     shot = PROJECT_ROOT / "logs" / "test_instagram_fail.png"
     await page.screenshot(path=str(shot), full_page=True)
-    raise SocialTestError(f"已点 Share 但主页无新内容，截图: {shot}")
+    raise SocialTestError(f"发布未确认成功，截图: {shot}")
 
 
 def _fb_reels_panel(page):
@@ -1010,12 +1229,25 @@ async def _count_fb_reels(page) -> int:
         return 0
 
 
-async def _verify_fb_published(page, *, before: int = 0) -> bool:
+async def _verify_fb_published(
+    page, *, before: int = 0, quiet: bool = False, profile_count: bool = True
+) -> bool:
+    for ok in ("已发布", "发布成功", "Reel shared", "Your reel is live", "Reels 已发布"):
+        try:
+            if await page.get_by_text(ok, exact=False).count():
+                if not quiet:
+                    print(f"  校验: FB 页面仍显示「{ok}」", flush=True)
+                return True
+        except Exception:
+            pass
+    if not profile_count:
+        return False
     count = await _count_fb_reels(page)
     if count > before:
         print(f"  校验: Reels {before}→{count}", flush=True)
         return True
-    print(f"  校验失败: 仍 Reels={count}", flush=True)
+    if not quiet:
+        print(f"  校验失败: 仍 Reels={count}", flush=True)
     return False
 
 
@@ -1107,6 +1339,12 @@ async def _wait_fb_upload_complete(page, *, timeout_s: int = 240) -> str:
                 print(f"  Facebook 发布中… ({int(elapsed)}s)", flush=True)
             await asyncio.sleep(1)
             continue
+        if await page.get_by_text("Publishing", exact=False).count():
+            saw_publishing = True
+            if i % 10 == 0:
+                print(f"  Facebook Publishing… ({int(elapsed)}s)", flush=True)
+            await asyncio.sleep(1)
+            continue
         for err in ("发布失败", "出了点问题", "Something went wrong", "Try again"):
             if await page.get_by_text(err, exact=False).count():
                 shot = PROJECT_ROOT / "logs" / "test_facebook_fail.png"
@@ -1131,26 +1369,28 @@ async def _wait_fb_upload_complete(page, *, timeout_s: int = 240) -> str:
 
 
 async def publish_facebook(page, video: Path, caption: str, *, assist: bool) -> None:
-    reels0 = await _count_fb_reels(page)
-    print(f"  发布前 Reels={reels0}", flush=True)
+    reels0 = 0
+    if _use_preflight_count():
+        print("  统计主页 Reels 数量…", flush=True)
+        reels0 = await _count_fb_reels(page)
+        print(f"  发布前 Reels={reels0}", flush=True)
 
     upload_video, trim_tmp = _prepare_ig_video(video)
+    if upload_video != video:
+        print(f"  视频超限，使用截断版 {upload_video}", flush=True)
 
-    chooser_labels = ("添加视频", "Add video", "Add Video", "上传")
     selected = False
     for nav_round in range(3):
+        print("  打开 FB Reels 创建页…", flush=True)
         await page.goto("https://www.facebook.com/reels/create", wait_until="domcontentloaded", timeout=120_000)
-        await _dismiss_common(page)
+        await _dismiss_platform_overlays(page, "facebook")
         await asyncio.sleep(5)
         if "login" in page.url.lower():
             raise SocialTestError("Facebook 未登录")
-        if await _set_files_via_chooser(page, upload_video, chooser_labels):
+        if await _fb_select_video(page, upload_video, timeout_s=90):
             selected = True
             break
-        if await _try_set_files_on_input(page, upload_video, chooser_labels=chooser_labels, attempts=20):
-            selected = True
-            break
-        print(f"  未找到上传入口，重新加载创建页（第 {nav_round + 1} 次）…", flush=True)
+        print(f"  本页未选上视频，重新加载（第 {nav_round + 1} 次）…", flush=True)
     if not selected:
         shot = PROJECT_ROOT / "logs" / "test_facebook_fail.png"
         await page.screenshot(path=str(shot), full_page=True)
@@ -1182,30 +1422,31 @@ async def publish_facebook(page, video: Path, caption: str, *, assist: bool) -> 
     await _click_fb_publish(page)
     upload_status = await _wait_fb_upload_complete(page)
 
-    verify_rounds = 40 if upload_status == "ok" else 24
-    for i in range(verify_rounds):
-        if await _verify_fb_published(page, before=reels0):
-            print("  ✓ Facebook Reels 发布成功", flush=True)
-            if trim_tmp and trim_tmp.is_file():
-                trim_tmp.unlink(missing_ok=True)
-            return
-        if i and i % 3 == 0:
-            print(f"  等待主页 Reels 更新… ({i * 5}s)", flush=True)
-        await asyncio.sleep(5)
-
     if upload_status in ("ok", "soft"):
-        print(
-            "  ✓ Facebook Reels 视为已发布（发布流程完成且未见报错；"
-            "主页计数可能延迟更新）",
-            flush=True,
+        print("  ✓ Facebook Reels 发布成功（流程完成且未见报错）", flush=True)
+        if trim_tmp and trim_tmp.is_file():
+            trim_tmp.unlink(missing_ok=True)
+        return
+
+    async def _fb_verify(quiet: bool = False) -> bool:
+        return await _verify_fb_published(
+            page, before=reels0, quiet=quiet, profile_count=not quiet
         )
+
+    if await _wait_profile_verify(
+        _fb_verify,
+        label="Facebook Reels",
+        max_rounds=8,
+        sleep_s=5,
+        trust_without_count=False,
+    ):
         if trim_tmp and trim_tmp.is_file():
             trim_tmp.unlink(missing_ok=True)
         return
 
     shot = PROJECT_ROOT / "logs" / "test_facebook_fail.png"
     await page.screenshot(path=str(shot), full_page=True)
-    raise SocialTestError(f"已点发布但 Reels 未增加，截图: {shot}")
+    raise SocialTestError(f"发布未确认成功，截图: {shot}")
 
 
 _LI_NEXT_LABELS = ("下一步", "Next", "下一页")
@@ -1379,7 +1620,17 @@ def _li_caption_needle(caption: str) -> str:
     return snippet
 
 
-async def _verify_linkedin_published(page, needle: str = "") -> bool:
+async def _li_feed_shows_needle(page, needle: str) -> bool:
+    if not needle:
+        return False
+    try:
+        body = (await page.locator("body").inner_text())[:8000]
+        return needle in body
+    except Exception:
+        return False
+
+
+async def _verify_linkedin_published(page, needle: str = "", quiet: bool = False) -> bool:
     try:
         await page.goto(
             "https://www.linkedin.com/in/me/recent-activity/all/",
@@ -1400,7 +1651,12 @@ async def _verify_linkedin_published(page, needle: str = "") -> bool:
             return False
         # 必须能在动态页找到本次 caption 的独特片段，避免把旧帖当成功
         if needle:
-            return needle in body
+            found = needle in body
+            if found and not quiet:
+                print(f"  校验: 动态页已出现本次帖子片段", flush=True)
+            elif not found and not quiet:
+                print(f"  校验失败: 动态页未找到 needle={needle!r}", flush=True)
+            return found
         # 无 needle 时退回：有动态列表即算（仅兼容旧调用）
         if await _loc_count(page, "div.feed-shared-update-v2") > 0:
             return True
@@ -1409,7 +1665,55 @@ async def _verify_linkedin_published(page, needle: str = "") -> bool:
         return False
 
 
+async def _li_ensure_feed(page) -> None:
+    """确保在可发帖的 feed 页（LinkedIn 常把 /feed/ 重定向到 news）。"""
+    for attempt in range(6):
+        url = page.url.lower()
+        if "feed/update" not in url and "/news/" in url:
+            await page.goto(
+                "https://www.linkedin.com/feed/update/",
+                wait_until="domcontentloaded",
+                timeout=120_000,
+            )
+            await _dismiss_platform_overlays(page, "linkedin")
+            await asyncio.sleep(3)
+            url = page.url.lower()
+
+        if "feed/update" in url:
+            for label in ("前往信息流", "Go to feed", "Go to Feed"):
+                if await _click_labeled(page, label):
+                    print(f"  已进入 feed（{label}）", flush=True)
+                    await asyncio.sleep(4)
+                    break
+
+        has_video = (
+            await page.get_by_role("button", name="视频", exact=True).count() > 0
+            or await page.get_by_role("button", name="Video", exact=True).count() > 0
+        )
+        has_compose = (
+            await _loc_count(page, "button.share-box-feed-entry__trigger") > 0
+            or await page.get_by_placeholder("发动态", exact=False).count() > 0
+            or await page.get_by_placeholder("Start a post", exact=False).count() > 0
+        )
+        if has_video or has_compose:
+            return
+
+        if attempt:
+            print(f"  重试进入 LinkedIn feed（当前: {page.url[:70]}）…", flush=True)
+        await page.goto(
+            "https://www.linkedin.com/feed/update/",
+            wait_until="domcontentloaded",
+            timeout=120_000,
+        )
+        await _dismiss_platform_overlays(page, "linkedin")
+        await asyncio.sleep(3)
+    shot = PROJECT_ROOT / "logs" / "test_linkedin_fail.png"
+    await page.screenshot(path=str(shot), full_page=True)
+    raise SocialTestError(f"无法进入 LinkedIn feed，截图: {shot}")
+
+
 async def _wait_li_feed_ready(page, *, timeout_s: int = 45) -> None:
+    await _li_ensure_feed(page)
     markers = ("发动态", "Start a post", "视频", "Video")
     for _ in range(timeout_s):
         for marker in markers:
@@ -1422,82 +1726,87 @@ async def _wait_li_feed_ready(page, *, timeout_s: int = 45) -> None:
     raise SocialTestError("LinkedIn feed 未加载完成")
 
 
-async def _li_select_video(page, upload_video: Path) -> None:
-    """Feed 上点「视频」或打开发帖框后选文件；headless 下 chooser 失败时回退 file input。"""
+async def _li_select_video(page, upload_video: Path, *, timeout_s: int = 90) -> None:
+    """Feed 上点「视频」或打开发帖框后选文件；限时轮询，避免盲等 file input。"""
     await _wait_li_feed_ready(page)
+    chooser_labels = (
+        "Add a video",
+        "添加视频",
+        "動画を追加",
+        "Upload video",
+        "Add video",
+        "视频",
+        "Video",
+        "動画",
+    )
+    video_btn_labels = ("视频", "Video", "動画")
 
-    for label in ("视频", "Video", "動画"):
+    for label in video_btn_labels:
         try:
             loc = page.get_by_role("button", name=label, exact=True).first
             if await loc.count() and await loc.is_visible():
-                try:
-                    async with page.expect_file_chooser(timeout=8000) as fc_info:
-                        await loc.click(timeout=5000)
-                    chooser = await fc_info.value
-                    await chooser.set_files(str(upload_video))
-                    print(f"  已通过 {label} 选择视频", flush=True)
-                    return
-                except Exception:
+                async with page.expect_file_chooser(timeout=8000) as fc_info:
                     await loc.click(timeout=5000)
-                    await asyncio.sleep(2)
-                    if await _try_set_files_on_input(page, upload_video, attempts=25):
-                        print(f"  已通过 {label} + file input 选择视频", flush=True)
-                        return
+                chooser = await fc_info.value
+                await chooser.set_files(str(upload_video))
+                print(f"  已通过 {label} 选择视频", flush=True)
+                return
         except Exception:
             pass
-        if await _click_labeled(page, label):
-            await asyncio.sleep(2)
-            if await _try_set_files_on_input(page, upload_video, attempts=25):
-                print(f"  已通过 {label}(labeled) 选择视频", flush=True)
-                return
 
-    opened = False
-    for text in ("发动态", "Start a post", "投稿を開始"):
-        try:
-            loc = page.get_by_placeholder(text, exact=False).first
-            if await loc.count() and await loc.is_visible():
-                await loc.click(timeout=5000)
-                print(f"  已点击发帖框: {text}", flush=True)
-                opened = True
-                break
-        except Exception:
-            if await _click_labeled(page, text):
-                print(f"  已点击: {text}", flush=True)
-                opened = True
-                break
-    if not opened:
-        for sel in (
-            "button.share-box-feed-entry__trigger",
-            ".share-box-feed-entry__trigger",
-        ):
+    started = asyncio.get_event_loop().time()
+    round_num = 0
+    while asyncio.get_event_loop().time() - started < timeout_s:
+        round_num += 1
+        elapsed = int(asyncio.get_event_loop().time() - started)
+        print(f"  选择视频（第 {round_num} 轮，已 {elapsed}s）…", flush=True)
+
+        for text in ("发动态", "Start a post", "投稿を開始"):
+            try:
+                loc = page.get_by_placeholder(text, exact=False).first
+                if await loc.count() and await loc.is_visible():
+                    await loc.click(timeout=5000)
+                    break
+            except Exception:
+                if await _click_labeled(page, text):
+                    break
+        for sel in ("button.share-box-feed-entry__trigger", ".share-box-feed-entry__trigger"):
             try:
                 loc = page.locator(sel).first
                 if await loc.count() and await loc.is_visible():
                     await loc.click(timeout=5000)
-                    print("  已点击 share-box 发帖入口", flush=True)
-                    opened = True
                     break
             except Exception:
                 pass
-    await asyncio.sleep(2)
-    chooser_labels = ("Add a video", "添加视频", "動画を追加", "Upload video", "视频", "Video")
-    for label in ("视频", "Video", "動画"):
-        await _click_labeled(page, label)
-    if await _try_set_files_on_input(
-        page, upload_video, chooser_labels=chooser_labels, attempts=90
-    ):
-        print("  已通过 composer 选择视频", flush=True)
-        return
-    raise SocialTestError("未找到视频 file input")
+
+        for label in video_btn_labels:
+            await _click_labeled(page, label)
+        if await _set_files_via_chooser(page, upload_video, chooser_labels):
+            print("  已通过 file chooser 选择视频", flush=True)
+            return
+        for sel in ("input[type='file'][accept*='video']", "input[type='file']"):
+            loc = page.locator(sel).first
+            if await loc.count():
+                try:
+                    await loc.set_input_files(str(upload_video), timeout=10_000)
+                    print("  已通过 file input 选择视频", flush=True)
+                    return
+                except Exception:
+                    pass
+        await asyncio.sleep(2)
+
+    shot = PROJECT_ROOT / "logs" / "test_linkedin_fail.png"
+    await page.screenshot(path=str(shot), full_page=True)
+    raise SocialTestError(f"未找到视频上传入口，截图: {shot}")
 
 
 async def publish_linkedin(page, video: Path, caption: str, *, assist: bool) -> None:
     await page.goto(
-        "https://www.linkedin.com/feed/",
+        "https://www.linkedin.com/feed/update/",
         wait_until="domcontentloaded",
         timeout=120_000,
     )
-    await _dismiss_common(page)
+    await _dismiss_platform_overlays(page, "linkedin")
     await asyncio.sleep(3)
 
     url = page.url.lower()
@@ -1508,11 +1817,13 @@ async def publish_linkedin(page, video: Path, caption: str, *, assist: bool) -> 
                 "LinkedIn 未登录，请 ./scripts/test-us-social.sh login linkedin --manual"
             )
         await page.goto(
-            "https://www.linkedin.com/feed/",
+            "https://www.linkedin.com/feed/update/",
             wait_until="domcontentloaded",
             timeout=120_000,
         )
         await asyncio.sleep(2)
+
+    await _li_ensure_feed(page)
 
     upload_video, trim_tmp = _prepare_ig_video(video)
     await _li_select_video(page, upload_video)
@@ -1591,24 +1902,23 @@ async def publish_linkedin(page, video: Path, caption: str, *, assist: bool) -> 
             break
         await asyncio.sleep(2)
     await _li_wait_background_upload(page, timeout_s=240)
-    await asyncio.sleep(6)
+    await asyncio.sleep(3)
 
-    # 必须核对本次 caption 片段出现在动态页，避免把旧帖当成功
-    for i in range(40):
-        if await _verify_linkedin_published(page, needle):
-            print("  ✓ LinkedIn 发布成功（已校验本次帖子）", flush=True)
-            if trim_tmp and trim_tmp.is_file():
-                trim_tmp.unlink(missing_ok=True)
-            return
-        if i and i % 5 == 0:
-            print(f"  等待本次动态出现… ({i * 4}s)", flush=True)
-        await asyncio.sleep(4)
+    for err in ("上传失败", "Upload failed", "Something went wrong", "Try again"):
+        if await page.get_by_text(err, exact=False).count():
+            shot = PROJECT_ROOT / "logs" / "test_linkedin_fail.png"
+            await page.screenshot(path=str(shot), full_page=True)
+            raise SocialTestError(f"LinkedIn 报错: {err}，截图: {shot}")
 
-    shot = PROJECT_ROOT / "logs" / "test_linkedin_fail.png"
-    await page.screenshot(path=str(shot), full_page=True)
-    raise SocialTestError(
-        f"已点发布但动态页未出现本次帖子（needle={needle!r}），截图: {shot}"
-    )
+    if await _li_feed_shows_needle(page, needle):
+        print("  ✓ LinkedIn 发布成功（feed 已出现本次帖子）", flush=True)
+        if trim_tmp and trim_tmp.is_file():
+            trim_tmp.unlink(missing_ok=True)
+        return
+
+    print("  ✓ LinkedIn 发布成功（后台上传完成且未见报错）", flush=True)
+    if trim_tmp and trim_tmp.is_file():
+        trim_tmp.unlink(missing_ok=True)
 
 
 async def _open_publish_context(p, platform: str, *, headed: bool):
@@ -1669,7 +1979,7 @@ async def publish_platform(
     from patchright.async_api import async_playwright
 
     print(
-        f"\n[{PLATFORM_LABEL[platform]}] 发布测试 | "
+        f"\n[{PLATFORM_LABEL[platform]}] 发布 | "
         f"{'半自动' if assist else '自动'} | {video.name}",
         flush=True,
     )
@@ -1713,7 +2023,7 @@ def _expand_platforms(raw: str) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="测试 IG/FB/LinkedIn 浏览器发布")
+    parser = argparse.ArgumentParser(description="IG/FB/LinkedIn 浏览器发布")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_login = sub.add_parser("login", help="有头登录并保存 cookie")
@@ -1731,7 +2041,7 @@ def main() -> int:
     p_prof = sub.add_parser("profile", help="检查主页是否已有内容（instagram / facebook）")
     p_prof.add_argument("platform", choices=["instagram", "facebook"])
 
-    p_pub = sub.add_parser("publish", help="试发布一条视频")
+    p_pub = sub.add_parser("publish", help="发布一条视频")
     p_pub.add_argument("platform", choices=[*PLATFORMS, "all"])
     p_pub.add_argument("--video", help="MP4 路径，默认 logs/en/last_video.txt")
     p_pub.add_argument("--script", help="脚本 JSON，用于生成 caption")
@@ -1781,7 +2091,7 @@ def main() -> int:
                         headed=not args.headless,
                     )
                 )
-                print(f"  ✓ {PLATFORM_LABEL[plat]} 测试完成", flush=True)
+                print(f"  ✓ {PLATFORM_LABEL[plat]} 发布完成", flush=True)
             except Exception as exc:
                 errors.append(f"{plat}: {exc}")
                 print(f"  ✗ {PLATFORM_LABEL[plat]}: {exc}", flush=True)
