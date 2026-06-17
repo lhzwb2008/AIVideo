@@ -442,7 +442,7 @@ async def _set_files_via_chooser(page, video: Path, labels: tuple[str, ...]) -> 
     return False
 
 
-async def _fb_select_video(page, video: Path, *, timeout_s: int = 90) -> bool:
+async def _fb_select_video(page, video: Path, *, timeout_s: int = 45) -> bool:
     """FB Reels 创建页：优先点「添加视频」+ file chooser，避免盲等 hidden input。"""
     chooser_labels = (
         "添加视频",
@@ -456,6 +456,9 @@ async def _fb_select_video(page, video: Path, *, timeout_s: int = 90) -> bool:
     started = asyncio.get_event_loop().time()
     round_num = 0
     while asyncio.get_event_loop().time() - started < timeout_s:
+        if await _fb_is_reels_feed(page):
+            print("  当前在 Reels 浏览页，停止选择视频", flush=True)
+            return False
         round_num += 1
         elapsed = int(asyncio.get_event_loop().time() - started)
         print(f"  选择视频（第 {round_num} 轮，已 {elapsed}s）…", flush=True)
@@ -1166,8 +1169,144 @@ async def publish_instagram(page, video: Path, caption: str, *, assist: bool) ->
     raise SocialTestError(f"发布未确认成功，截图: {shot}")
 
 
+_FB_CREATE_URLS = (
+    "https://www.facebook.com/reels/create",
+    "https://business.facebook.com/latest/reels_composer",
+)
+
+_FB_CREATE_ENTRY_LABELS = (
+    "创建 Reels",
+    "Create reel",
+    "Create Reel",
+    "Create a reel",
+    "Create Reels",
+    "制作 Reels",
+    "上传 Reel",
+    "Upload reel",
+)
+
+
 def _fb_reels_panel(page):
     return page.locator("div").filter(has_text="Reels").filter(has=page.locator("text=继续")).first
+
+
+async def _fb_has_upload_ui(page) -> bool:
+    if await page.locator("input[type='file']").count():
+        return True
+    for label in ("添加视频", "Add video", "Add Video", "上传"):
+        try:
+            loc = page.get_by_text(label, exact=False).first
+            if await loc.count() and await loc.is_visible():
+                return True
+        except Exception:
+            pass
+    if await _fb_reels_panel(page).count():
+        return True
+    for ph in ("描述一下你的 Reels", "Describe your reel", "Describe your Reel"):
+        if await page.get_by_placeholder(ph, exact=False).count():
+            return True
+    return False
+
+
+async def _fb_is_reels_feed(page) -> bool:
+    url = page.url.lower()
+    if "create" in url or "composer" in url:
+        return False
+    if await _fb_has_upload_ui(page):
+        return False
+    if "/reels" not in url:
+        return False
+    for text in ("为你推荐", "Recommended for you"):
+        try:
+            if await page.get_by_text(text, exact=False).count():
+                return True
+        except Exception:
+            pass
+    for aria in ("Like", "赞", "Comment", "评论"):
+        try:
+            loc = page.locator(f'[aria-label="{aria}"]').first
+            if await loc.count() and await loc.is_visible():
+                return True
+        except Exception:
+            pass
+    return url.rstrip("/").endswith("/reels") or "/reels/" in url
+
+
+async def _fb_click_create_entry(page) -> bool:
+    for label in _FB_CREATE_ENTRY_LABELS:
+        if await _click_labeled(page, label):
+            print(f"  已点击「{label}」", flush=True)
+            await asyncio.sleep(3)
+            return True
+    for sel in ('a[href*="/reels/create"]', 'a[href*="reels_composer"]'):
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() and await loc.is_visible():
+                await loc.click(timeout=5000)
+                await asyncio.sleep(3)
+                return True
+        except Exception:
+            pass
+    return False
+
+
+async def _fb_open_create_from_profile(page) -> bool:
+    """从个人主页 Reels 标签进入创建页（create URL 被重定向时的兜底）。"""
+    try:
+        print("  尝试从个人主页 Reels 标签进入…", flush=True)
+        await page.goto("https://www.facebook.com/me", wait_until="domcontentloaded", timeout=120_000)
+        await _dismiss_platform_overlays(page, "facebook")
+        await asyncio.sleep(3)
+        for tab in ("Reels", "Reels 视频", "视频"):
+            loc = page.get_by_role("tab", name=tab, exact=False).first
+            if await loc.count():
+                await loc.click(timeout=5000)
+                await asyncio.sleep(3)
+                break
+        for label in _FB_CREATE_ENTRY_LABELS + ("创建", "Create"):
+            if await _click_labeled(page, label):
+                await asyncio.sleep(3)
+                if await _fb_has_upload_ui(page):
+                    print(f"  已从主页进入创建页 ({page.url[:72]})", flush=True)
+                    return True
+        if await _fb_click_create_entry(page):
+            await asyncio.sleep(2)
+            if await _fb_has_upload_ui(page):
+                print(f"  已从主页进入创建页 ({page.url[:72]})", flush=True)
+                return True
+    except Exception:
+        pass
+    return False
+
+
+async def _open_fb_reels_create(page) -> bool:
+    """进入 FB Reels 上传页；/reels/create 常被重定向到浏览页，需多入口兜底。"""
+    for url in _FB_CREATE_URLS:
+        host = url.split("/")[2].replace("www.", "")
+        print(f"  打开 FB Reels 创建页（{host}）…", flush=True)
+        await page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+        await asyncio.sleep(2)
+        if "/reels/create" in url and await _fb_is_reels_feed(page):
+            await page.goto(url, wait_until="load", timeout=120_000)
+            await asyncio.sleep(2)
+        await _dismiss_platform_overlays(page, "facebook")
+        await asyncio.sleep(3)
+        if "login" in page.url.lower():
+            raise SocialTestError("Facebook 未登录")
+        if await _fb_has_upload_ui(page):
+            print(f"  已进入创建页 ({page.url[:72]})", flush=True)
+            return True
+        if await _fb_click_create_entry(page):
+            await _dismiss_platform_overlays(page, "facebook")
+            await asyncio.sleep(2)
+            if await _fb_has_upload_ui(page):
+                print(f"  已进入创建页 ({page.url[:72]})", flush=True)
+                return True
+        if await _fb_is_reels_feed(page):
+            print(f"  被重定向至 Reels 浏览页 ({page.url[:72]})", flush=True)
+        else:
+            print(f"  未检测到上传 UI ({page.url[:72]})", flush=True)
+    return await _fb_open_create_from_profile(page)
 
 
 async def _fb_click_continue(page) -> bool:
@@ -1380,17 +1519,14 @@ async def publish_facebook(page, video: Path, caption: str, *, assist: bool) -> 
         print(f"  视频超限，使用截断版 {upload_video}", flush=True)
 
     selected = False
-    for nav_round in range(3):
-        print("  打开 FB Reels 创建页…", flush=True)
-        await page.goto("https://www.facebook.com/reels/create", wait_until="domcontentloaded", timeout=120_000)
-        await _dismiss_platform_overlays(page, "facebook")
-        await asyncio.sleep(5)
-        if "login" in page.url.lower():
-            raise SocialTestError("Facebook 未登录")
-        if await _fb_select_video(page, upload_video, timeout_s=90):
+    for nav_round in range(4):
+        if not await _open_fb_reels_create(page):
+            print(f"  未能进入创建页，重试（第 {nav_round + 1} 次）…", flush=True)
+            continue
+        if await _fb_select_video(page, upload_video, timeout_s=45):
             selected = True
             break
-        print(f"  本页未选上视频，重新加载（第 {nav_round + 1} 次）…", flush=True)
+        print(f"  创建页未选上视频，重试（第 {nav_round + 1} 次）…", flush=True)
     if not selected:
         shot = PROJECT_ROOT / "logs" / "test_facebook_fail.png"
         await page.screenshot(path=str(shot), full_page=True)
