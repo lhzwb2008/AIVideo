@@ -15,7 +15,6 @@ from douyin_publisher import (
     resolve_cookie_path,
     sau_home,
 )
-from douyin_session import verify_upload_page
 from paths import ROOT
 from sau_client import douyin_account
 
@@ -313,16 +312,7 @@ def main() -> int:
                     timeout_s=float(args.timeout),
                 )
             )
-            ok = asyncio.run(
-                verify_upload_page(root=ROOT, account=args.account, use_profile=True)
-            )
-            if not ok:
-                print(
-                    "登录后上传页仍未就绪，请再试: ./douyin-login.sh --force",
-                    file=sys.stderr,
-                )
-                return 1
-            print("上传页验证通过，可以发布。", flush=True)
+            print("登录成功，Profile 与 cookie 已保存。", flush=True)
             return 0
 
         print("请使用 --login", file=sys.stderr)

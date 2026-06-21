@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from paths import ROOT
+from sau_paths import chrome_executable, ensure_patchright_import, sau_python
 
 
 class DouyinPublishError(RuntimeError):
@@ -29,10 +30,7 @@ def sau_home(root: Path | None = None) -> Path:
 
 
 def resolve_playwright_python(root: Path | None = None) -> Path | None:
-    venv_py = sau_home(root) / ".venv" / "bin" / "python3"
-    if venv_py.is_file():
-        return venv_py
-    return None
+    return sau_python(sau_home(root))
 
 
 def resolve_cookie_path(root: Path | None = None, account: str | None = None) -> Path:
@@ -50,30 +48,16 @@ def cookie_path(root: Path | None = None, account: str | None = None) -> Path:
 
 
 def _chrome_path() -> str:
-    for path in (
-        _env("LOCAL_CHROME_PATH"),
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-    ):
-        if path and Path(path).is_file():
-            return path
-    return ""
+    return chrome_executable()
 
 
 def _ensure_patchright():
-    home = sau_home()
-    venv_site = home / ".venv" / "lib"
-    if venv_site.is_dir():
-        for sub in venv_site.iterdir():
-            if sub.name.startswith("python"):
-                sys.path.insert(0, str(sub / "site-packages"))
-                break
     try:
-        from patchright.async_api import async_playwright  # noqa: F401
+        ensure_patchright_import(sau_home())
     except ImportError as exc:
         raise DouyinPublishError(
             "未安装 patchright（或当前 Python 与 SAU 环境不兼容）。"
-            "请先运行: ./setup-sau.sh"
+            "请先运行: ./setup-sau.sh 或 .\\setup-windows.ps1"
         ) from exc
 
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 大模型视觉 + Playwright 自适应发布（抖音 / 视频号 / 小红书）
 # 用法:
+#   scripts/publish-llm-browser.sh douyin <video.mp4> --confirm --headless
 #   scripts/publish-llm-browser.sh shipinhao <video.mp4> --confirm --headless
 #   scripts/publish-llm-browser.sh xiaohongshu <video.mp4> --confirm --headless
 set -euo pipefail

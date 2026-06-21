@@ -164,6 +164,8 @@ def print_manual_publish_pack(
         wechat_title=wechat_title,
         zhihu_title=zhihu_title,
         shipinhao_title=shipinhao_title,
+        douyin_title=douyin_title,
+        xiaohongshu_title=xiaohongshu_title,
         skip_auto_note=skip_auto_note,
     )
     _print_todo_checklist(**todo_kwargs)
@@ -288,6 +290,10 @@ def _append_todo_items(
     items.append((mark, headline, sublines or []))
 
 
+def _llm_publish_cmd(platform: str) -> str:
+    return f"./scripts/publish-llm-browser.sh {platform}"
+
+
 def _auto_publish_summary(
     *,
     youtube_url: str,
@@ -298,12 +304,20 @@ def _auto_publish_summary(
     wechat_title: str,
     zhihu_title: str,
     shipinhao_title: str,
+    douyin_title: str,
+    xiaohongshu_title: str,
     skip_auto_note: bool,
 ) -> str:
     """已成功自动发布的平台，仅作一行摘要，不进待办清单。"""
     if skip_auto_note:
         return ""
+    from publish_llm_browser import llm_browser_default
+
     names: list[str] = []
+    if douyin_enabled() and llm_browser_default() and douyin_title:
+        names.append("抖音")
+    if xhs_video_enabled() and llm_browser_default() and xiaohongshu_title:
+        names.append("小红书")
     if shipinhao_enabled() and shipinhao_title:
         names.append("视频号")
     if bilibili_video_auto_enabled() and bilibili_title:
@@ -342,9 +356,13 @@ def build_todo_checklist_items(
     wechat_title: str,
     zhihu_title: str,
     shipinhao_title: str,
+    douyin_title: str,
+    xiaohongshu_title: str,
     skip_auto_note: bool,
 ) -> list[tuple[str, list[tuple[str, str, list[str]]]]]:
     """仅生成仍需你亲手完成的待办，已成功自动发布的不列入。"""
+    from publish_llm_browser import llm_browser_default
+
     manual: list[tuple[str, str, list[str]]] = []
     notes: list[tuple[str, str, list[str]]] = []
 
@@ -385,11 +403,30 @@ def build_todo_checklist_items(
             headline="B站视频: 自动投稿失败 — ./scripts/publish-bilibili.sh",
         )
 
-    if shipinhao_enabled() and not skip_auto_note and not shipinhao_title:
+    if douyin_enabled() and llm_browser_default() and not skip_auto_note and not douyin_title:
         _append_todo_items(
             manual,
             mark="!",
-            headline="视频号: 自动发布失败 — ./scripts/publish-shipinhao.sh",
+            headline=f"抖音: 自动发布失败 — {_llm_publish_cmd('douyin')}",
+        )
+
+    if xhs_video_enabled() and llm_browser_default() and not skip_auto_note and not xiaohongshu_title:
+        _append_todo_items(
+            manual,
+            mark="!",
+            headline=f"小红书: 自动发布失败 — {_llm_publish_cmd('xiaohongshu')}",
+        )
+
+    if shipinhao_enabled() and not skip_auto_note and not shipinhao_title:
+        shipinhao_script = (
+            _llm_publish_cmd("shipinhao")
+            if llm_browser_default()
+            else "./scripts/publish-shipinhao.sh"
+        )
+        _append_todo_items(
+            manual,
+            mark="!",
+            headline=f"视频号: 自动发布失败 — {shipinhao_script}",
         )
 
     if eastmoney_enabled() and not skip_auto_note and not eastmoney_title:
@@ -539,6 +576,8 @@ def format_todo_checklist_markdown(
     wechat_title: str = "",
     zhihu_title: str = "",
     shipinhao_title: str = "",
+    douyin_title: str = "",
+    xiaohongshu_title: str = "",
     skip_auto_note: bool = False,
     script: dict | None = None,
 ) -> str:
@@ -552,6 +591,8 @@ def format_todo_checklist_markdown(
         wechat_title=wechat_title,
         zhihu_title=zhihu_title,
         shipinhao_title=shipinhao_title,
+        douyin_title=douyin_title,
+        xiaohongshu_title=xiaohongshu_title,
         skip_auto_note=skip_auto_note,
     )
     lines = [
@@ -580,6 +621,8 @@ def format_todo_checklist_markdown(
         wechat_title=wechat_title,
         zhihu_title=zhihu_title,
         shipinhao_title=shipinhao_title,
+        douyin_title=douyin_title,
+        xiaohongshu_title=xiaohongshu_title,
         skip_auto_note=skip_auto_note,
     ):
         lines.append(f"### {title}")
@@ -628,6 +671,8 @@ def _print_todo_checklist(
     wechat_title: str,
     zhihu_title: str,
     shipinhao_title: str,
+    douyin_title: str,
+    xiaohongshu_title: str,
     skip_auto_note: bool,
 ) -> None:
     """流程结束后的待办清单：优先列出需要你亲手完成的事项。"""
@@ -643,6 +688,8 @@ def _print_todo_checklist(
         wechat_title=wechat_title,
         zhihu_title=zhihu_title,
         shipinhao_title=shipinhao_title,
+        douyin_title=douyin_title,
+        xiaohongshu_title=xiaohongshu_title,
         skip_auto_note=skip_auto_note,
     )
     manual_n = 0
@@ -659,6 +706,8 @@ def _print_todo_checklist(
         wechat_title=wechat_title,
         zhihu_title=zhihu_title,
         shipinhao_title=shipinhao_title,
+        douyin_title=douyin_title,
+        xiaohongshu_title=xiaohongshu_title,
         skip_auto_note=skip_auto_note,
     )
 

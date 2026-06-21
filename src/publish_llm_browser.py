@@ -7,6 +7,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from invoke_script import script_argv
 from paths import ROOT
 
 LLM_PLATFORMS = {
@@ -42,11 +43,11 @@ def publish_llm_browser(
     if not video.is_file():
         raise FileNotFoundError(f"视频不存在: {video}")
 
-    cmd = [
-        str(ROOT / "scripts" / "publish-llm-browser.sh"),
+    cmd = script_argv(
+        "publish-llm-browser",
         platform,
         str(video),
-    ]
+    )
     if script_path and script_path.is_file():
         cmd.extend(["--script", str(script_path.resolve())])
     if archive_dir and archive_dir.is_dir():

@@ -17,6 +17,7 @@ from forum_editor_fill import (
 )
 from forum_pack_format import extract_caption, is_caption_line, join_forum_paragraphs
 from paths import ROOT
+from sau_paths import chrome_executable, ensure_patchright_import
 
 
 class EastmoneyPublishError(RuntimeError):
@@ -120,30 +121,16 @@ async def _grant_clipboard(context) -> None:
 
 
 def _chrome_path() -> str:
-    for path in (
-        _env("LOCAL_CHROME_PATH"),
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-    ):
-        if path and Path(path).is_file():
-            return path
-    return ""
+    return chrome_executable()
 
 
 def _ensure_patchright():
-    home = sau_home()
-    venv_site = home / ".venv" / "lib"
-    if venv_site.is_dir():
-        for sub in venv_site.iterdir():
-            if sub.name.startswith("python"):
-                sys.path.insert(0, str(sub / "site-packages"))
-                break
     try:
-        from patchright.async_api import async_playwright  # noqa: F401
+        ensure_patchright_import(sau_home())
     except ImportError as exc:
         raise EastmoneyPublishError(
             "未安装 patchright（或当前 Python 与 SAU 环境不兼容）。"
-            "请先运行: ./setup-sau.sh"
+            "请先运行: ./setup-sau.sh 或 .\\setup-windows.ps1"
         ) from exc
 
 

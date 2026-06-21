@@ -1,0 +1,3 @@
+# 主项目 .venv（make-and-publish / video_compose / research 等）
+Pillow>=10.0.0
+requests>=2.31.0

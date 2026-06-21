@@ -10,8 +10,7 @@ import sys
 from pathlib import Path
 
 from paths import ROOT
-
-UPLOAD_URL = "https://channels.weixin.qq.com/platform/post/create"
+from sau_paths import chrome_executable, ensure_patchright_import
 LOGIN_URL = "https://channels.weixin.qq.com/login.html"
 
 
@@ -41,24 +40,11 @@ def profile_dir(*, root: Path | None = None, account: str | None = None) -> Path
 
 
 def _chrome_path() -> str:
-    for path in (
-        _env("LOCAL_CHROME_PATH"),
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    ):
-        if path and Path(path).is_file():
-            return path
-    return ""
+    return chrome_executable()
 
 
 def _ensure_patchright() -> None:
-    home = sau_home()
-    venv_site = home / ".venv" / "lib"
-    if venv_site.is_dir():
-        for sub in venv_site.iterdir():
-            if sub.name.startswith("python"):
-                sys.path.insert(0, str(sub / "site-packages"))
-                break
-    from patchright.async_api import async_playwright  # noqa: F401
+    ensure_patchright_import(sau_home())
 
 
 async def _is_visible(locator) -> bool:

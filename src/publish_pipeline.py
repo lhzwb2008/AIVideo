@@ -33,6 +33,7 @@ from publish_caption import (
 )
 from publish_llm_browser import llm_browser_default, publish_llm_browser
 from forum_auth import is_login_error
+from invoke_script import script_argv
 from research import run_article_research
 
 
@@ -165,12 +166,12 @@ def _read_last_publish_url(log_name: str, *keys: str) -> str:
 
 
 def publish_youtube_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
-    cmd = [
-        str(ROOT / "scripts" / "publish-youtube.sh"),
+    cmd = script_argv(
+        "publish-youtube",
         rel(video),
         "--script",
         rel(script_path),
-    ]
+    )
     if dry_run:
         cmd.append("--dry-run")
     run(cmd, label="发布YouTube")
@@ -191,12 +192,12 @@ def publish_bilibili_api(
     dry_run: bool,
     skip_video: bool = False,
 ) -> str:
-    cmd = [
-        str(ROOT / "scripts" / "publish-bilibili.sh"),
+    cmd = script_argv(
+        "publish-bilibili",
         rel(video),
         "--script",
         rel(script_path),
-    ]
+    )
     if skip_video or _bilibili_skip_video():
         cmd.append("--skip-video")
     if dry_run:
@@ -212,12 +213,12 @@ def publish_shipinhao_api(video: Path, script_path: Path, *, dry_run: bool) -> s
         return publish_llm_browser(
             "shipinhao", video, script_path, dry_run=dry_run
         )
-    cmd = [
-        str(ROOT / "scripts" / "publish-shipinhao.sh"),
+    cmd = script_argv(
+        "publish-shipinhao",
         rel(video),
         "--script",
         rel(script_path),
-    ]
+    )
     if dry_run:
         cmd.append("--dry-run")
     run(cmd, label="发布视频号")
@@ -235,12 +236,12 @@ def publish_xiaohongshu_api(video: Path, script_path: Path, *, dry_run: bool) ->
 
 
 def publish_tiktok_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
-    cmd = [
-        str(ROOT / "scripts" / "publish-tiktok.sh"),
+    cmd = script_argv(
+        "publish-tiktok",
         rel(video),
         "--script",
         rel(script_path),
-    ]
+    )
     if dry_run:
         cmd.append("--dry-run")
     run(cmd, label="发布TikTok")
@@ -250,10 +251,7 @@ def publish_tiktok_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
 
 
 def publish_eastmoney_api(forum_dir: Path, *, dry_run: bool) -> str:
-    cmd = [
-        str(ROOT / "scripts" / "publish-eastmoney.sh"),
-        rel(forum_dir),
-    ]
+    cmd = script_argv("publish-eastmoney", rel(forum_dir))
     if dry_run:
         cmd.append("--dry-run")
     else:
@@ -263,10 +261,7 @@ def publish_eastmoney_api(forum_dir: Path, *, dry_run: bool) -> str:
 
 
 def publish_xueqiu_api(forum_dir: Path, *, dry_run: bool) -> str:
-    cmd = [
-        str(ROOT / "scripts" / "publish-xueqiu.sh"),
-        rel(forum_dir),
-    ]
+    cmd = script_argv("publish-xueqiu", rel(forum_dir))
     if dry_run:
         cmd.append("--dry-run")
     else:
@@ -281,10 +276,7 @@ def _wechat_draft_only() -> bool:
 
 
 def publish_wechat_api(forum_dir: Path, *, dry_run: bool) -> str:
-    cmd = [
-        str(ROOT / "scripts" / "publish-wechat.sh"),
-        rel(forum_dir),
-    ]
+    cmd = script_argv("publish-wechat", rel(forum_dir))
     if dry_run:
         cmd.append("--dry-run")
     elif not _wechat_draft_only():
@@ -772,8 +764,8 @@ def pipeline_after_script(
     if index == 1:
         reset_publish_skips()
 
-    run([str(ROOT / "scripts" / "run-enrich-images.sh"), str(script_path)], label="生图")
-    run([str(ROOT / "scripts" / "run-compose.sh"), str(script_path)], label="合成")
+    run(script_argv("run-enrich-images", str(script_path)), label="生图")
+    run(script_argv("run-compose", str(script_path)), label="合成")
     video = latest_video()
     generate_forum_pack(script_path, video)
 

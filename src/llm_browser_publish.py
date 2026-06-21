@@ -29,6 +29,7 @@ from llm_browser_agent import AgentConfig, LLMBrowserError, human_pause, run_age
 from llm_vision_client import browser_max_steps, browser_model, browser_provider_label
 from paths import ROOT
 from publish_resolve import load_script, resolve_script_for_video
+from sau_paths import chrome_executable, ensure_patchright_import
 from social_caption import build_social_fields
 
 PLATFORM_ALIASES = {
@@ -84,15 +85,14 @@ def sau_home() -> Path:
 
 
 def _chrome_path() -> str:
-    for path in (
-        _env("LOCAL_CHROME_PATH"),
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "C:/Program Files/Google/Chrome/Application/chrome.exe",
-        "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
-    ):
-        if path and Path(path).is_file():
-            return path
-    return ""
+    return chrome_executable()
+
+
+def _ensure_patchright() -> None:
+    try:
+        ensure_patchright_import(sau_home())
+    except ImportError as exc:
+        raise PublishError("未安装 patchright，请先运行: ./setup-sau.sh 或 .\\setup-windows.ps1") from exc
 
 
 def cookie_path(platform: str, *, required: bool = True) -> Path | None:
@@ -114,20 +114,6 @@ def profile_dir(platform: str) -> Path:
     account = _env(COOKIE_ENV[platform], "main")
     # 与 social-login / shipinhao_login 共用 profile，避免每次冷启动丢登录态
     return sau_home() / "cookies" / "browser_profiles" / f"{COOKIE_KEY[platform]}_{account}"
-
-
-def _ensure_patchright() -> None:
-    home = sau_home()
-    venv_site = home / ".venv" / "lib"
-    if venv_site.is_dir():
-        for sub in venv_site.iterdir():
-            if sub.name.startswith("python"):
-                sys.path.insert(0, str(sub / "site-packages"))
-                break
-    try:
-        from patchright.async_api import async_playwright  # noqa: F401
-    except ImportError as exc:
-        raise PublishError("未安装 patchright，请先运行: ./setup-sau.sh") from exc
 
 
 def parse_archive_readme(readme: Path) -> dict[str, str]:
