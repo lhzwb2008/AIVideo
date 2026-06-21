@@ -62,7 +62,11 @@ def doubao_api_key() -> str:
 
 
 def base_url() -> str:
-    return _env("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com").rstrip("/")
+    raw = _env("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com").rstrip("/")
+    for suffix in ("/compatible-mode/v1", "/compatible-mode"):
+        if raw.endswith(suffix):
+            return raw[: -len(suffix)]
+    return raw
 
 
 def model() -> str:

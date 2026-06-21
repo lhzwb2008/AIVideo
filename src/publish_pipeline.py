@@ -16,6 +16,7 @@ from locale_env import normalize_locale
 from paths import ROOT
 from publish_caption import (
     bilibili_enabled,
+    douyin_enabled,
     eastmoney_enabled,
     facebook_enabled,
     instagram_enabled,
@@ -25,10 +26,12 @@ from publish_caption import (
     tiktok_enabled,
     us_social_enabled,
     wechat_enabled,
+    xhs_video_enabled,
     xueqiu_enabled,
     youtube_enabled,
     zhihu_enabled,
 )
+from publish_llm_browser import llm_browser_default, publish_llm_browser
 from forum_auth import is_login_error
 from research import run_article_research
 
@@ -79,6 +82,10 @@ def _auto_publish_platforms_label() -> str:
             names.append("LinkedIn")
     if bilibili_enabled():
         names.append("B站视频")
+    if douyin_enabled() and llm_browser_default():
+        names.append("抖音")
+    if xhs_video_enabled() and llm_browser_default():
+        names.append("小红书")
     if shipinhao_enabled():
         names.append("视频号")
     if eastmoney_enabled():
@@ -201,6 +208,10 @@ def publish_bilibili_api(
 
 
 def publish_shipinhao_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    if llm_browser_default():
+        return publish_llm_browser(
+            "shipinhao", video, script_path, dry_run=dry_run
+        )
     cmd = [
         str(ROOT / "scripts" / "publish-shipinhao.sh"),
         rel(video),
@@ -213,6 +224,14 @@ def publish_shipinhao_api(video: Path, script_path: Path, *, dry_run: bool) -> s
     if dry_run:
         return ""
     return _read_last_publish_url("last_tencent_publish.json", "title")
+
+
+def publish_douyin_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    return publish_llm_browser("douyin", video, script_path, dry_run=dry_run)
+
+
+def publish_xiaohongshu_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    return publish_llm_browser("xiaohongshu", video, script_path, dry_run=dry_run)
 
 
 def publish_tiktok_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
@@ -463,6 +482,32 @@ def publish_shipinhao(video: Path, script_path: Path, *, dry_run: bool) -> str:
         return title
 
     return _publish_with_retry(_do, label="视频号", dry_run=dry_run)
+
+
+def publish_douyin(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    if not douyin_enabled() or not llm_browser_default():
+        return ""
+
+    def _do() -> str:
+        title = publish_douyin_api(video, script_path, dry_run=dry_run)
+        if title:
+            log(f"  [抖音] 已提交: {title}")
+        return title
+
+    return _publish_with_retry(_do, label="抖音", dry_run=dry_run)
+
+
+def publish_xiaohongshu(video: Path, script_path: Path, *, dry_run: bool) -> str:
+    if not xhs_video_enabled() or not llm_browser_default():
+        return ""
+
+    def _do() -> str:
+        title = publish_xiaohongshu_api(video, script_path, dry_run=dry_run)
+        if title:
+            log(f"  [小红书] 已提交: {title}")
+        return title
+
+    return _publish_with_retry(_do, label="小红书", dry_run=dry_run)
 
 
 def _bilibili_non_retryable(exc: BaseException) -> bool:
@@ -748,6 +793,8 @@ def pipeline_after_script(
     wechat_title = ""
     zhihu_title = ""
     shipinhao_title = ""
+    douyin_title = ""
+    xiaohongshu_title = ""
 
     if dry_run:
         log(f"\n=== [{index}/{target}] 预演 API 发布 ===")
@@ -758,6 +805,8 @@ def pipeline_after_script(
             facebook_ok = publish_facebook_reels(video, script_path, dry_run=True)
             linkedin_ok = publish_linkedin(video, script_path, dry_run=True)
         bilibili_title = publish_bilibili(video, script_path, dry_run=True)
+        douyin_title = publish_douyin(video, script_path, dry_run=True)
+        xiaohongshu_title = publish_xiaohongshu(video, script_path, dry_run=True)
         shipinhao_title = publish_shipinhao(video, script_path, dry_run=True)
         forum_for_bili = video.parent / video.stem
         if (forum_for_bili / "post.md").is_file():
@@ -778,6 +827,8 @@ def pipeline_after_script(
             wechat_title=wechat_title,
             zhihu_title=zhihu_title,
             shipinhao_title=shipinhao_title,
+            douyin_title=douyin_title,
+            xiaohongshu_title=xiaohongshu_title,
             skip_auto_note=True,
         )
         return {
@@ -791,6 +842,8 @@ def pipeline_after_script(
             "facebook": facebook_ok,
             "linkedin": linkedin_ok,
             "bilibili_title": bilibili_title,
+            "douyin_title": douyin_title,
+            "xiaohongshu_title": xiaohongshu_title,
             "shipinhao_title": shipinhao_title,
             "eastmoney_title": eastmoney_title,
             "xueqiu_title": xueqiu_title,
@@ -801,6 +854,8 @@ def pipeline_after_script(
     if (
         _intl_video_publish_enabled()
         or bilibili_enabled()
+        or (douyin_enabled() and llm_browser_default())
+        or (xhs_video_enabled() and llm_browser_default())
         or shipinhao_enabled()
         or wechat_enabled()
         or eastmoney_enabled()
@@ -816,6 +871,8 @@ def pipeline_after_script(
         facebook_ok = publish_facebook_reels(video, script_path, dry_run=False)
         linkedin_ok = publish_linkedin(video, script_path, dry_run=False)
     bilibili_title = publish_bilibili(video, script_path, dry_run=False)
+    douyin_title = publish_douyin(video, script_path, dry_run=False)
+    xiaohongshu_title = publish_xiaohongshu(video, script_path, dry_run=False)
     shipinhao_title = publish_shipinhao(video, script_path, dry_run=False)
 
     append_history_fn(script_path)
@@ -842,6 +899,8 @@ def pipeline_after_script(
         wechat_title=wechat_title,
         zhihu_title=zhihu_title,
         shipinhao_title=shipinhao_title,
+        douyin_title=douyin_title,
+        xiaohongshu_title=xiaohongshu_title,
     )
 
     return {
@@ -852,6 +911,8 @@ def pipeline_after_script(
         "published": bool(
             (_locale_en() and (youtube_url or tiktok_url or instagram_ok or facebook_ok or linkedin_ok))
             or bilibili_title
+            or douyin_title
+            or xiaohongshu_title
             or shipinhao_title
             or wechat_title
             or eastmoney_title
@@ -864,6 +925,8 @@ def pipeline_after_script(
         "facebook": facebook_ok,
         "linkedin": linkedin_ok,
         "bilibili_title": bilibili_title,
+        "douyin_title": douyin_title,
+        "xiaohongshu_title": xiaohongshu_title,
         "shipinhao_title": shipinhao_title,
         "wechat_title": wechat_title,
         "eastmoney_title": eastmoney_title,

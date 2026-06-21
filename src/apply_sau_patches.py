@@ -10,6 +10,35 @@ from pathlib import Path
 from paths import ROOT
 TARGET = ROOT / "vendor" / "social-auto-upload" / "uploader" / "douyin_uploader" / "main.py"
 XHS_TARGET = ROOT / "vendor" / "social-auto-upload" / "uploader" / "xiaohongshu_uploader" / "main.py"
+TENCENT_TARGET = ROOT / "vendor" / "social-auto-upload" / "uploader" / "tencent_uploader" / "main.py"
+
+TENCENT_UPLOAD_MARKER = "AIVIDEO_PATCH: 跳过封面/短标题"
+TENCENT_UPLOAD_OLD = """            await self.upload_video_file(page, self.file_path)
+            await self.prepare_video_for_publish(page)
+            await self.wait_for_upload_complete(page)
+            await self.set_thumbnail(page)
+
+            if self.publish_strategy == TENCENT_PUBLISH_STRATEGY_SCHEDULED and self.publish_date != 0:
+                await self.set_schedule_time_tencent(page, self.publish_date)
+
+            await self.set_short_title(page, self.title, self.short_title)
+            await self.submit_publish(page)"""
+
+TENCENT_UPLOAD_NEW = """            await self.upload_video_file(page, self.file_path)
+            await self.wait_for_upload_complete(page)
+            # AIVIDEO_PATCH: 跳过封面/短标题，仅填描述+原创后发表
+            editor = page.locator("div.input-editor").first
+            await editor.wait_for(state="visible", timeout=120000)
+            await editor.click()
+            body = (self.desc or "").strip()
+            if body:
+                await page.keyboard.type(body)
+            await self.apply_original_statement(page)
+
+            if self.publish_strategy == TENCENT_PUBLISH_STRATEGY_SCHEDULED and self.publish_date != 0:
+                await self.set_schedule_time_tencent(page, self.publish_date)
+
+            await self.submit_publish(page)"""
 
 # 小红书 fill_tags 容错版：弹不出官方话题下拉时，按空格把 #标签 作为普通文本提交，
 # 不再因 TimeoutError 整个发布失败。
@@ -271,6 +300,9 @@ def patch(path: Path) -> None:
         text,
     )
 
+    if DOUYIN_SKIP_COVER_MARKER not in text and DOUYIN_SKIP_COVER_OLD in text:
+        text = text.replace(DOUYIN_SKIP_COVER_OLD, DOUYIN_SKIP_COVER_NEW, 1)
+
     path.write_text(text, encoding="utf-8")
     print(f"已打补丁: {path}")
 
@@ -464,6 +496,15 @@ XHS_PUBLISH_NEW = '''        # AIVIDEO_PATCH: 发布确认最多尝试 90 秒，
         else:
             raise RuntimeError("小红书发布按钮已点击但未确认成功（可能页面改版/网络问题），请人工核对小红书后台")'''
 
+XHS_SKIP_COVER_MARKER = "AIVIDEO_PATCH: 跳过封面设置"
+XHS_SKIP_COVER_OLD = "        await self.set_thumbnail(page, self.thumbnail_path)"
+XHS_SKIP_COVER_NEW = """        # AIVIDEO_PATCH: 跳过封面设置，使用视频默认首帧
+        xiaohongshu_logger.info(_msg("🖼️", "跳过自定义封面，使用视频默认首帧"))"""
+
+DOUYIN_SKIP_COVER_MARKER = "AIVIDEO_PATCH: 跳过自定义封面"
+DOUYIN_SKIP_COVER_OLD = "        await self.set_thumbnail(page)"
+DOUYIN_SKIP_COVER_NEW = "        # AIVIDEO_PATCH: 跳过自定义封面，使用视频默认首帧"
+
 
 def patch_xhs(path: Path) -> None:
     if not path.is_file():
@@ -509,6 +550,11 @@ def patch_xhs(path: Path) -> None:
         text = text.replace(XHS_VALIDATE_BASE_OLD, XHS_VALIDATE_BASE_NEW)
         applied.append("skip_recheck")
 
+    # 7) 跳过封面设置（使用视频默认首帧）
+    if XHS_SKIP_COVER_MARKER not in text and XHS_SKIP_COVER_OLD in text:
+        text = text.replace(XHS_SKIP_COVER_OLD, XHS_SKIP_COVER_NEW, 1)
+        applied.append("skip_cover")
+
     path.write_text(text, encoding="utf-8")
     if applied:
         print(f"已打小红书补丁({', '.join(applied)}): {path}")
@@ -516,6 +562,23 @@ def patch_xhs(path: Path) -> None:
         print(f"小红书补丁已是最新，跳过: {path}")
 
 
+def patch_tencent(path: Path) -> None:
+    if not path.is_file():
+        print(f"跳过视频号补丁：未找到 {path}", file=sys.stderr)
+        return
+    text = path.read_text(encoding="utf-8")
+    if TENCENT_UPLOAD_MARKER in text:
+        print(f"视频号补丁已是最新，跳过: {path}")
+        return
+    if TENCENT_UPLOAD_OLD not in text:
+        print("视频号 upload 补丁锚点缺失（upstream 可能已变更），跳过", file=sys.stderr)
+        return
+    text = text.replace(TENCENT_UPLOAD_OLD, TENCENT_UPLOAD_NEW, 1)
+    path.write_text(text, encoding="utf-8")
+    print(f"已打视频号补丁(skip_cover): {path}")
+
+
 if __name__ == "__main__":
     patch(TARGET)
     patch_xhs(XHS_TARGET)
+    patch_tencent(TENCENT_TARGET)

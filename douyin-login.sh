@@ -87,6 +87,7 @@ if [[ "$FORCE" -eq 0 ]]; then
     exit 0
   fi
   echo "当前登录态无效或上传页未就绪，将打开浏览器重新登录。"
+  echo "若之前扫码失败或 Chrome 里看不到二维码，请先执行: ./douyin-login.sh --force"
   echo ""
 fi
 
@@ -94,12 +95,12 @@ echo "登录提示（若手机显示「系统繁忙」请按此操作）："
 echo "  1. 优先在弹出的 Chrome 窗口里扫码，不要扫终端/PNG 里的旧码"
 echo "  2. 关闭 VPN/代理，手机和电脑在同一网络"
 echo "  3. 若仍繁忙：先在 Chrome 手动打开 https://creator.douyin.com/ 登录一次，再重跑本脚本"
+echo "  4. 若窗口没弹出或被挡住，从 Dock 点 Google Chrome 切到前台"
 echo ""
 echo "即将打开 Chrome，请在窗口内完成扫码…"
 echo ""
 
-cd "$SAU_HOME"
-"$SAU_BIN" douyin login --account "$ACCOUNT" --headed
+"$SAU_PY" "$ROOT/src/douyin_login.py" --login --account "$ACCOUNT"
 
 echo ""
 echo "登录流程结束，正在验证上传页…"

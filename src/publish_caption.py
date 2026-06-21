@@ -34,7 +34,13 @@ _VIDEO_MANUAL_SHIPINHAO: tuple[str, str, str] = (
 
 
 def _video_manual_platforms() -> list[tuple[str, str, str]]:
-    platforms = list(_VIDEO_MANUAL_PLATFORMS)
+    from publish_llm_browser import llm_browser_default
+
+    platforms: list[tuple[str, str, str]] = []
+    if not (douyin_enabled() and llm_browser_default()):
+        platforms.append(_VIDEO_MANUAL_PLATFORMS[0])
+    if not (xhs_video_enabled() and llm_browser_default()):
+        platforms.append(_VIDEO_MANUAL_PLATFORMS[1])
     if not shipinhao_enabled():
         platforms.append(_VIDEO_MANUAL_SHIPINHAO)
     return platforms
@@ -82,6 +88,8 @@ def print_manual_publish_pack(
     wechat_title: str = "",
     zhihu_title: str = "",
     shipinhao_title: str = "",
+    douyin_title: str = "",
+    xiaohongshu_title: str = "",
     skip_auto_note: bool = False,
 ) -> None:
     script = _load_script_dict(script_path) or load_script(script_path)
@@ -229,6 +237,8 @@ def bilibili_video_manual_needed() -> bool:
 
 def _todo_config_summary() -> str:
     """当前 .env 中与待办相关的开关摘要。"""
+    from publish_llm_browser import llm_browser_default
+
     if _locale_en():
         bits: list[str] = []
         if youtube_enabled():
@@ -239,9 +249,17 @@ def _todo_config_summary() -> str:
                 bits.append(label)
         return " · ".join(bits) if bits else "（未开启 YouTube/TikTok）"
 
-    bits = ["抖音/小红书=你手动传"]
+    bits = []
+    if douyin_enabled() and llm_browser_default():
+        bits.append("抖音=LLM自动")
+    else:
+        bits.append("抖音=你手动传")
+    if xhs_video_enabled() and llm_browser_default():
+        bits.append("小红书=LLM自动")
+    else:
+        bits.append("小红书=你手动传")
     if shipinhao_enabled():
-        bits.append("视频号=自动")
+        bits.append("视频号=LLM自动")
     if bilibili_video_auto_enabled():
         bits.append("B站视频=自动")
     elif bilibili_video_manual_needed():

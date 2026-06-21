@@ -79,7 +79,10 @@ def append_history(item: dict) -> None:
         "title": title,
         "made_at": datetime.now(timezone.utc).isoformat(),
     }
-    for key in ("script_title", "article_title", "question_title", "category", "direction", "topic_slot"):
+    for key in (
+        "script_title", "article_title", "question_title", "category", "direction",
+        "topic_slot", "topic_id", "mode", "theme_cluster", "title_hint",
+    ):
         value = str(item.get(key) or "").strip()
         if value:
             record[key] = value
@@ -117,6 +120,7 @@ def append_history_from_script(script_path: Path, video: Path | None = None) -> 
     except Exception:  # noqa: BLE001
         theme_cluster = str(script.get("theme_cluster") or "").strip()
 
+    topic_plan = (data.get("article") or {}).get("_topic_plan") or {}
     record = {
         "url": article.get("url") or (script.get("source") or {}).get("url") or "",
         "title": article.get("title") or script.get("title") or "",
@@ -126,8 +130,9 @@ def append_history_from_script(script_path: Path, video: Path | None = None) -> 
         "cold_open": str(script.get("cold_open") or "").strip(),
         "theme_cluster": theme_cluster,
         "category": str(script.get("category") or "").strip(),
-        "topic_slot": (
-            (data.get("article") or {}).get("_topic_plan") or {}
-        ).get("direction") or str(script.get("topic_slot") or "").strip(),
+        "topic_slot": topic_plan.get("slot") or topic_plan.get("direction") or str(script.get("topic_slot") or "").strip(),
+        "topic_id": str(topic_plan.get("topic_id") or script.get("topic_id") or "").strip(),
+        "title_hint": str(topic_plan.get("title_hint") or "").strip(),
+        "mode": "weekend_edu" if str(topic_plan.get("script_mode") or "") == "edu_explain" else "",
     }
     append_history({k: v for k, v in record.items() if v})

@@ -80,6 +80,10 @@ export SAU_HOME
 export PYTHONPATH="$ROOT/src:$SAU_HOME${PYTHONPATH:+:$PYTHONPATH}"
 
 session_check() {
+  if [[ "$PUB_PLATFORM" == "shipinhao" ]]; then
+    "$SAU_PY" "$ROOT/src/shipinhao_session.py" --account "$ACCOUNT"
+    return $?
+  fi
   "$SAU_PY" "$ROOT/src/social_publisher.py" "$PUB_PLATFORM" check
 }
 
@@ -97,19 +101,32 @@ if [[ "$FORCE" -eq 1 ]]; then
   rm -rf "$PROFILE_DIR"
 fi
 
+profile_ready() {
+  [[ -d "$PROFILE_DIR" ]] && [[ -n "$(ls -A "$PROFILE_DIR" 2>/dev/null || true)" ]]
+}
+
 if [[ "$FORCE" -eq 0 ]] && [[ -f "$COOKIE_FILE" ]]; then
-  if session_check >/dev/null 2>&1; then
-    session_check
-    echo ""
-    echo "当前账号 cookie 仍有效，未打开浏览器。"
-    echo "  换号登录: ./social-login.sh $PUB_PLATFORM --account <新账号名> --force"
-    echo "  同账号重登: ./social-login.sh $PUB_PLATFORM --force"
-    echo "  换号后请在 .env 设置 SAU_XHS_ACCOUNT=<新账号名>（视频号用 SAU_SHIPINHAO_ACCOUNT）"
-    exit 0
+  if profile_ready; then
+    echo "正在校验登录态…"
+    if session_check >/dev/null 2>&1; then
+      session_check
+      echo ""
+      echo "当前账号 cookie 仍有效，未打开浏览器。"
+      echo "  换号登录: ./social-login.sh $PUB_PLATFORM --account <新账号名> --force"
+      echo "  同账号重登: ./social-login.sh $PUB_PLATFORM --force"
+      echo "  换号后请在 .env 设置 SAU_XHS_ACCOUNT=<新账号名>（视频号用 SAU_SHIPINHAO_ACCOUNT）"
+      exit 0
+    fi
+    echo "登录态已失效，将重新打开浏览器…"
+  else
+    echo "未找到 Chrome Profile，跳过 cookie 校验，直接打开浏览器完成首次登录…"
   fi
 fi
 
 echo "即将打开浏览器，请扫码完成登录…"
+if [[ "$PUB_PLATFORM" == "shipinhao" ]]; then
+  exec "$SAU_PY" "$ROOT/src/shipinhao_login.py" --login --account "$ACCOUNT"
+fi
 LOGIN_ARGS=(login)
 [[ "$HEADLESS" -eq 1 ]] && LOGIN_ARGS+=(--headless)
 exec "$SAU_PY" "$ROOT/src/social_publisher.py" "$PUB_PLATFORM" "${LOGIN_ARGS[@]}"

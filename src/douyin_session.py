@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""抖音创作者登录态校验（以上传页 file input 为准）。"""
+"""抖音创作者登录态校验（以上传页 file input 为准，支持 Profile / cookie）。"""
 
 from __future__ import annotations
 
@@ -8,18 +8,31 @@ import asyncio
 import sys
 from pathlib import Path
 
-from douyin_publisher import DouyinPublishError, _ensure_patchright, cookie_path
+from douyin_publisher import DouyinPublishError, _ensure_patchright, resolve_cookie_path
 from paths import ROOT
 from sau_client import SauError, check_douyin_session, douyin_account
 
 
-async def verify_upload_page(*, root: Path | None = None, account: str | None = None) -> bool:
-    """返回 True 表示 cookie 能打开上传页且出现 file input。"""
+def profile_dir(*, root: Path | None = None, account: str | None = None) -> Path:
+    account = account or douyin_account()
+    cookie = resolve_cookie_path(root, account)
+    return cookie.parent / "browser_profiles" / cookie.stem
+
+
+async def verify_upload_page(
+    *,
+    root: Path | None = None,
+    account: str | None = None,
+    use_profile: bool = True,
+) -> bool:
+    """True = 能打开上传页且出现 file input（未要求扫码）。"""
     _ensure_patchright()
     from patchright.async_api import async_playwright
 
     root = root or ROOT
-    cookie = cookie_path(root, account)
+    account = account or douyin_account()
+    cookie = resolve_cookie_path(root, account)
+    profile = profile_dir(root=root, account=account)
 
     launch: dict = {
         "headless": True,
@@ -32,15 +45,28 @@ async def verify_upload_page(*, root: Path | None = None, account: str | None = 
         launch["channel"] = "chrome"
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(**launch)
-        try:
+        browser = None
+        if use_profile and profile.is_dir() and any(profile.iterdir()):
+            context = await p.chromium.launch_persistent_context(
+                str(profile),
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+                viewport={"width": 1440, "height": 900},
+                **launch,
+            )
+        elif cookie.is_file() and cookie.stat().st_size > 64:
+            browser = await p.chromium.launch(**launch)
             context = await browser.new_context(
                 storage_state=str(cookie),
                 locale="zh-CN",
                 timezone_id="Asia/Shanghai",
                 viewport={"width": 1440, "height": 900},
             )
-            page = await context.new_page()
+        else:
+            return False
+
+        try:
+            page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(
                 "https://creator.douyin.com/creator-micro/content/upload",
                 wait_until="domcontentloaded",
@@ -72,7 +98,10 @@ async def verify_upload_page(*, root: Path | None = None, account: str | None = 
                 await asyncio.sleep(1)
             return False
         finally:
-            await browser.close()
+            if browser:
+                await browser.close()
+            else:
+                await context.close()
 
 
 def main() -> int:
@@ -81,15 +110,38 @@ def main() -> int:
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
-    try:
-        check_douyin_session(root=ROOT)
-    except SauError as exc:
+    prof = profile_dir(root=ROOT, account=args.account)
+    cookie = resolve_cookie_path(ROOT, args.account)
+    has_profile = prof.is_dir() and any(prof.iterdir())
+    has_cookie = cookie.is_file() and cookie.stat().st_size > 64
+
+    if not has_profile and not has_cookie:
         if not args.quiet:
-            print(str(exc), file=sys.stderr)
+            print(
+                f"未找到登录态（Profile 或 cookie）\n"
+                f"  Profile: {prof}\n"
+                f"  Cookie: {cookie}\n"
+                f"请运行: ./douyin-login.sh --force",
+                file=sys.stderr,
+            )
         return 1
 
+    if has_cookie:
+        try:
+            check_douyin_session(root=ROOT)
+        except SauError:
+            if not has_profile:
+                if not args.quiet:
+                    print(
+                        "抖音 cookie 无效。请运行: ./douyin-login.sh --force",
+                        file=sys.stderr,
+                    )
+                return 1
+
     try:
-        ok = asyncio.run(verify_upload_page(root=ROOT, account=args.account))
+        ok = asyncio.run(
+            verify_upload_page(root=ROOT, account=args.account, use_profile=True)
+        )
     except DouyinPublishError as exc:
         if not args.quiet:
             print(str(exc), file=sys.stderr)
@@ -98,15 +150,15 @@ def main() -> int:
     if not ok:
         if not args.quiet:
             print(
-                "Cookie 能进首页但上传页未就绪（常见于半失效）。"
+                "登录态无效或上传页未就绪。"
                 "请运行: ./douyin-login.sh --force",
                 file=sys.stderr,
             )
         return 1
 
     if not args.quiet:
-        cookie = cookie_path(ROOT, args.account)
-        print(f"登录态有效（已验证上传页）: {cookie}")
+        where = f"Profile: {prof}" if has_profile else f"Cookie: {cookie}"
+        print(f"登录态有效（已验证上传页）: {where}")
     return 0
 
 

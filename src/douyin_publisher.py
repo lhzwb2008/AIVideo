@@ -35,9 +35,13 @@ def resolve_playwright_python(root: Path | None = None) -> Path | None:
     return None
 
 
-def cookie_path(root: Path | None = None, account: str | None = None) -> Path:
+def resolve_cookie_path(root: Path | None = None, account: str | None = None) -> Path:
     account = account or _env("SAU_DOUYIN_ACCOUNT", "main")
-    path = sau_home(root) / "cookies" / f"douyin_{account}.json"
+    return sau_home(root) / "cookies" / f"douyin_{account}.json"
+
+
+def cookie_path(root: Path | None = None, account: str | None = None) -> Path:
+    path = resolve_cookie_path(root, account)
     if not path.is_file():
         raise DouyinPublishError(
             f"未找到 cookie: {path}\n请先运行: ./douyin-login.sh"
@@ -76,7 +80,7 @@ def _ensure_patchright():
 async def _dismiss_overlays(page) -> None:
     for _ in range(5):
         clicked = False
-        for text in ("我知道了", "知道了", "关闭"):
+        for text in ("我知道了", "知道了", "关闭", "取消", "跳过", "暂不设置"):
             btn = page.get_by_role("button", name=text, exact=True)
             count = await btn.count()
             for i in range(count):
@@ -90,6 +94,10 @@ async def _dismiss_overlays(page) -> None:
                     continue
         if not clicked:
             break
+    try:
+        await page.keyboard.press("Escape")
+    except Exception:
+        pass
 
 
 async def _goto(page, url: str) -> None:
@@ -126,12 +134,26 @@ async def _require_logged_in(page) -> None:
     url = page.url.lower()
     if "passport" in url or "/login" in url:
         raise DouyinPublishError("未登录或 cookie 已失效，请先运行: ./douyin-login.sh")
-    for text in ("扫码登录", "手机号登录", "登录后即可"):
-        loc = page.get_by_text(text, exact=False).first
+    for sel in (
+        "input.semi-upload-hidden-input",
+        "input[type='file'][accept*='video']",
+        "input[type='file']",
+    ):
+        loc = page.locator(sel).first
+        if await loc.count():
+            try:
+                await loc.wait_for(state="attached", timeout=2000)
+                return
+            except Exception:
+                pass
+    for text in ("扫码登录", "手机号登录"):
+        loc = page.get_by_text(text, exact=True).first
         if await loc.count():
             try:
                 if await loc.is_visible():
-                    raise DouyinPublishError("未登录或 cookie 已失效，请先运行: ./douyin-login.sh")
+                    raise DouyinPublishError(
+                        "未登录或 cookie 已失效，请先运行: ./douyin-login.sh"
+                    )
             except DouyinPublishError:
                 raise
             except Exception:
@@ -279,75 +301,18 @@ async def _wait_upload_done(page, timeout_s: int = 300) -> None:
     raise DouyinPublishError("视频上传超时")
 
 
-async def _upload_custom_cover(page, cover_path: Path) -> bool:
-    if not cover_path.is_file():
-        return False
-    for text in ("选择封面", "编辑封面", "设置封面"):
-        entry = page.get_by_text(text, exact=True).first
-        try:
-            if await entry.count() and await entry.is_visible():
-                await entry.click(timeout=5000)
-                await asyncio.sleep(1)
-                break
-        except Exception:
-            continue
-
-    for text in ("上传封面", "本地上传", "上传图片", "从本地上传"):
-        btn = page.get_by_text(text, exact=False).first
-        try:
-            if await btn.count() and await btn.is_visible():
-                await btn.click(timeout=5000)
-                await asyncio.sleep(0.5)
-                break
-        except Exception:
-            continue
-
-    file_inputs = page.locator('input[type="file"]')
-    count = await file_inputs.count()
-    for i in range(count):
-        inp = file_inputs.nth(i)
-        try:
-            accept = (await inp.get_attribute("accept")) or ""
-            if accept and "image" not in accept:
-                continue
-            await inp.set_input_files(str(cover_path))
-            await asyncio.sleep(1)
-            for text in ("确定", "完成", "确认", "保存"):
-                ok = page.get_by_role("button", name=text, exact=True).first
-                if await ok.count() and await ok.is_visible():
-                    try:
-                        await ok.click(timeout=5000)
-                        await asyncio.sleep(1)
-                        print(f"  已上传自定义封面: {cover_path}", flush=True)
-                        return True
-                    except Exception:
-                        pass
-            print(f"  已上传自定义封面: {cover_path}", flush=True)
-            return True
-        except Exception:
-            continue
-    return False
+async def _dismiss_cover_modals(page) -> None:
+    """关闭封面编辑弹窗，不上传自定义封面（使用平台默认首帧）。"""
+    await _dismiss_overlays(page)
+    try:
+        await page.keyboard.press("Escape")
+    except Exception:
+        pass
 
 
 async def _pick_cover(page, cover_path: Path | None = None) -> None:
-    await _dismiss_overlays(page)
-    hint = page.get_by_text("请设置封面后再发布").first
-    if await hint.count() and await hint.is_visible():
-        print("  需要设置封面", flush=True)
-
-    if not cover_path:
-        print("  跳过封面设置，使用抖音默认首帧封面", flush=True)
-        return
-
-    try:
-        if await _upload_custom_cover(page, cover_path):
-            return
-    except Exception as exc:  # noqa: BLE001
-        print(f"  自定义封面上传失败，保留默认首帧封面: {exc}", flush=True)
-
-    choose = page.get_by_text("选择封面", exact=True).first
-    if await choose.count() and await choose.is_visible():
-        print("  提示: 请在浏览器中手动选封面", flush=True)
+    """兼容旧调用：一律跳过自定义封面。"""
+    await _dismiss_cover_modals(page)
 
 
 async def _click_radio_by_text(page, text: str) -> bool:
@@ -434,7 +399,7 @@ async def _handle_declaration_modal(page) -> bool:
 
 async def _click_publish(page, *, assist: bool) -> bool:
     if assist:
-        print("\n>>> 半自动模式：请在 Chrome 中检查封面/声明，手动点击「发布」", flush=True)
+        print("\n>>> 半自动模式：请在 Chrome 中检查声明，手动点击「发布」", flush=True)
         print(">>> 等待最多 10 分钟…", flush=True)
         for i in range(600):
             if "content/manage" in page.url:
@@ -451,7 +416,6 @@ async def _click_publish(page, *, assist: bool) -> bool:
             return True
         await _dismiss_overlays(page)
         await _handle_declaration_modal(page)
-        await _pick_cover(page)
         btn = page.get_by_role("button", name="发布", exact=True).first
         if await btn.count():
             try:
@@ -547,7 +511,7 @@ async def publish_video(
 
             await _fill_form(page, title, desc, tag_list)
             await _wait_upload_done(page)
-            await _pick_cover(page, cover_path=cover_path)
+            await _dismiss_cover_modals(page)
             await _set_ai_declaration(page)
 
             ok = await _click_publish(page, assist=assist)
