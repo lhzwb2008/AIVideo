@@ -104,9 +104,9 @@ def _browser_viewport(platform: str) -> dict[str, int]:
     if platform == "bilibili":
         try:
             w = int(_env("BILIBILI_BROWSER_WIDTH", "1440"))
-            h = int(_env("BILIBILI_BROWSER_HEIGHT", "2000"))
+            h = int(_env("BILIBILI_BROWSER_HEIGHT", "2560"))
         except ValueError:
-            w, h = 1440, 2000
+            w, h = 1440, 2560
     elif platform == "xiaohongshu":
         try:
             w = int(_env("XHS_BROWSER_WIDTH", "1440"))
@@ -446,11 +446,13 @@ async def _launch_context(p, platform: str, *, headed: bool):
 
     if platform == "xiaohongshu":
         launch["args"].extend(["--disable-geolocation", "--deny-permission-prompts"])
+    elif platform == "bilibili":
+        launch["args"].append("--deny-permission-prompts")
 
     bilibili_max = platform == "bilibili" and _platform_use_maximized("bilibili")
     xhs_max = platform == "xiaohongshu" and _platform_use_maximized("xiaohongshu")
     if bilibili_max and headed:
-        launch["args"].extend(["--start-maximized", "--window-position=0,0"])
+        launch["args"].append("--window-position=0,0")
     elif xhs_max and headed:
         launch["args"].append("--window-position=0,0")
 
@@ -458,20 +460,17 @@ async def _launch_context(p, platform: str, *, headed: bool):
         ctx_kw: dict = {
             "locale": "zh-CN",
             "timezone_id": "Asia/Shanghai",
+            "viewport": vp,
         }
-        if bilibili_max and headed:
-            ctx_kw["no_viewport"] = True
-        else:
-            ctx_kw["viewport"] = vp
         context = await p.chromium.launch_persistent_context(
             str(profile),
             **ctx_kw,
             **launch,
         )
-        if platform == "xiaohongshu":
-            from llm_browser_agent import install_xhs_browser_hooks
+        if platform in ("xiaohongshu", "bilibili"):
+            from llm_browser_agent import install_browser_shadow_hooks
 
-            await install_xhs_browser_hooks(context)
+            await install_browser_shadow_hooks(context)
         return context, None
 
     if not cookie:
@@ -487,9 +486,13 @@ async def _launch_context(p, platform: str, *, headed: bool):
         viewport=vp,
     )
     if platform == "xiaohongshu":
-        from llm_browser_agent import install_xhs_browser_hooks
+        from llm_browser_agent import install_browser_shadow_hooks
 
-        await install_xhs_browser_hooks(context)
+        await install_browser_shadow_hooks(context)
+    elif platform == "bilibili":
+        from llm_browser_agent import install_browser_shadow_hooks
+
+        await install_browser_shadow_hooks(context)
     try:
         home = str(sau_home())
         if home not in sys.path:
@@ -663,7 +666,7 @@ async def publish_async(
             page = context.pages[0] if context.pages else await context.new_page()
             print(f"  打开 {platform_url(platform)} …", flush=True)
             await _goto_page(page, platform_url(platform))
-            if platform == "xiaohongshu":
+            if platform in ("xiaohongshu", "bilibili"):
                 try:
                     await page.reload(wait_until="domcontentloaded", timeout=90_000)
                     await asyncio.sleep(1.5)
@@ -729,8 +732,19 @@ def main() -> int:
         "platform",
         help="douyin | shipinhao | xiaohongshu | bilibili | zhihu",
     )
-    parser.add_argument("video", nargs="?", help="MP4 路径（知乎可省略）")
-    parser.add_argument("--forum-dir", help="论坛图文包目录（知乎必填）")
+    parser.add_argument(
+        "video",
+        nargs="?",
+        help="MP4 路径；知乎可填论坛包目录（等同 --forum-dir）",
+    )
+    parser.add_argument(
+        "--forum-dir",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="DIR",
+        help="论坛图文包目录（知乎必填，含 post.md）",
+    )
     parser.add_argument("--script", help="脚本 JSON")
     parser.add_argument("--archive-dir", help="归档素材目录（含 README.md）")
     parser.add_argument("--title", help="覆盖标题")
@@ -756,13 +770,19 @@ def main() -> int:
         raise SystemExit(f"未知平台: {args.platform}")
 
     if platform == "zhihu":
-        if not args.forum_dir or not str(args.forum_dir).strip():
+        forum_dir_arg = (args.forum_dir or "").strip()
+        if not forum_dir_arg and args.video:
+            forum_dir_arg = str(args.video).strip()
+        if not forum_dir_arg:
             raise SystemExit(
-                "知乎发布需要 --forum-dir（含 post.md 的论坛包目录）。\n"
-                "示例: --forum-dir archive\\published\\20260621\\zh\\20260621_190311\n"
-                "（PowerShell 请先设 $Forum=...，勿留空变量）"
+                "知乎发布需要论坛包目录（含 post.md）。\n"
+                "方式 1: python src\\llm_browser_publish.py zhihu "
+                "archive\\published\\20260621\\zh\\20260621_190311 --confirm --headed\n"
+                "方式 2: python src\\llm_browser_publish.py zhihu "
+                "--forum-dir=archive\\published\\20260621\\zh\\20260621_190311 --confirm --headed\n"
+                "PowerShell 若用变量: $Forum='archive\\...\\20260621_190311' 再传 --forum-dir $Forum"
             )
-        forum_dir = Path(args.forum_dir).resolve()
+        forum_dir = Path(forum_dir_arg).resolve()
         if not forum_dir.is_dir():
             raise SystemExit(f"论坛包目录不存在: {forum_dir}")
         fields = resolve_zhihu_fields(forum_dir)

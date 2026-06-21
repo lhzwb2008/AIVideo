@@ -610,9 +610,9 @@ BILIBILI_MANAGE_URL = (
 def _bilibili_viewport() -> dict[str, int]:
     try:
         w = int(_env("BILIBILI_BROWSER_WIDTH", "1440"))
-        h = int(_env("BILIBILI_BROWSER_HEIGHT", "2000"))
+        h = int(_env("BILIBILI_BROWSER_HEIGHT", "2560"))
     except ValueError:
-        w, h = 1440, 2000
+        w, h = 1440, 2560
     return {"width": w, "height": h}
 
 
@@ -621,8 +621,57 @@ def _bilibili_use_maximized_window() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
-async def bilibili_prepare_page(page) -> None:
-    """加高视口/最大化并滚到底，确保底部「立即投稿」栏可见。"""
+_BILI_SUBMIT_LABELS_JS = "['立即投稿', '投稿']"
+
+_BILI_SHADOW_CLICK_JS = f"""
+() => {{
+  const labels = {_BILI_SUBMIT_LABELS_JS};
+  const ok = (t) => labels.some((l) => t === l || t.includes(l));
+  const tryRoot = (root) => {{
+    let best = null, bestScore = -1;
+    for (const el of root.querySelectorAll('button, [role="button"], span, div, a')) {{
+      const t = (el.innerText || el.textContent || '').trim();
+      if (!t || !ok(t)) continue;
+      if (t.length > 12) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 20 || r.height < 10) continue;
+      const st = getComputedStyle(el);
+      let s = 0;
+      if (t === '立即投稿') s += 50;
+      if (st.position === 'fixed' || st.position === 'sticky') s += 40;
+      if (r.bottom >= window.innerHeight - 160) s += 30;
+      if (s > bestScore) {{ bestScore = s; best = el; }}
+    }}
+    if (best) {{ best.click(); return (best.innerText || '').trim(); }}
+    return '';
+  }};
+  for (const host of document.querySelectorAll(
+    '[class*="submit"], bili-submit, [is*="submit"]'
+  )) {{
+    const root = host.shadowRoot;
+    if (root) {{
+      const hit = tryRoot(root);
+      if (hit) return hit;
+    }}
+  }}
+  for (const host of document.querySelectorAll('*')) {{
+    const root = host.shadowRoot;
+    if (!root) continue;
+    const hit = tryRoot(root);
+    if (hit) return hit;
+  }}
+  return tryRoot(document);
+}}
+"""
+
+
+async def bilibili_prepare_page(page, *, verbose: bool = True) -> None:
+    """加高视口并滚到底；底部「立即投稿」可能在 Shadow DOM / fixed 栏内。"""
+    vp = _bilibili_viewport()
+    try:
+        await page.set_viewport_size(vp)
+    except Exception:
+        pass
     if _bilibili_use_maximized_window():
         try:
             await page.evaluate(
@@ -635,16 +684,44 @@ async def bilibili_prepare_page(page) -> None:
             )
         except Exception:
             pass
-    else:
-        vp = _bilibili_viewport()
-        try:
-            await page.set_viewport_size(vp)
-        except Exception:
-            pass
     await _bilibili_scroll_to_footer(page)
-    vp = _bilibili_viewport()
+    if not verbose:
+        return
     mode = "最大化" if _bilibili_use_maximized_window() else f"{vp['width']}x{vp['height']}"
-    print(f"  [script] B站页面 {mode}，已滚至底部", flush=True)
+    visible = await _bilibili_submit_button_visible(page)
+    print(
+        f"  [script] B站页面 {mode} {vp['width']}x{vp['height']}，已滚至底部"
+        f"（投稿按钮{'可见' if visible else '不可见，将尝试 Shadow/Tab 点击'}）",
+        flush=True,
+    )
+
+
+async def _bilibili_submit_button_visible(page) -> bool:
+    try:
+        return bool(
+            await page.evaluate(
+                f"""() => {{
+                const labels = {_BILI_SUBMIT_LABELS_JS};
+                const ok = (t) => labels.some((l) => t === l || t.includes(l));
+                const check = (root) => {{
+                  for (const el of root.querySelectorAll('button, [role="button"], span, div')) {{
+                    const t = (el.innerText || '').trim();
+                    if (!ok(t)) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width >= 48 && r.height >= 22 && r.bottom <= window.innerHeight + 4)
+                      return true;
+                  }}
+                  return false;
+                }};
+                for (const host of document.querySelectorAll('*')) {{
+                  if (host.shadowRoot && check(host.shadowRoot)) return true;
+                }}
+                return check(document);
+            }}"""
+            )
+        )
+    except Exception:
+        return False
 
 
 async def _bilibili_scroll_to_footer(page) -> None:
@@ -699,11 +776,11 @@ async def _bilibili_scroll_to_footer(page) -> None:
         await asyncio.sleep(0.12)
 
 
-# 2026 改版后「发布」在 xhs-publish-btn 的 closed Shadow DOM 内，需 hook 或键盘 Tab。
-XHS_BROWSER_INIT_SCRIPT = """
+# 部分平台（小红书/B站等）底部按钮在 closed Shadow DOM，需 hook 或键盘 Tab。
+BROWSER_SHADOW_INIT_SCRIPT = """
 (() => {
-  if (window.__aivideoXhsInit) return;
-  window.__aivideoXhsInit = true;
+  if (window.__aivideoShadowInit) return;
+  window.__aivideoShadowInit = true;
   const orig = Element.prototype.attachShadow;
   Element.prototype.attachShadow = function(init) {
     const cfg = Object.assign({}, init || {}, { mode: 'open' });
@@ -711,6 +788,8 @@ XHS_BROWSER_INIT_SCRIPT = """
   };
 })();
 """
+
+XHS_BROWSER_INIT_SCRIPT = BROWSER_SHADOW_INIT_SCRIPT
 
 _XHS_SHADOW_CLICK_JS = """
 () => {
@@ -750,8 +829,12 @@ def _xhs_use_maximized_window() -> bool:
 
 async def install_xhs_browser_hooks(context) -> None:
     """在首次导航前注入 Shadow open hook，否则无法 query 发布按钮。"""
+    await install_browser_shadow_hooks(context)
+
+
+async def install_browser_shadow_hooks(context) -> None:
     try:
-        await context.add_init_script(XHS_BROWSER_INIT_SCRIPT)
+        await context.add_init_script(BROWSER_SHADOW_INIT_SCRIPT)
     except Exception:
         pass
 
@@ -1545,6 +1628,83 @@ async def _bilibili_handle_confirm_dialog(page) -> bool:
     return clicked
 
 
+async def _bilibili_js_click_submit(page) -> str:
+    try:
+        return str(await page.evaluate(_BILI_SHADOW_CLICK_JS)).strip()
+    except Exception as exc:
+        print(f"  [script] B站 JS 点击投稿异常: {exc}", flush=True)
+        return ""
+
+
+async def _bilibili_playwright_click_submit(page) -> bool:
+    for name in ("立即投稿", "投稿"):
+        try:
+            btn = (
+                page.locator('[class*="submit-container"], [class*="submit-add"]')
+                .locator("button, span")
+                .filter(has_text=re.compile(f"^{re.escape(name)}$"))
+                .last
+            )
+            if await btn.count():
+                await btn.click(timeout=6000)
+                print(f"  [script] Playwright 点击 B 站「{name}」", flush=True)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _bilibili_click_submit_keyboard(page) -> bool:
+    """Shadow / fixed 底栏不可见时，Tab 到「立即投稿」再 Enter。"""
+    try:
+        for loc in (
+            page.locator('textarea[placeholder*="标题"], div.title-input textarea').first,
+            page.locator('[class*="upload"], main').first,
+        ):
+            if not await loc.count():
+                continue
+            try:
+                box = await loc.bounding_box()
+                if box:
+                    await page.mouse.click(
+                        box["x"] + min(40, box["width"] / 2),
+                        box["y"] + box["height"] - 12,
+                    )
+                    break
+            except Exception:
+                continue
+        footer = page.locator(
+            '[class*="submit-container"], [class*="footer"], [class*="submit-add"]'
+        ).last
+        if await footer.count():
+            try:
+                box = await footer.bounding_box()
+                if box:
+                    await page.mouse.click(box["x"] + 8, box["y"] + box["height"] / 2)
+            except Exception:
+                pass
+        await asyncio.sleep(0.15)
+        for _ in range(20):
+            await page.keyboard.press("Tab")
+            await asyncio.sleep(0.06)
+            label = await page.evaluate(
+                """() => {
+                const el = document.activeElement;
+                if (!el) return '';
+                return (el.innerText || el.textContent || el.value || '').trim();
+            }"""
+            )
+            if label in ("立即投稿", "投稿") or "立即投稿" in label:
+                await page.keyboard.press("Enter")
+                print("  [script] 键盘 Tab+Enter 触发 B 站投稿", flush=True)
+                await asyncio.sleep(0.4)
+                return True
+        return False
+    except Exception as exc:
+        print(f"  [script] B站键盘投稿失败: {exc}", flush=True)
+        return False
+
+
 async def _bilibili_find_submit_button(page):
     await _bilibili_scroll_to_footer(page)
     handle = await page.evaluate_handle(
@@ -1636,21 +1796,32 @@ async def _bilibili_click_submit(page, *, title: str = "") -> bool:
                 print(f"  [script] 等待投稿按钮… ({i * 2}s)", flush=True)
             await asyncio.sleep(2)
 
+        submitted = False
         if not btn:
-            clicked = await page.evaluate(
-                """() => {
-                for (const label of ['立即投稿', '投稿']) {
-                  const nodes = [...document.querySelectorAll('button, [role="button"], div, span')];
-                  const el = nodes.find(n => (n.innerText||'').trim().includes(label));
-                  if (el) { el.click(); return label; }
-                }
-                return '';
-            }"""
-            )
-            if not clicked:
-                print("  [script] ⚠️ 未找到 B 站投稿按钮", flush=True)
-                return False
-            print(f"  [script] 已通过 JS 点击 B 站「{clicked}」", flush=True)
+            label = await _bilibili_js_click_submit(page)
+            if label:
+                print(f"  [script] 已通过 Shadow JS 点击 B 站「{label}」", flush=True)
+                submitted = True
+            elif await _bilibili_playwright_click_submit(page):
+                submitted = True
+            elif await _bilibili_click_submit_keyboard(page):
+                submitted = True
+            else:
+                legacy = await page.evaluate(
+                    """() => {
+                    for (const label of ['立即投稿', '投稿']) {
+                      const nodes = [...document.querySelectorAll('button, [role="button"], div, span')];
+                      const el = nodes.find(n => (n.innerText||'').trim().includes(label));
+                      if (el) { el.click(); return label; }
+                    }
+                    return '';
+                }"""
+                )
+                if not legacy:
+                    print("  [script] ⚠️ 未找到 B 站投稿按钮", flush=True)
+                    return False
+                print(f"  [script] 已通过 JS 点击 B 站「{legacy}」", flush=True)
+                submitted = True
         else:
             clicked = False
             for force in (False, True):
@@ -1674,6 +1845,10 @@ async def _bilibili_click_submit(page, *, title: str = "") -> bool:
                 except Exception as exc:
                     print(f"  [script] ⚠️ JS 点击投稿失败: {exc}", flush=True)
                     return False
+            submitted = True
+
+        if not submitted:
+            return False
 
         await asyncio.sleep(2)
         await _bilibili_handle_confirm_dialog(page)
