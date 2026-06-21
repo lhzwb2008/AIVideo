@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   修复 SAU venv 中 greenlet / patchright 导入失败（Windows DLL load failed）
