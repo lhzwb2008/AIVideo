@@ -123,7 +123,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    max_slots = weekend_default_count() if (weekend or (args.slot and args.slot.startswith("edu_"))) else len(CURSOR_SLOT_ORDER)
+    max_slots = 99 if weekend else len(CURSOR_SLOT_ORDER)
 
     if args.slot:
         target = 1
@@ -143,7 +143,7 @@ def main() -> int:
         + " → ".join(_slot_label(t["slot"]) for t in topics)
     )
     if weekend:
-        log("调研：Cursor 科普写稿 | 改编：Opus 深读+短视频脚本")
+        log("调研：Opus 动态选题 + Cursor 科普写稿 | 改编：Opus 深读+短视频脚本")
     else:
         log("调研：Cursor Cloud Agent 联网写稿 | 改编：Opus 深读+短视频脚本")
 

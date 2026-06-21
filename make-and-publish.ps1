@@ -1,5 +1,18 @@
 #Requires -Version 5.1
-# AI财知道 · Windows 中文流水线（等同 ./make-and-publish.sh）
+<#
+.SYNOPSIS
+  AI财知道 · Windows 中文流水线主入口（日常自动发布优先用本脚本）
+
+.DESCRIPTION
+  工作日：五槽位新闻（默认 5 条）
+  周末：Opus 动态科普选题（默认 3 条，读历史去重）
+
+.EXAMPLE
+  .\make-and-publish.ps1
+  .\make-and-publish.ps1 1
+  .\make-and-publish.ps1 --no-publish
+  .\make-and-publish.ps1 --slot edu_quant
+#>
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$RemainingArgs
@@ -12,7 +25,7 @@ $env:ROOT = $Root
 
 . (Join-Path $Root 'scripts\load-dotenv.ps1') -Locale zh
 
-$env:PYTHONPATH = "$Root\src"
+$env:PYTHONPATH = if ($env:PYTHONPATH) { "$Root\src;$env:PYTHONPATH" } else { "$Root\src" }
 $env:AIVIDEO_SOURCE = 'cursor'
 $env:AIVIDEO_COMPLIANCE_RELAXED = '1'
 
@@ -21,7 +34,17 @@ if (-not (Test-Path $Py)) {
     $Py = 'python'
 }
 
-$DefaultCount = & $Py -c 'from weekend_edu_topics import is_weekend_edu_mode, weekend_default_count; from cursor_daily_topics import CURSOR_SLOT_ORDER; print(weekend_default_count() if is_weekend_edu_mode() else len(CURSOR_SLOT_ORDER))'
+$ModeInfo = & $Py -c @'
+from weekend_edu_topics import is_weekend_edu_mode, weekend_default_count
+from cursor_daily_topics import CURSOR_SLOT_ORDER
+if is_weekend_edu_mode():
+    print(f"weekend|{weekend_default_count()}|周末科普（Opus 选题，默认 {weekend_default_count()} 条）")
+else:
+    print(f"weekday|{len(CURSOR_SLOT_ORDER)}|工作日新闻五槽位（默认 {len(CURSOR_SLOT_ORDER)} 条）")
+'@
+$ModeParts = $ModeInfo -split '\|', 3
+$DefaultCount = $ModeParts[1]
+Write-Host "[make-and-publish] $($ModeParts[2])" -ForegroundColor Cyan
 
 if ($RemainingArgs.Count -gt 0 -and $RemainingArgs[0] -match '^--') {
     $Count = $DefaultCount

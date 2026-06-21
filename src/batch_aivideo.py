@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -67,6 +68,122 @@ def history_recent_topics(days: int = HISTORY_WINDOW_DAYS, limit: int = 30) -> l
         if len(topics) >= limit:
             break
     return topics
+
+
+def _title_from_script_json(path: Path) -> str:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    script = data.get("script") if isinstance(data.get("script"), dict) else data
+    if not isinstance(script, dict):
+        return ""
+    for key in ("title", "question_title"):
+        t = str(script.get(key) or "").strip()
+        if t:
+            return t
+    article = data.get("article") or script.get("article") or {}
+    if isinstance(article, dict):
+        return str(article.get("title") or article.get("question_title") or "").strip()
+    return ""
+
+
+def published_titles_for_dedup(days: int = 90, limit: int = 80) -> list[str]:
+    """合并 article_history、归档脚本与 output 脚本，供科普选题去重。"""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, days))
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        t = (raw or "").strip()
+        if not t or t in seen:
+            return
+        seen.add(t)
+        out.append(t)
+
+    for item in recent_history(days):
+        for key in ("script_title", "title", "title_hint", "article_title", "question_title"):
+            _add(str(item.get(key) or ""))
+
+    def _mtime_ok(p: Path) -> bool:
+        try:
+            return datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc) >= cutoff
+        except OSError:
+            return False
+
+    from locale_env import iter_script_json_paths, locale_logs_dir
+
+    for path in iter_script_json_paths():
+        if not _mtime_ok(path):
+            continue
+        _add(_title_from_script_json(path))
+
+    log_dir = locale_logs_dir("zh")
+    for log_name in (
+        "last_xueqiu_publish.json",
+        "last_eastmoney_publish.json",
+        "last_bilibili_publish.json",
+    ):
+        log_path = log_dir / log_name
+        if not log_path.is_file() and (ROOT / "logs" / log_name).is_file():
+            log_path = ROOT / "logs" / log_name
+        if not log_path.is_file():
+            continue
+        try:
+            payload = json.loads(log_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                _add(str(payload.get("title") or ""))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    history_jsonl = log_dir / "xueqiu_publish_history.jsonl"
+    if not history_jsonl.is_file():
+        history_jsonl = ROOT / "logs" / "xueqiu_publish_history.jsonl"
+    if history_jsonl.is_file():
+        try:
+            for line in history_jsonl.read_text(encoding="utf-8").splitlines()[-40:]:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if isinstance(row, dict):
+                    _add(str(row.get("title") or ""))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    archive_root = ROOT / "archive" / "published"
+    if archive_root.is_dir():
+        json_paths = sorted(
+            archive_root.glob("**/zh/**/*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for path in json_paths:
+            if not _mtime_ok(path):
+                continue
+            _add(_title_from_script_json(path))
+            if len(out) >= limit:
+                break
+
+    readme_paths = sorted(
+        archive_root.glob("**/zh/**/README.md"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    ) if archive_root.is_dir() else []
+    for path in readme_paths:
+        if not _mtime_ok(path):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for block in re.finditer(r"```\s*\n([^`]+?)```", text, re.S):
+            line = block.group(1).strip().splitlines()[0].strip()
+            if line and len(line) <= 80:
+                _add(line)
+        if len(out) >= limit:
+            break
+
+    return out[:limit]
 
 
 def append_history(item: dict) -> None:

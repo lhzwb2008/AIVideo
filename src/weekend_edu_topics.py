@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""周末科普教育选题：与工作日新闻槽位分离，默认 3 条/次，带历史去重。
+"""周末科普教育选题：Opus 根据历史动态选题，不写死话题池。
 
-典型话题：「量化交易是什么」「市盈率怎么算」「企业 EV 价值如何算」。
+与工作日新闻槽位分离；Windows 主入口 make-and-publish.ps1 同样走本模块。
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -16,9 +17,9 @@ from pathlib import Path
 from cursor_client import create_agent, create_run, model_id, run_with_stream
 from cursor_daily_topics import CURSOR_SLOT_ORDER, china_today
 from paths import ROOT
-from research import deep_read_article, load_env
+from research import deep_read_article, extract_json, load_env
+from text_client import chat_complete, text_model
 
-# 每次周末跑 3 条，各从一个栏目池里选题
 EDU_CATEGORY_ORDER = ("basic", "quant", "valuation")
 
 EDU_SLOT_LABEL: dict[str, str] = {
@@ -26,57 +27,6 @@ EDU_SLOT_LABEL: dict[str, str] = {
     "quant": "量化入门科普",
     "valuation": "估值与计算科普",
 }
-
-# topic_id, title, category, theme_cluster
-EDU_TOPIC_CATALOG: tuple[dict, ...] = (
-    # —— 基础概念 ——
-    {"topic_id": "pe_ratio", "title": "市盈率是什么，怎么算", "category": "basic", "theme_cluster": "edu_pe_ratio"},
-    {"topic_id": "pb_ratio", "title": "市净率是什么，怎么看", "category": "basic", "theme_cluster": "edu_pb_ratio"},
-    {"topic_id": "ps_ratio", "title": "市销率是什么，什么时候用", "category": "basic", "theme_cluster": "edu_ps_ratio"},
-    {"topic_id": "roe", "title": "ROE 是什么，为什么投资人常看", "category": "basic", "theme_cluster": "edu_roe"},
-    {"topic_id": "gross_net_margin", "title": "毛利率和净利率有什么区别", "category": "basic", "theme_cluster": "edu_margin"},
-    {"topic_id": "cash_flow_types", "title": "经营现金流、自由现金流是什么", "category": "basic", "theme_cluster": "edu_cashflow"},
-    {"topic_id": "three_statements", "title": "财报三张表分别看什么", "category": "basic", "theme_cluster": "edu_financial_statements"},
-    {"topic_id": "debt_ratio", "title": "资产负债率怎么看才不算高", "category": "basic", "theme_cluster": "edu_debt_ratio"},
-    {"topic_id": "dividend_yield", "title": "分红和股息率是什么", "category": "basic", "theme_cluster": "edu_dividend"},
-    {"topic_id": "compound_interest", "title": "复利是什么，为什么时间很重要", "category": "basic", "theme_cluster": "edu_compound"},
-    {"topic_id": "inflation_deflation", "title": "通胀和通缩分别是什么意思", "category": "basic", "theme_cluster": "edu_inflation"},
-    {"topic_id": "bull_bear", "title": "牛市和熊市怎么定义", "category": "basic", "theme_cluster": "edu_bull_bear"},
-    {"topic_id": "long_short", "title": "做多和做空到底是什么意思", "category": "basic", "theme_cluster": "edu_long_short"},
-    {"topic_id": "leverage", "title": "杠杆是什么，为什么能放大盈亏", "category": "basic", "theme_cluster": "edu_leverage"},
-    {"topic_id": "stop_loss", "title": "止损是什么，不是让你马上卖", "category": "basic", "theme_cluster": "edu_stop_loss"},
-    {"topic_id": "volume_price", "title": "成交量和价格是什么关系", "category": "basic", "theme_cluster": "edu_volume"},
-    {"topic_id": "kline_ma", "title": "K 线和均线入门怎么读", "category": "basic", "theme_cluster": "edu_kline"},
-    {"topic_id": "goodwill", "title": "商誉是什么，为什么并购会出现", "category": "basic", "theme_cluster": "edu_goodwill"},
-    {"topic_id": "ipo_prospectus", "title": "招股书里最该先看哪几段", "category": "basic", "theme_cluster": "edu_ipo"},
-    {"topic_id": "rate_hike_cut", "title": "加息和降息分别影响什么", "category": "basic", "theme_cluster": "edu_rates"},
-    {"topic_id": "gdp_cpi_ppi", "title": "GDP、CPI、PPI 分别说明什么", "category": "basic", "theme_cluster": "edu_macro_indicators"},
-    {"topic_id": "bond_yield", "title": "国债收益率上升下降意味着什么", "category": "basic", "theme_cluster": "edu_bond_yield"},
-    # —— 量化入门 ——
-    {"topic_id": "quant_trading", "title": "量化交易是什么", "category": "quant", "theme_cluster": "edu_quant_trading"},
-    {"topic_id": "factor_investing", "title": "因子投资是什么", "category": "quant", "theme_cluster": "edu_factor"},
-    {"topic_id": "multi_factor", "title": "多因子模型入门怎么理解", "category": "quant", "theme_cluster": "edu_multi_factor"},
-    {"topic_id": "backtest", "title": "回测是什么，为什么不能全信", "category": "quant", "theme_cluster": "edu_backtest"},
-    {"topic_id": "alpha_beta", "title": "阿尔法和贝塔分别是什么", "category": "quant", "theme_cluster": "edu_alpha_beta"},
-    {"topic_id": "sharpe_ratio", "title": "夏普比率是什么，怎么理解", "category": "quant", "theme_cluster": "edu_sharpe"},
-    {"topic_id": "max_drawdown", "title": "最大回撤是什么", "category": "quant", "theme_cluster": "edu_drawdown"},
-    {"topic_id": "algo_trading", "title": "程序化交易和手动交易差在哪", "category": "quant", "theme_cluster": "edu_algo"},
-    {"topic_id": "hft", "title": "高频交易是什么，和普通量化有何不同", "category": "quant", "theme_cluster": "edu_hft"},
-    {"topic_id": "mean_reversion", "title": "均值回归策略是什么思路", "category": "quant", "theme_cluster": "edu_mean_reversion"},
-    {"topic_id": "momentum", "title": "动量策略是什么", "category": "quant", "theme_cluster": "edu_momentum"},
-    {"topic_id": "smart_beta", "title": "Smart Beta 是什么", "category": "quant", "theme_cluster": "edu_smart_beta"},
-    # —— 估值与计算 ——
-    {"topic_id": "enterprise_value", "title": "企业 EV 价值怎么算", "category": "valuation", "theme_cluster": "edu_ev"},
-    {"topic_id": "dcf_basics", "title": "现金流折现 DCF 是什么思路", "category": "valuation", "theme_cluster": "edu_dcf"},
-    {"topic_id": "ev_ebitda", "title": "EV/EBITDA 是什么，何时比 PE 更好", "category": "valuation", "theme_cluster": "edu_ev_ebitda"},
-    {"topic_id": "peg_ratio", "title": "PEG 是什么，怎么结合成长看估值", "category": "valuation", "theme_cluster": "edu_peg"},
-    {"topic_id": "relative_valuation", "title": "相对估值和绝对估值有什么区别", "category": "valuation", "theme_cluster": "edu_relative_val"},
-    {"topic_id": "nav_discount", "title": "净资产和市值为什么经常不一样", "category": "valuation", "theme_cluster": "edu_nav"},
-    {"topic_id": "wacc", "title": "WACC 加权平均资本成本是什么", "category": "valuation", "theme_cluster": "edu_wacc"},
-    {"topic_id": "terminal_value", "title": "DCF 里终值为什么很重要", "category": "valuation", "theme_cluster": "edu_terminal_value"},
-    {"topic_id": "sotp", "title": "分部估值 SOTP 是什么", "category": "valuation", "theme_cluster": "edu_sotp"},
-    {"topic_id": "ev_sales", "title": "EV/Sales 适合什么类型的公司", "category": "valuation", "theme_cluster": "edu_ev_sales"},
-)
 
 _EDU_DRAFT_PROMPT = """你是「AI财知道」的**财经科普教育撰稿人**（不是新闻编辑、不是收评写手）。
 
@@ -99,9 +49,46 @@ _EDU_DRAFT_PROMPT = """你是「AI财知道」的**财经科普教育撰稿人**
 5. 全文中文 Markdown，直接输出正文，不要提纲-only，不要说「见附件」
 """
 
+EDU_PICK_SYSTEM = """你是「AI财知道」周末财经科普栏目的选题编辑。
+观众是完全不懂财经的小白；每条话题应能做成 3–4 分钟竖屏科普短视频。
+只输出一个严格 JSON 对象，不要 markdown、不要解释。"""
+
+EDU_PICK_USER = """【今天】{today}
+【需要选题数量】{count}
+{category_hint}
+【栏目参考】
+- basic：财经基础（宏观指标、财务术语、市场常识）
+- quant：量化入门（因子、回测、程序化、风险指标等）
+- valuation：估值与计算（PE/PB/EV/DCF 等怎么理解、怎么算）
+
+【近 {dedup_days} 天已发布/已制作的标题（禁止重复、禁止换皮相似）】
+{recent_titles}
+{reject_block}
+【要求】
+1. 每个话题 12–28 字，用「X是什么/怎么算/怎么看」形式，聚焦**一个**概念
+2. 不要当日新闻、不要个股、不要荐股
+3. count=1 时选 1 个与历史差异最大、最值得做的概念即可
+4. count≥3 时尽量覆盖 basic / quant / valuation 三类各至少 1 个
+5. theme_cluster 用 edu_ 开头的英文 snake_case，概括概念即可
+
+输出 JSON：
+{{
+  "topics": [
+    {{
+      "title": "话题标题",
+      "category": "basic|quant|valuation",
+      "theme_cluster": "edu_pe_ratio",
+      "cold_open": "冷开场一句（≤50字）",
+      "angle": "讲解角度",
+      "reason": "为什么选它、与历史如何区分"
+    }}
+  ]
+}}
+"""
+
 
 def is_weekend_edu_mode(d: date | None = None) -> bool:
-    """是否走周末科普模式（周六日；可用 AIVIDEO_FORCE_WEEKDAY=1 强制工作日槽位）。"""
+    """是否走周末科普模式（周六日；AIVIDEO_FORCE_WEEKDAY=1 强制工作日）。"""
     if os.environ.get("AIVIDEO_FORCE_WEEKDAY", "").strip().lower() in ("1", "true", "yes", "on"):
         return False
     if os.environ.get("AIVIDEO_FORCE_WEEKEND_EDU", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -113,7 +100,7 @@ def is_weekend_edu_mode(d: date | None = None) -> bool:
 def weekend_default_count() -> int:
     raw = os.environ.get("AIVIDEO_WEEKEND_MAX_VIDEOS", "3").strip()
     try:
-        return max(1, min(int(raw), len(EDU_CATEGORY_ORDER)))
+        return max(1, int(raw))
     except ValueError:
         return 3
 
@@ -140,246 +127,206 @@ def _titles_overlap(a: str, b: str) -> bool:
     shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
     if len(shorter) >= 6 and shorter in longer:
         return True
+    # 同一核心概念：去掉「是什么/怎么算」后高度重叠
+    core_a = re.sub(r"(是什么|怎么算|怎么看|如何计算|入门|科普)", "", na)
+    core_b = re.sub(r"(是什么|怎么算|怎么看|如何计算|入门|科普)", "", nb)
+    if len(core_a) >= 4 and core_a == core_b:
+        return True
     return False
 
 
-def _recent_edu_usage() -> tuple[set[str], set[str], dict[str, datetime]]:
-    """返回 (已用 topic_id, 已用归一化标题, topic_id -> 最近使用时间)。"""
-    from batch_aivideo import recent_history
-
-    used_ids: set[str] = set()
-    used_titles: set[str] = set()
-    last_used: dict[str, datetime] = {}
-    for item in recent_history(edu_dedup_days()):
-        tid = str(item.get("topic_id") or "").strip()
-        slot = str(item.get("topic_slot") or item.get("direction") or "").strip()
-        mode = str(item.get("mode") or "").strip()
-        is_edu = mode == "weekend_edu" or slot.startswith("edu_")
-        if not is_edu and not tid:
-            title = str(item.get("script_title") or item.get("title") or "").strip()
-            if title:
-                for row in EDU_TOPIC_CATALOG:
-                    if _titles_overlap(title, row["title"]):
-                        tid = row["topic_id"]
-                        is_edu = True
-                        break
-        if not is_edu:
-            continue
-        if not tid:
-            title = str(item.get("script_title") or item.get("title") or "").strip()
-            for row in EDU_TOPIC_CATALOG:
-                if _titles_overlap(title, row["title"]):
-                    tid = row["topic_id"]
-                    break
-        if tid:
-            used_ids.add(tid)
-        for key in ("script_title", "title", "title_hint"):
-            t = str(item.get(key) or "").strip()
-            if t:
-                used_titles.add(_norm_title(t))
-        made_at = str(item.get("made_at") or "").strip()
-        if tid and made_at:
-            try:
-                ts = datetime.fromisoformat(made_at.replace("Z", "+00:00"))
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                if tid not in last_used or ts > last_used[tid]:
-                    last_used[tid] = ts
-            except ValueError:
-                pass
-    return used_ids, used_titles, last_used
+def _topic_id_from_title(title: str) -> str:
+    norm = _norm_title(title)[:48]
+    digest = hashlib.md5(norm.encode("utf-8")).hexdigest()[:10]
+    return f"edu_{digest}"
 
 
-def _topic_duplicate_reason(
-    row: dict,
-    *,
-    used_ids: set[str],
-    used_titles: set[str],
-    batch_counts: dict[str, int],
-) -> str:
-    tid = row["topic_id"]
-    if tid in used_ids:
-        return f"话题 id「{tid}」近 {edu_dedup_days()} 天已制作"
-    title = row["title"]
-    for ut in used_titles:
-        if _titles_overlap(title, ut):
-            return f"标题与近期已做话题过于相似"
-    try:
-        from theme_clusters import cluster_duplicate_reason
+def _recent_titles_for_pick() -> list[str]:
+    from batch_aivideo import published_titles_for_dedup
 
-        reason = cluster_duplicate_reason(
-            {
-                "theme_cluster": row["theme_cluster"],
-                "title_hint": title,
-            },
-            extra_counts=batch_counts,
-        )
-        if reason:
-            return reason
-    except Exception:  # noqa: BLE001
-        pass
+    return published_titles_for_dedup(days=edu_dedup_days(), limit=80)
+
+
+def _validate_pick(row: dict, *, avoid: list[str], batch_titles: list[str]) -> str:
+    title = str(row.get("title") or "").strip()
+    if not title or len(title) < 6:
+        return "标题过短或为空"
+    cat = str(row.get("category") or "").strip().lower()
+    if cat not in EDU_CATEGORY_ORDER:
+        return f"无效 category: {cat}"
+    for prev in avoid + batch_titles:
+        if _titles_overlap(title, prev):
+            return f"与已做话题过于相似：{prev[:40]}"
     return ""
 
 
-def _pick_for_category(
-    category: str,
+def _opus_pick_topics(
     *,
-    used_ids: set[str],
-    used_titles: set[str],
-    batch_counts: dict[str, int],
-    last_used: dict[str, datetime],
-) -> dict | None:
-    candidates = [r for r in EDU_TOPIC_CATALOG if r["category"] == category]
-    fresh: list[dict] = []
-    for row in candidates:
-        if _topic_duplicate_reason(
-            row,
-            used_ids=used_ids,
-            used_titles=used_titles,
-            batch_counts=batch_counts,
-        ):
+    count: int,
+    category: str | None = None,
+    extra_reject: list[str] | None = None,
+) -> list[dict]:
+    """让 Opus 根据历史动态提出科普话题。"""
+    load_env()
+    recent = _recent_titles_for_pick()
+    reject = list(extra_reject or [])
+    max_attempts = max(2, int(os.environ.get("AIVIDEO_EDU_PICK_ATTEMPTS", "3")))
+
+    category_hint = ""
+    if category and category in EDU_CATEGORY_ORDER:
+        category_hint = f"【指定栏目】必须属于 {category}（{EDU_SLOT_LABEL[category]}）\n"
+
+    for attempt in range(max_attempts):
+        reject_block = ""
+        if reject:
+            reject_block = (
+                "\n【上一轮不合格，必须避开】\n"
+                + "\n".join(f"- {t}" for t in reject[-12:])
+                + "\n"
+            )
+        recent_lines = "\n".join(f"- {t}" for t in recent[:60]) if recent else "（暂无历史，可自由选题）"
+        user = EDU_PICK_USER.format(
+            today=china_today().isoformat(),
+            count=count,
+            category_hint=category_hint,
+            dedup_days=edu_dedup_days(),
+            recent_titles=recent_lines,
+            reject_block=reject_block,
+        )
+        print(f"  🎯 {text_model()} 周末科普选题（{count} 条，历史 {len(recent)} 条）…", flush=True)
+        raw = chat_complete(
+            system=EDU_PICK_SYSTEM,
+            user=user,
+            max_tokens=4000,
+            response_format_json=True,
+        )
+        data = extract_json(raw)
+        rows = data.get("topics") if isinstance(data, dict) else None
+        if not isinstance(rows, list) or not rows:
+            reject.append(f"attempt{attempt}: 无效 JSON")
             continue
-        fresh.append(row)
-    if not fresh:
-        return None
-    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
-    fresh.sort(key=lambda r: last_used.get(r["topic_id"], epoch))
-    return fresh[0]
+
+        picked: list[dict] = []
+        batch_titles: list[str] = []
+        errors: list[str] = []
+        for row in rows[: count + 2]:
+            if not isinstance(row, dict):
+                continue
+            err = _validate_pick(row, avoid=recent, batch_titles=batch_titles)
+            if err:
+                t = str(row.get("title") or "")
+                errors.append(f"{t}: {err}")
+                if t:
+                    reject.append(t)
+                continue
+            title = str(row["title"]).strip()
+            cat = str(row["category"]).strip().lower()
+            picked.append({
+                "title": title,
+                "category": cat,
+                "theme_cluster": str(row.get("theme_cluster") or f"edu_{cat}").strip(),
+                "cold_open": str(row.get("cold_open") or f"今天搞懂：{title.split('，')[0]}").strip(),
+                "angle": str(row.get("angle") or EDU_SLOT_LABEL.get(cat, "财经科普")).strip(),
+                "reason": str(row.get("reason") or "").strip(),
+                "topic_id": _topic_id_from_title(title),
+            })
+            batch_titles.append(title)
+            if len(picked) >= count:
+                break
+
+        if len(picked) >= count:
+            _save_pick_log(picked, recent_count=len(recent))
+            return picked[:count]
+
+        reject.extend(errors)
+        print(f"  ⚠️  选题校验未通过（{attempt + 1}/{max_attempts}），重试…", flush=True)
+
+    raise RuntimeError(
+        f"Opus 未能提出 {count} 个不重复科普话题（近 {edu_dedup_days()} 天已有 {len(recent)} 条历史）"
+    )
 
 
-def _pick_fallback(
-    *,
-    used_ids: set[str],
-    used_titles: set[str],
-    batch_counts: dict[str, int],
-    last_used: dict[str, datetime],
-) -> dict | None:
-    fresh: list[dict] = []
-    for row in EDU_TOPIC_CATALOG:
-        if _topic_duplicate_reason(
-            row,
-            used_ids=used_ids,
-            used_titles=used_titles,
-            batch_counts=batch_counts,
-        ):
-            continue
-        fresh.append(row)
-    if not fresh:
-        return None
-    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
-    fresh.sort(key=lambda r: last_used.get(r["topic_id"], epoch))
-    return fresh[0]
+def _save_pick_log(topics: list[dict], *, recent_count: int) -> None:
+    try:
+        from locale_env import locale_logs_dir
+
+        path = locale_logs_dir("zh") / "weekend_edu_last_pick.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "picked_at": datetime.now(timezone.utc).isoformat(),
+                    "recent_history_count": recent_count,
+                    "topics": topics,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def topic_plan_for_edu(row: dict) -> dict:
-    cat = row["category"]
+    cat = str(row.get("category") or "basic").strip().lower()
+    title = str(row.get("title") or "").strip()
     return {
         "slot": f"edu_{cat}",
         "script_mode": "edu_explain",
-        "title_hint": row["title"],
-        "suggested_video_title": row["title"],
-        "cold_open": f"今天搞懂一个财经概念：{row['title'].split('，')[0].split('怎么')[0]}",
-        "angle": EDU_SLOT_LABEL.get(cat, "财经科普"),
-        "theme_cluster": row["theme_cluster"],
-        "topic_id": row["topic_id"],
+        "title_hint": title,
+        "suggested_video_title": title,
+        "cold_open": row.get("cold_open") or f"今天搞懂：{title.split('，')[0]}",
+        "angle": row.get("angle") or EDU_SLOT_LABEL.get(cat, "财经科普"),
+        "theme_cluster": row.get("theme_cluster") or f"edu_{cat}",
+        "topic_id": row.get("topic_id") or _topic_id_from_title(title),
         "category": "quant" if cat == "quant" else "basic",
         "direction": f"edu_{cat}",
     }
 
 
-def discover_weekend_edu_topics(*, target: int | None = None) -> list[dict]:
-    """周末科普选题：默认 3 条，分基础/量化/估值，避开近期已做话题。"""
-    load_env()
-    target = target if target is not None else weekend_default_count()
-    target = max(1, min(target, len(EDU_CATEGORY_ORDER)))
-
-    used_ids, used_titles, last_used = _recent_edu_usage()
-    if used_ids or used_titles:
-        print(
-            f"  📚 周末科普去重：近 {edu_dedup_days()} 天已做 {len(used_ids)} 个话题",
-            flush=True,
-        )
-
-    categories = list(EDU_CATEGORY_ORDER[:target])
-    topics: list[dict] = []
-    batch_counts: dict[str, int] = {}
-
-    for i, cat in enumerate(categories, 1):
-        row = _pick_for_category(
-            cat,
-            used_ids=used_ids,
-            used_titles=used_titles,
-            batch_counts=batch_counts,
-            last_used=last_used,
-        )
-        if not row:
-            row = _pick_fallback(
-                used_ids=used_ids,
-                used_titles=used_titles,
-                batch_counts=batch_counts,
-                last_used=last_used,
-            )
-        if not row:
-            print(f"  ⚠️  栏目「{EDU_SLOT_LABEL[cat]}」无可用新话题（池子可能已用尽）", flush=True)
-            continue
-
-        plan = topic_plan_for_edu(row)
-        topics.append({
-            "index": i,
-            "slot": plan["slot"],
-            "direction": plan["direction"],
-            "cursor_slot": plan["slot"],
-            "title_hint": plan["title_hint"],
-            "category": plan["category"],
-            "theme_cluster": plan["theme_cluster"],
-            "topic_id": row["topic_id"],
-            "angle": plan["angle"],
-            "cold_open": plan["cold_open"],
-            "script_mode": plan["script_mode"],
-            "suggested_video_title": plan["suggested_video_title"],
-            "reason": f"周末科普 · {EDU_SLOT_LABEL[cat]} · {row['title']}",
-            "mode": "weekend_edu",
-        })
-        used_ids.add(row["topic_id"])
-        used_titles.add(_norm_title(row["title"]))
-        cid = row["theme_cluster"]
-        batch_counts[cid] = batch_counts.get(cid, 0) + 1
-
-    return topics
-
-
-def topic_for_edu_slot(slot: str) -> dict:
-    """--slot edu_basic / edu_quant / edu_valuation 重跑单条。"""
-    cat = slot.replace("edu_", "", 1) if slot.startswith("edu_") else slot
-    if cat not in EDU_CATEGORY_ORDER:
-        raise ValueError(f"未知周末科普槽位: {slot}")
-    used_ids, used_titles, last_used = _recent_edu_usage()
-    row = _pick_for_category(
-        cat,
-        used_ids=used_ids,
-        used_titles=used_titles,
-        batch_counts={},
-        last_used=last_used,
-    )
-    if not row:
-        row = next(r for r in EDU_TOPIC_CATALOG if r["category"] == cat)
+def _row_to_topic(row: dict, *, index: int) -> dict:
     plan = topic_plan_for_edu(row)
+    cat = row["category"]
     return {
-        "index": 1,
+        "index": index,
         "slot": plan["slot"],
         "direction": plan["direction"],
         "cursor_slot": plan["slot"],
         "title_hint": plan["title_hint"],
         "category": plan["category"],
         "theme_cluster": plan["theme_cluster"],
-        "topic_id": row["topic_id"],
+        "topic_id": plan["topic_id"],
         "angle": plan["angle"],
         "cold_open": plan["cold_open"],
         "script_mode": plan["script_mode"],
         "suggested_video_title": plan["suggested_video_title"],
-        "reason": f"指定周末科普槽位：{EDU_SLOT_LABEL[cat]}",
+        "reason": row.get("reason") or f"Opus 选题 · {EDU_SLOT_LABEL.get(cat, cat)}",
         "mode": "weekend_edu",
     }
+
+
+def discover_weekend_edu_topics(*, target: int | None = None) -> list[dict]:
+    """周末科普：Opus 一次提出 target 条不重复话题。"""
+    target = target if target is not None else weekend_default_count()
+    target = max(1, target)
+    recent = _recent_titles_for_pick()
+    if recent:
+        print(
+            f"  📚 科普去重：近 {edu_dedup_days()} 天已有 {len(recent)} 条标题记录",
+            flush=True,
+        )
+    rows = _opus_pick_topics(count=target)
+    return [_row_to_topic(row, index=i) for i, row in enumerate(rows, 1)]
+
+
+def topic_for_edu_slot(slot: str) -> dict:
+    """--slot edu_basic / edu_quant / edu_valuation"""
+    cat = slot.replace("edu_", "", 1) if slot.startswith("edu_") else slot
+    if cat not in EDU_CATEGORY_ORDER:
+        raise ValueError(f"未知周末科普槽位: {slot}")
+    rows = _opus_pick_topics(count=1, category=cat)
+    return _row_to_topic(rows[0], index=1)
 
 
 def _save_draft(slot: str, markdown: str, meta: dict) -> Path:
@@ -450,7 +397,7 @@ def build_weekend_edu_research(
     agent_id: str | None = None,
     on_assistant=None,
 ) -> tuple[dict, dict, str | None]:
-    """科普 Cursor 草稿 → Opus 深读 → 返回 (article, details, agent_id)。"""
+    """科普 Cursor 草稿 → Opus 深读。"""
     slot = str(topic.get("slot") or "edu_basic")
     title_hint = str(topic.get("title_hint") or "").strip()
     markdown, agent_id, status = run_edu_draft(
@@ -472,10 +419,12 @@ def build_weekend_edu_research(
     print(f"  ✓ 科普草稿已保存: {draft_path} ({len(markdown)} 字)")
 
     plan = topic_plan_for_edu({
-        "topic_id": topic.get("topic_id") or "",
+        "topic_id": topic.get("topic_id") or _topic_id_from_title(title_hint),
         "title": title_hint,
-        "category": (slot.replace("edu_", "", 1) if slot.startswith("edu_") else "basic"),
+        "category": slot.replace("edu_", "", 1) if slot.startswith("edu_") else "basic",
         "theme_cluster": str(topic.get("theme_cluster") or ""),
+        "cold_open": topic.get("cold_open"),
+        "angle": topic.get("angle"),
     })
     for key in (
         "suggested_video_title", "cold_open", "script_mode",
