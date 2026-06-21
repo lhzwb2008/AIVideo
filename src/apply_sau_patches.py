@@ -10,7 +10,14 @@ import sys
 from pathlib import Path
 
 from paths import ROOT
+
 TARGET = ROOT / "vendor" / "social-auto-upload" / "uploader" / "douyin_uploader" / "main.py"
+
+
+def _patch_block(text: str) -> str:
+    """Strip surrounding newlines only — preserve indentation of indented patch blocks."""
+    return text.strip("\n")
+
 XHS_TARGET = ROOT / "vendor" / "social-auto-upload" / "uploader" / "xiaohongshu_uploader" / "main.py"
 TENCENT_TARGET = ROOT / "vendor" / "social-auto-upload" / "uploader" / "tencent_uploader" / "main.py"
 
@@ -372,7 +379,7 @@ def patch(path: Path) -> None:
             r"            page = await context\.new_page\(\)"
         )
         if re.search(cookie_gen_pattern, text):
-            text = re.sub(cookie_gen_pattern, COOKIE_GEN_BLOCK.strip(), text, count=1)
+            text = re.sub(cookie_gen_pattern, _patch_block(COOKIE_GEN_BLOCK), text, count=1)
             applied.append("persistent_context")
 
     if "storage_state=account_file, **_build_context_kwargs()" not in text:
@@ -400,7 +407,7 @@ def patch(path: Path) -> None:
     if "_cookie_auth_once" not in text and re.search(cookie_auth_pattern, text, re.DOTALL):
         text = re.sub(
             cookie_auth_pattern,
-            COOKIE_AUTH.strip() + "\n\n\nasync def douyin_setup(",
+            _patch_block(COOKIE_AUTH) + "\n\n\nasync def douyin_setup(",
             text,
             count=1,
             flags=re.DOTALL,
@@ -408,9 +415,10 @@ def patch(path: Path) -> None:
         applied.append("cookie_auth")
 
     if 'await page.wait_for_url("https://creator.douyin.com/creator-micro/content/upload")' in text:
-        text = text.replace(
-            'await page.wait_for_url("https://creator.douyin.com/creator-micro/content/upload")',
-            'if "creator-micro/content/upload" not in page.url:\n            raise RuntimeError(f"未能进入抖音上传页: {page.url}")',
+        text = re.sub(
+            r'(\s*)await page\.wait_for_url\("https://creator\.douyin\.com/creator-micro/content/upload"\)',
+            r'\1if "creator-micro/content/upload" not in page.url:\n\1    raise RuntimeError(f"未能进入抖音上传页: {page.url}")',
+            text,
         )
         applied.append("upload_url_check")
 
