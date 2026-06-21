@@ -40,6 +40,11 @@ TENCENT_UPLOAD_NEW = """            await self.upload_video_file(page, self.file
 
             await self.submit_publish(page)"""
 
+_XHS_FILL_TAGS_FUNC = re.compile(
+    r"    async def fill_tags\(self, page: Page\) -> None:.*?(?=    async def fill_meta)",
+    re.DOTALL,
+)
+
 # 小红书 fill_tags 容错版：弹不出官方话题下拉时，按空格把 #标签 作为普通文本提交，
 # 不再因 TimeoutError 整个发布失败。
 XHS_FILL_TAGS = '''    async def fill_tags(self, page: Page) -> None:
@@ -513,17 +518,13 @@ def patch_xhs(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     applied: list[str] = []
 
-    # 1) fill_tags 容错（最多 5 个话题 + 弹不出官方话题时按普通文本提交）
-    if "AIVIDEO_PATCH: 最多 5 个话题" not in text:
-        pattern = (
-            r"    async def fill_tags\(self, page: Page\) -> None:\n"
-            r".*?await first_item\.click\(\)\n"
-        )
-        if re.search(pattern, text, re.DOTALL):
-            text = re.sub(pattern, XHS_FILL_TAGS, text, count=1, flags=re.DOTALL)
-            applied.append("fill_tags")
-        else:
-            print("小红书 fill_tags 补丁锚点缺失（upstream 可能已变更），跳过", file=sys.stderr)
+    # 1) fill_tags 容错（整段替换至 fill_meta，修复旧版部分补丁留下的孤立 except）
+    fill_tags_match = _XHS_FILL_TAGS_FUNC.search(text)
+    if fill_tags_match and fill_tags_match.group(0).strip() != XHS_FILL_TAGS.strip():
+        text = _XHS_FILL_TAGS_FUNC.sub(XHS_FILL_TAGS + "\n\n", text, count=1)
+        applied.append("fill_tags")
+    elif not fill_tags_match:
+        print("小红书 fill_tags 补丁锚点缺失（upstream 可能已变更），跳过", file=sys.stderr)
 
     # 2) 创作页 goto 容错（domcontentloaded + 60s 超时），覆盖 cookie 校验与上传两处
     if XHS_GOTO_OLD in text:

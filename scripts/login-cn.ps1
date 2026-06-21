@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   国内平台登录 / 校验（Windows）
@@ -51,6 +51,9 @@ function Invoke-SessionCheck {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
+# 各平台登录前统一打 SAU 补丁（含小红书 fill_tags 修复）
+& $MainPy "$Root\src\apply_sau_patches.py"
+
 switch ($Platform) {
     'xhs' { $Platform = 'xiaohongshu' }
 }
@@ -64,12 +67,11 @@ switch ($Platform) {
         }
         if ($Force) {
             $cookie = Join-Path $SauHome "cookies\douyin_$Acct.json"
-            $profile = Join-Path $SauHome "cookies\browser_profiles\douyin_$Acct"
-            Remove-Item $cookie, $profile -Recurse -Force -ErrorAction SilentlyContinue
+            $BrowserProfile = Join-Path $SauHome "cookies\browser_profiles\douyin_$Acct"
+            Remove-Item $cookie, $BrowserProfile -Recurse -Force -ErrorAction SilentlyContinue
         }
-        & $MainPy "$Root\src\apply_sau_patches.py"
         & $SauPy "$Root\src\douyin_login.py" --login --account $Acct
-        Write-Host "登录完成，正在校验…"
+        Write-Host "登录完成，正在校验..."
         Invoke-SessionCheck @($SauPy, "$Root\src\douyin_session.py", '--account', $Acct)
     }
     'bilibili' {
@@ -91,15 +93,15 @@ switch ($Platform) {
         $Acct = Get-OrDefault $Account (Get-OrDefault $env:SAU_XHS_ACCOUNT 'main')
         $env:SAU_XHS_ACCOUNT = $Acct
         $cookie = Join-Path $SauHome "cookies\xiaohongshu_$Acct.json"
-        $profile = Join-Path $SauHome "cookies\browser_profiles\xiaohongshu_$Acct"
+        $BrowserProfile = Join-Path $SauHome "cookies\browser_profiles\xiaohongshu_$Acct"
         if ($Check) {
             & $SauPy "$Root\src\social_publisher.py" xiaohongshu check
             exit $LASTEXITCODE
         }
         if ($Force) {
-            Remove-Item $cookie, $profile -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $cookie, $BrowserProfile -Recurse -Force -ErrorAction SilentlyContinue
         }
-        Write-Host "即将打开 Chrome 扫码登录小红书…"
+        Write-Host "即将打开 Chrome 扫码登录小红书..."
         & $SauPy "$Root\src\social_publisher.py" xiaohongshu login
     }
     'shipinhao' {
@@ -110,8 +112,8 @@ switch ($Platform) {
         }
         if ($Force) {
             $cookie = Join-Path $SauHome "cookies\tencent_$Acct.json"
-            $profile = Join-Path $SauHome "cookies\browser_profiles\tencent_$Acct"
-            Remove-Item $cookie, $profile -Recurse -Force -ErrorAction SilentlyContinue
+            $BrowserProfile = Join-Path $SauHome "cookies\browser_profiles\tencent_$Acct"
+            Remove-Item $cookie, $BrowserProfile -Recurse -Force -ErrorAction SilentlyContinue
         }
         & $SauPy "$Root\src\shipinhao_login.py" --login --account $Acct
     }

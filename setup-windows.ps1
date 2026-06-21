@@ -161,6 +161,7 @@ if (-not $SkipSau) {
     & $SauPy -m pip install -U pip -i $PipMirror --trusted-host $PipHost
     Push-Location $SauHome
     & $SauPy -m pip install -e . -i $PipMirror --trusted-host $PipHost
+    & $SauPy -m pip install patchright -i $PipMirror --trusted-host $PipHost
     Pop-Location
 
     $Conf = Join-Path $SauHome 'conf.py'
