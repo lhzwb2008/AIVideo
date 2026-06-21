@@ -236,9 +236,9 @@ def drawtext_font_path() -> str:
             return str(fp)
     if os.name == "nt":
         for candidate in (
+            r"C:\Windows\Fonts\simhei.ttf",
             r"C:\Windows\Fonts\msyh.ttc",
             r"C:\Windows\Fonts\msyhbd.ttc",
-            r"C:\Windows\Fonts\simhei.ttf",
             r"C:\Windows\Fonts\simsun.ttc",
         ):
             if Path(candidate).is_file():
@@ -662,6 +662,8 @@ def compose_cold_open_clip(
             )
         )
     filter_chain = ",".join(filters)
+    if os.name == "nt":
+        print(f"[compose] Windows drawtext font: {drawtext_font_path()}", file=sys.stderr)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     vf_args, map_args = _video_filter_cmd_parts(filter_chain, work_dir)
@@ -1048,7 +1050,7 @@ def _video_filter_cmd_parts(
         return (["-vf", filter_chain], [])
     work_dir.mkdir(parents=True, exist_ok=True)
     script = work_dir / "ffmpeg_vf.txt"
-    script.write_text(f"[0:v]{filter_chain}[vout]\n", encoding="utf-8")
+    script.write_text(f"[0:v] {filter_chain} [vout]\n", encoding="utf-8")
     script_arg = str(script.resolve()).replace("\\", "/")
     return (
         ["-filter_complex_script", script_arg],
