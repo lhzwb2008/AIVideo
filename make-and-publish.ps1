@@ -34,17 +34,15 @@ if (-not (Test-Path $Py)) {
     $Py = 'python'
 }
 
-$ModeInfo = & $Py -c @'
-from weekend_edu_topics import is_weekend_edu_mode, weekend_default_count
-from cursor_daily_topics import CURSOR_SLOT_ORDER
-if is_weekend_edu_mode():
-    print(f"weekend|{weekend_default_count()}|周末科普（Opus 选题，默认 {weekend_default_count()} 条）")
-else:
-    print(f"weekday|{len(CURSOR_SLOT_ORDER)}|工作日新闻五槽位（默认 {len(CURSOR_SLOT_ORDER)} 条）")
-'@
-$ModeParts = $ModeInfo -split '\|', 3
+$ModeLine = (& $Py (Join-Path $Root 'src\print_default_count.py')).Trim()
+$ModeParts = $ModeLine -split '\|', 2
 $DefaultCount = $ModeParts[1]
-Write-Host "[make-and-publish] $($ModeParts[2])" -ForegroundColor Cyan
+if ($ModeParts[0] -eq 'weekend') {
+    $ModeLabel = "weekend edu mode, default $DefaultCount video(s)"
+} else {
+    $ModeLabel = "weekday news slots, default $DefaultCount video(s)"
+}
+Write-Host "[make-and-publish] $ModeLabel" -ForegroundColor Cyan
 
 if ($RemainingArgs.Count -gt 0 -and $RemainingArgs[0] -match '^--') {
     $Count = $DefaultCount
