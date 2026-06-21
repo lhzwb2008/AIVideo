@@ -28,9 +28,16 @@ from pathlib import Path
 
 from bilibili_caption import build_bilibili_fields
 from douyin_caption import build_sau_fields, _strip_urls
-from llm_browser_agent import AgentConfig, LLMBrowserError, human_pause, run_agent
+from llm_browser_agent import (
+    AgentConfig,
+    LLMBrowserError,
+    human_pause,
+    platform_use_deterministic,
+    run_agent,
+)
 from llm_vision_client import browser_max_steps, browser_model, browser_provider_label
 from paths import ROOT
+from locale_env import load_locale_env
 from publish_resolve import load_script, resolve_script_for_video
 from sau_paths import chrome_executable, ensure_patchright_import
 from social_caption import build_social_fields
@@ -671,6 +678,8 @@ def resolve_playwright_python() -> Path | None:
 
 
 def main() -> int:
+    load_locale_env(os.environ.get("AIVIDEO_LOCALE", "zh"))
+
     parser = argparse.ArgumentParser(
         description="大模型视觉浏览器发布（抖音/视频号/小红书/B站/知乎）"
     )
@@ -756,9 +765,14 @@ def main() -> int:
     if platform == "shipinhao":
         print(f"短标题: {fields.get('short_title')}")
 
+    mode = (
+        "LLM 逐步操作"
+        if not platform_use_deterministic(platform)
+        else "确定性优先 + LLM 兜底"
+    )
     print(
-        f"模型: {browser_model()}（{browser_provider_label()} · 确定性优先，"
-        f"LLM 最多 {browser_max_steps()} 步）"
+        f"模型: {browser_model()}（{browser_provider_label()} · {mode}，"
+        f"最多 {browser_max_steps()} 步）"
     )
     ck = cookie_path(platform, required=False)
     prof = profile_dir(platform)

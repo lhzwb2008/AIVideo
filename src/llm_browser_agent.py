@@ -1,4 +1,4 @@
-"""浏览器发布：确定性步骤优先，LLM（Opus 4.8）仅在失败时少量兜底。"""
+"""浏览器发布：LLM 视觉逐步操作（模拟真人）；简单平台可开确定性填表加速。"""
 
 from __future__ import annotations
 
@@ -38,6 +38,18 @@ def _env_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def platform_use_deterministic(platform_key: str) -> bool:
+    """是否走固定脚本填表。B 站默认 False（LLM 逐步操作，更像真人）。"""
+    if _env("LLM_BROWSER_DETERMINISTIC", "1").lower() in ("0", "false", "no", "off"):
+        return False
+    per = _env(f"LLM_BROWSER_DETERMINISTIC_{platform_key.upper()}", "")
+    if per:
+        return per.lower() in ("1", "true", "yes", "on")
+    if platform_key == "bilibili":
+        return _env("BILIBILI_LLM_FIRST", "1").lower() in ("0", "false", "no", "off")
+    return True
 
 
 @dataclass
@@ -366,11 +378,11 @@ async def try_upload_video(
 
 
 def _build_system_prompt(platform: str) -> str:
-    return f"""你是 {platform} 发布助手。根据页面元素列表（和可选截图）输出**一步** JSON。
+    return f"""你是真人运营，在 {platform} 创作者后台发视频。根据页面元素（和截图）每次只输出**一步** JSON。
+像人一样：先 wait 等上传/加载，再 click/type；不要连点同一按钮；打字用 type 逐段输入。
 字段：thought, action, ref, text, wait_seconds, reason
 action：click | type | wait | press_key | done | need_human
-优先 wait 等上传完成；不要重复同一 click；卡住时用 need_human。
-只输出 JSON，不要 markdown。"""
+卡住或验证码时用 need_human。只输出 JSON，不要 markdown。"""
 
 
 def _build_user_prompt(
@@ -798,48 +810,41 @@ _DECLARATION_OPTIONS = (
 
 
 def _bilibili_creation_declaration_choices() -> list[str]:
-    raw = _env("BILIBILI_CREATION_DECLARATION", "")
+    raw = _env("BILIBILI_CREATION_DECLARATION", "").strip()
     if raw:
-        return [x.strip() for x in raw.split("|") if x.strip()]
-    return [
-        "含AI生成内容",
-        "内容无需标注",
-        "个人观点，仅供参考",
-    ]
+        first = raw.split("|")[0].strip()
+        if first:
+            return [first]
+    return ["含AI生成内容"]
+
+
+_DECLARATION_INDEX = {
+    "内容无需标注": 0,
+    "含AI生成内容": 1,
+    "含虚构演绎内容": 2,
+    "内容含营销信息": 3,
+    "个人观点，仅供参考": 4,
+    "内容为转载": 5,
+}
 
 
 async def _bilibili_declaration_selected(page) -> str:
-    """已选中的创作声明文案（空 = 未填）。"""
-    options = _DECLARATION_OPTIONS
     try:
         picked = await page.evaluate(
-            """(options, ph) => {
-            const isVisible = (el) => {
-              const r = el.getBoundingClientRect();
-              const st = getComputedStyle(el);
-              return r.width > 0 && r.height > 0
-                && st.display !== 'none' && st.visibility !== 'hidden';
-            };
+            """(ph) => {
             for (const lab of document.querySelectorAll('*')) {
               if ((lab.innerText || '').trim() !== '创作声明') continue;
-              let row = lab.parentElement;
-              for (let d = 0; d < 8 && row; d++, row = row.parentElement) {
-                const triggers = row.querySelectorAll(
-                  '[class*="select-selector"], [class*="selection"], [class*="select"]'
-                );
-                for (const tr of triggers) {
-                  if (!isVisible(tr)) continue;
-                  const t = (tr.innerText || '').trim();
-                  if (!t || t.includes(ph) || t === '创作声明') continue;
-                  for (const opt of options) {
-                    if (t === opt || t.includes(opt)) return opt;
-                  }
-                }
+              let node = lab.parentElement;
+              for (let d = 0; d < 10 && node; d++, node = node.parentElement) {
+                const tr = node.querySelector('[class*="select-selector"]');
+                if (!tr) continue;
+                const t = (tr.innerText || '').trim().split('\\n')[0].trim();
+                if (!t || t.includes(ph) || t === '创作声明') continue;
+                return t;
               }
             }
             return '';
         }""",
-            list(options),
             _DECLARATION_PLACEHOLDER,
         )
         return str(picked or "").strip()
@@ -848,54 +853,28 @@ async def _bilibili_declaration_selected(page) -> str:
 
 
 async def _bilibili_declaration_pending(page) -> bool:
-    selected = await _bilibili_declaration_selected(page)
-    if selected:
-        return False
-    loc = page.get_by_text(_DECLARATION_PLACEHOLDER, exact=False)
-    count = await loc.count()
-    for i in range(count):
-        try:
-            if await loc.nth(i).is_visible():
-                return True
-        except Exception:
-            continue
-    return True
+    return not bool(await _bilibili_declaration_selected(page))
 
 
-async def _bilibili_click_declaration_option_js(page, choice: str) -> bool:
+async def _bilibili_open_declaration_dropdown_js(page) -> bool:
     try:
         return bool(
             await page.evaluate(
-                """(choice, ph) => {
-                const isVisible = (el) => {
-                  const r = el.getBoundingClientRect();
-                  const st = getComputedStyle(el);
-                  return r.width > 8 && r.height > 8
-                    && st.display !== 'none' && st.visibility !== 'hidden';
-                };
-                const tryClick = (n) => {
-                  const t = (n.innerText || '').trim();
-                  if (t !== choice) return false;
-                  if (!isVisible(n)) return false;
-                  n.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-                  n.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-                  n.click();
-                  return true;
-                };
-                const roots = [
-                  ...document.querySelectorAll(
-                    '[class*="select-dropdown"], [class*="dropdown"], [class*="popover"], [class*="option"]'
-                  ),
-                  document.body,
-                ];
-                for (const root of roots) {
-                  for (const n of root.querySelectorAll('div, li, span, p')) {
-                    if (tryClick(n)) return true;
+                """(ph) => {
+                for (const lab of document.querySelectorAll('*')) {
+                  if ((lab.innerText || '').trim() !== '创作声明') continue;
+                  let node = lab.parentElement;
+                  for (let d = 0; d < 10 && node; d++, node = node.parentElement) {
+                    const tr = node.querySelector('[class*="select-selector"]');
+                    if (tr) { tr.click(); return true; }
                   }
+                }
+                for (const el of document.querySelectorAll('*')) {
+                  const t = (el.innerText || '').trim();
+                  if (t === ph && el.offsetParent !== null) { el.click(); return true; }
                 }
                 return false;
             }""",
-                choice,
                 _DECLARATION_PLACEHOLDER,
             )
         )
@@ -903,7 +882,55 @@ async def _bilibili_click_declaration_option_js(page, choice: str) -> bool:
         return False
 
 
-async def _bilibili_open_declaration_dropdown(page) -> bool:
+async def _bilibili_click_declaration_option_js(page, choice: str) -> bool:
+    try:
+        return bool(
+            await page.evaluate(
+                """(choice) => {
+                const match = (n) => (n.innerText || '').trim() === choice;
+                const visible = (el) => {
+                  const r = el.getBoundingClientRect();
+                  const st = getComputedStyle(el);
+                  return r.width > 8 && r.height > 8
+                    && st.display !== 'none' && st.visibility !== 'hidden';
+                };
+                for (const root of document.querySelectorAll(
+                  '[class*="select-dropdown"], [class*="bcc-select-dropdown"], [class*="popover"]'
+                )) {
+                  for (const n of root.querySelectorAll('div, li, span')) {
+                    if (match(n) && visible(n)) { n.click(); return true; }
+                  }
+                }
+                return false;
+            }""",
+                choice,
+            )
+        )
+    except Exception:
+        return False
+
+
+async def _bilibili_keyboard_pick_declaration(page, choice: str) -> bool:
+    if not await _bilibili_open_declaration_dropdown_js(page):
+        return False
+    await asyncio.sleep(0.5)
+    idx = _DECLARATION_INDEX.get(choice, 1)
+    for _ in range(idx + 1):
+        await page.keyboard.press("ArrowDown")
+    await page.keyboard.press("Enter")
+    await asyncio.sleep(0.4)
+    return bool(await _bilibili_declaration_selected(page))
+
+
+async def _bilibili_fill_creation_declaration(page) -> bool:
+    """B 站必填「创作声明」：只选一次，不循环。"""
+    choice = _bilibili_creation_declaration_choices()[0]
+    selected = await _bilibili_declaration_selected(page)
+    if selected:
+        print(f"  [script] B站创作声明已填: {selected}，跳过", flush=True)
+        return True
+
+    print(f"  [script] 选择 B 站创作声明: {choice}", flush=True)
     label = page.get_by_text("创作声明", exact=True).first
     if await label.count():
         try:
@@ -911,93 +938,24 @@ async def _bilibili_open_declaration_dropdown(page) -> bool:
         except Exception:
             pass
 
-    loc = page.get_by_text(_DECLARATION_PLACEHOLDER, exact=False)
-    count = await loc.count()
-    for i in range(count):
-        trigger = loc.nth(i)
-        try:
-            if await trigger.is_visible():
-                await trigger.click(timeout=8000)
-                await asyncio.sleep(0.6)
-                return True
-        except Exception:
-            continue
-
-    if await label.count():
-        try:
-            row = label.locator(
-                "xpath=ancestor::*[contains(@class,'form') or contains(@class,'item') or contains(@class,'row')][1]"
-            )
-            pick = row.locator(
-                '[class*="select-selector"], [class*="select"], [class*="dropdown"]'
-            ).first
-            if await pick.count():
-                await pick.click(timeout=8000)
-                await asyncio.sleep(0.6)
-                return True
-        except Exception:
-            pass
-    return False
-
-
-async def _bilibili_click_declaration_option(page, choice: str) -> bool:
+    await _bilibili_open_declaration_dropdown_js(page)
+    await asyncio.sleep(0.5)
     if await _bilibili_click_declaration_option_js(page, choice):
-        await asyncio.sleep(0.5)
-        return True
-    locators = (
-        page.locator(f'[class*="select-dropdown"] >> text="{choice}"').first,
-        page.locator(f'[class*="dropdown"]:visible >> text="{choice}"').first,
-        page.locator(f'[class*="option"]:visible >> text="{choice}"').first,
-        page.get_by_role("option", name=choice).first,
-        page.locator(f'li:visible >> text="{choice}"').first,
-    )
-    for opt in locators:
-        if not await opt.count():
-            continue
-        try:
-            if not await opt.is_visible():
-                continue
-            await opt.click(timeout=8000)
-            await asyncio.sleep(0.5)
-            return True
-        except Exception:
-            continue
-    return False
+        await asyncio.sleep(0.4)
+    elif await _bilibili_keyboard_pick_declaration(page, choice):
+        pass
+    else:
+        print("  [script] ⚠️ B站创作声明未选中", flush=True)
+        return False
 
-
-async def _bilibili_fill_creation_declaration(page) -> bool:
-    """B 站必填「创作声明」下拉框。"""
     selected = await _bilibili_declaration_selected(page)
     if selected:
-        print(f"  [script] B站创作声明已填: {selected}，跳过", flush=True)
+        print(f"  [script] B站创作声明已选: {selected}", flush=True)
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
         return True
-
-    print("  [script] 正在选择 B 站创作声明…", flush=True)
-    for attempt in range(3):
-        for choice in _bilibili_creation_declaration_choices():
-            if await _bilibili_click_declaration_option(page, choice):
-                await asyncio.sleep(0.4)
-                picked = await _bilibili_declaration_selected(page)
-                if picked:
-                    print(f"  [script] B站创作声明已选: {picked}", flush=True)
-                    try:
-                        await page.keyboard.press("Escape")
-                    except Exception:
-                        pass
-                    return True
-            if not await _bilibili_open_declaration_dropdown(page):
-                continue
-            if await _bilibili_click_declaration_option(page, choice):
-                await asyncio.sleep(0.4)
-                picked = await _bilibili_declaration_selected(page)
-                if picked:
-                    print(f"  [script] B站创作声明已选: {picked}", flush=True)
-                    try:
-                        await page.keyboard.press("Escape")
-                    except Exception:
-                        pass
-                    return True
-
     print("  [script] ⚠️ B站创作声明未选中", flush=True)
     return False
 
@@ -2000,8 +1958,7 @@ async def run_agent(
         action_delay_max=_env_float("LLM_BROWSER_DELAY_MAX", 3.5),
         save_screenshots=_env("LLM_BROWSER_SAVE_SCREENSHOTS", "0").lower()
         in ("1", "true", "yes", "on"),
-        use_deterministic=_env("LLM_BROWSER_DETERMINISTIC", "1").lower()
-        not in ("0", "false", "no", "off"),
+        use_deterministic=platform_use_deterministic(platform_key),
     )
     success_patterns = success_patterns or ["manage", "发布成功", "已发布", "发表成功"]
     history: list[str] = []
@@ -2020,6 +1977,12 @@ async def run_agent(
     state = await extract_page_state(page, screenshot_path=None)
     if _check_success(state, success_patterns, start_url=start_url, platform_key=platform_key):
         return {"ok": True, "steps": 0, "llm_calls": 0, "url": state.url, "history": []}
+
+    if not cfg.use_deterministic and fields:
+        print(
+            "  [agent] LLM 逐步操作（模拟真人填表/投稿，本地 file 上传除外）…",
+            flush=True,
+        )
 
     if cfg.use_deterministic and fields:
         print("  [script] 尝试确定性填表+发布（零 LLM）…", flush=True)
@@ -2074,6 +2037,14 @@ async def run_agent(
     if platform_key == "bilibili" and await _bilibili_form_ready(page):
         llm_video_path = None
         print("  [script] B站表单已就绪，LLM 兜底不再重复上传视频", flush=True)
+
+    from llm_vision_client import llm_vision_available
+
+    if not llm_vision_available():
+        raise LLMBrowserError(
+            "确定性步骤未完成，且未配置 LLM API Key（AIHUBMIX_API_KEY 或 DASHSCOPE_API_KEY）。"
+            "请检查 .env，或通过 scripts/publish-llm-browser.sh 启动以自动加载 .env。"
+        )
 
     print(f"  [agent] 进入 LLM 兜底（最多 {cfg.max_steps} 步）…", flush=True)
     for step in range(1, cfg.max_steps + 1):

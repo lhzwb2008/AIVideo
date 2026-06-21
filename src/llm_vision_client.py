@@ -50,6 +50,13 @@ def browser_provider_label() -> str:
     return "DashScope" if _model_uses_dashscope(browser_model()) else "AiHubMix"
 
 
+def llm_vision_available() -> bool:
+    model = browser_model()
+    if _model_uses_dashscope(model):
+        return bool(_env("DASHSCOPE_API_KEY"))
+    return bool(_env("AIHUBMIX_API_KEY"))
+
+
 def _vision_request_config(model: str) -> tuple[str, str, int]:
     if _model_uses_dashscope(model):
         key = _env("DASHSCOPE_API_KEY")
