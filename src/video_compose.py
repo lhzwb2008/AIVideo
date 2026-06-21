@@ -1162,10 +1162,35 @@ def _write_ass_subtitles(
 def _subtitles_filter(ass_path: Path) -> str:
     p = str(ass_path.resolve()).replace("\\", "/")
     if os.name == "nt":
-        # Windows：单引号包裹路径，避免 C: 被当成选项分隔符
-        safe = p.replace("'", r"\'")
-        return f"subtitles='{safe}'"
+        # Drive letter colon is an option separator in ffmpeg filters; escape it.
+        if len(p) >= 2 and p[1] == ":":
+            p = p[0] + "\\:" + p[2:]
+        return f"subtitles={p}"
     return f"subtitles={_escape_drawtext_path(p)}"
+
+
+def _burn_ass_on_video(*, input_mp4: Path, ass_path: Path, out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    ass_dir = ass_path.parent.resolve()
+    if os.name == "nt":
+        # Relative filename + cwd avoids C: being parsed as filter option separator.
+        vf = f"subtitles={ass_path.name}"
+        cwd: str | None = str(ass_dir)
+    else:
+        vf = _subtitles_filter(ass_path)
+        cwd = None
+    cmd = [
+        ffmpeg_executable(), "-y",
+        "-i", str(input_mp4.resolve()),
+        "-vf", vf,
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        str(out_path.resolve()),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg ASS 字幕烧录失败:\n{proc.stderr[-2000:]}")
 
 
 def _encode_still_with_audio(
@@ -1200,22 +1225,6 @@ def _encode_still_with_audio(
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg 视频轨合成失败:\n{proc.stderr[-2000:]}")
-
-
-def _burn_ass_on_video(*, input_mp4: Path, ass_path: Path, out_path: Path) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        ffmpeg_executable(), "-y",
-        "-i", str(input_mp4),
-        "-vf", _subtitles_filter(ass_path),
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "copy",
-        str(out_path),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg ASS 字幕烧录失败:\n{proc.stderr[-2000:]}")
 
 
 def _collect_subtitle_entries(
