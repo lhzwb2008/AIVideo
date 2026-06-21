@@ -227,6 +227,25 @@ def font_path() -> str:
     return str(fp)
 
 
+def drawtext_font_path() -> str:
+    """ffmpeg drawtext 用字体（Windows 优先系统微软雅黑，避免 Mac .ttc 不兼容）。"""
+    override = os.environ.get("AIVIDEO_DRAWTEXT_FONT", "").strip()
+    if override:
+        fp = Path(override) if Path(override).is_absolute() else ROOT / override
+        if fp.is_file():
+            return str(fp)
+    if os.name == "nt":
+        for candidate in (
+            r"C:\Windows\Fonts\msyh.ttc",
+            r"C:\Windows\Fonts\msyhbd.ttc",
+            r"C:\Windows\Fonts\simhei.ttf",
+            r"C:\Windows\Fonts\simsun.ttc",
+        ):
+            if Path(candidate).is_file():
+                return candidate
+    return font_path()
+
+
 def load_font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(font_path(), size=size)
 
@@ -645,11 +664,13 @@ def compose_cold_open_clip(
     filter_chain = ",".join(filters)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    vf_args, map_args = _video_filter_cmd_parts(filter_chain, work_dir)
     cmd = [
         ffmpeg_executable(), "-y",
         "-loop", "1", "-i", str(image_path),
         "-i", str(audio_path),
-        "-vf", filter_chain,
+        *vf_args,
+        *map_args,
         "-af", "pan=stereo|c0=c0|c1=c0",
         "-r", "30",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20",
@@ -1012,9 +1033,27 @@ _DRAWTEXT_ESCAPE = str.maketrans({"\\": r"\\", ":": r"\:", "'": r"\'", "%": r"\%
 def _escape_drawtext_path(p: str) -> str:
     s = str(Path(p).resolve())
     if os.name == "nt":
-        # ffmpeg drawtext on Windows: forward slashes + escape drive colon only
         s = s.replace("\\", "/")
     return s.translate(_DRAWTEXT_ESCAPE)
+
+
+def _video_filter_cmd_parts(
+    filter_chain: str,
+    work_dir: Path,
+    *,
+    audio_stream: str = "1:a:0",
+) -> tuple[list[str], list[str]]:
+    """Windows 用 filter_complex_script，避免 -vf 长链 + drawtext 解析失败。"""
+    if os.name != "nt":
+        return (["-vf", filter_chain], [])
+    work_dir.mkdir(parents=True, exist_ok=True)
+    script = work_dir / "ffmpeg_vf.txt"
+    script.write_text(f"[0:v]{filter_chain}[vout]\n", encoding="utf-8")
+    script_arg = str(script.resolve()).replace("\\", "/")
+    return (
+        ["-filter_complex_script", script_arg],
+        ["-map", "[vout]", "-map", audio_stream],
+    )
 
 
 def _make_phrase_textfile(phrase: str, out: Path, *, fontsize: int | None = None) -> Path:
@@ -1032,8 +1071,10 @@ def _drawtext_filter(
     start: float,
     end: float,
 ) -> str:
+    del font
+    dt_font = drawtext_font_path()
     parts = [
-        f"fontfile={_escape_drawtext_path(font)}",
+        f"fontfile={_escape_drawtext_path(dt_font)}",
         f"textfile={_escape_drawtext_path(str(textfile))}",
         "fontcolor=white",
         f"fontsize={fontsize}",
@@ -1045,7 +1086,7 @@ def _drawtext_filter(
         "x=(w-text_w)/2",
         f"y={y}-text_h/2",
         "line_spacing=10",
-        f"enable='between(t,{start:.3f},{end:.3f})'",
+        f"enable=between(t\\,{start:.3f}\\,{end:.3f})",
     ]
     return "drawtext=" + ":".join(parts)
 
@@ -1087,6 +1128,7 @@ def compose_clip(
     filter_chain = ",".join(filters)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    vf_args, map_args = _video_filter_cmd_parts(filter_chain, work_dir)
     cmd = [
         ffmpeg_executable(), "-y",
         "-loop", "1", "-i", str(base_image),
@@ -1096,7 +1138,8 @@ def compose_clip(
     else:
         cmd += ["-i", str(audio_path)]
     cmd += [
-        "-vf", filter_chain,
+        *vf_args,
+        *map_args,
         "-af", "pan=stereo|c0=c0|c1=c0",
         "-r", "30",
         "-c:v", "libx264", "-preset", "medium", "-crf", "20",
