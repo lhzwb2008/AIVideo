@@ -417,6 +417,59 @@ async def _goto_page(page, url: str, *, timeout_ms: int = 90_000) -> None:
         raise last_exc
 
 
+async def _launch_persistent_with_retry(
+    p,
+    profile: Path,
+    ctx_kw: dict,
+    launch: dict,
+    *,
+    platform: str,
+) -> object:
+    """Windows 上 Profile 被上一轮 Chrome 占用时会失败，短暂等待后重试。"""
+    import asyncio
+
+    max_attempts = int(_env("LLM_BROWSER_PROFILE_RETRIES", "8"))
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            context = await p.chromium.launch_persistent_context(
+                str(profile),
+                **ctx_kw,
+                **launch,
+            )
+            if platform in ("xiaohongshu", "bilibili"):
+                from llm_browser_agent import install_browser_shadow_hooks
+
+                await install_browser_shadow_hooks(context)
+            return context
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc).lower()
+            retryable = any(
+                k in msg or k in str(exc)
+                for k in (
+                    "target",
+                    "closed",
+                    "already",
+                    "实例",
+                    "user data directory",
+                    "singleton",
+                )
+            )
+            if not retryable or attempt >= max_attempts:
+                raise
+            wait = min(20, 4 * attempt)
+            print(
+                f"  [browser] Chrome Profile 占用，{wait}s 后重试"
+                f" ({attempt}/{max_attempts})…",
+                flush=True,
+            )
+            await asyncio.sleep(wait)
+    if last_exc:
+        raise last_exc
+    raise PublishError("无法启动浏览器 Profile")
+
+
 async def _launch_context(p, platform: str, *, headed: bool):
     vp = _browser_viewport(platform)
     launch: dict = {
@@ -462,15 +515,9 @@ async def _launch_context(p, platform: str, *, headed: bool):
             "timezone_id": "Asia/Shanghai",
             "viewport": vp,
         }
-        context = await p.chromium.launch_persistent_context(
-            str(profile),
-            **ctx_kw,
-            **launch,
+        context = await _launch_persistent_with_retry(
+            p, profile, ctx_kw, launch, platform=platform
         )
-        if platform in ("xiaohongshu", "bilibili"):
-            from llm_browser_agent import install_browser_shadow_hooks
-
-            await install_browser_shadow_hooks(context)
         return context, None
 
     if not cookie:
@@ -879,6 +926,10 @@ def main() -> int:
             return 1
 
     print("\n=== 开始 LLM 视觉发布 ===", flush=True)
+    if video and platform != "zhihu":
+        from publish_llm_browser import stamp_llm_publish_log
+
+        stamp_llm_publish_log(platform, video, title=fields.get("title") or "")
     try:
         result = asyncio.run(
             publish_async(
@@ -890,14 +941,16 @@ def main() -> int:
                 forum_dir=forum_dir,
             )
         )
-        log_path = ROOT / "logs" / f"last_llm_{platform}_publish.json"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        from publish_llm_browser import write_llm_publish_log
+
         payload = {
             **result,
             "method": "llm_browser",
             "published_at": datetime.now(timezone.utc).isoformat(),
+            "video": str(video.resolve()) if video else "",
+            "title": result.get("title") or fields.get("title") or "",
         }
-        log_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        log_path = write_llm_publish_log(platform, payload)
         if platform == "zhihu":
             zh_log = {
                 "at": payload["published_at"],

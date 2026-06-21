@@ -12,6 +12,7 @@
   .\make-and-publish.ps1 1
   .\make-and-publish.ps1 --no-publish
   .\make-and-publish.ps1 --slot edu_quant
+  .\make-and-publish.ps1 --publish-only archive\published\20260621\zh\20260621_212358.mp4
 #>
 param(
     [Parameter(ValueFromRemainingArguments = $true)]

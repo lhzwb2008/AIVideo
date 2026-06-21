@@ -722,10 +722,14 @@ def archive_publish_bundle(video: Path, *, date_tag: str) -> dict[str, Path | No
     stem = video.stem
 
     video_target = dest_dir / video.name
-    if video_target.exists():
+    if video.resolve() == video_target.resolve():
+        pass
+    elif video_target.exists():
         video_target = dest_dir / f"{stem}_{datetime.now().strftime('%H%M%S')}{video.suffix}"
+        shutil.move(str(video), str(video_target))
+    else:
+        shutil.move(str(video), str(video_target))
     caption_sidecar = video.with_suffix(".tiktok_caption.txt")
-    shutil.move(str(video), str(video_target))
     if caption_sidecar.is_file():
         caption_target = video_target.with_suffix(".tiktok_caption.txt")
         try:
@@ -735,11 +739,15 @@ def archive_publish_bundle(video: Path, *, date_tag: str) -> dict[str, Path | No
 
     forum_target: Path | None = None
     forum_src = forum_dir_for_video(video)
-    if forum_src.is_dir() and forum_src.resolve() != dest_dir.resolve():
+    if forum_src.is_dir():
         forum_target = dest_dir / stem
-        if forum_target.exists():
+        if forum_src.resolve() == forum_target.resolve():
+            pass
+        elif forum_target.exists():
             forum_target = dest_dir / f"{stem}_forum_{datetime.now().strftime('%H%M%S')}"
-        shutil.move(str(forum_src), str(forum_target))
+            shutil.move(str(forum_src), str(forum_target))
+        else:
+            shutil.move(str(forum_src), str(forum_target))
 
     return {"video": video_target, "forum": forum_target}
 
@@ -813,15 +821,31 @@ def pipeline_after_script(
     dry_run: bool,
     append_history_fn,
     skip_publish: bool = False,
+    skip_compose: bool = False,
+    video: Path | None = None,
 ) -> dict:
     del publish_check  # 保留参数兼容；国内平台改手动发布
     if index == 1:
         reset_publish_skips()
 
-    run(script_argv("run-enrich-images", str(script_path)), label="生图")
-    run(script_argv("run-compose", str(script_path)), label="合成")
-    video = latest_video()
-    generate_forum_pack(script_path, video)
+    if skip_compose:
+        from paths import resolve_video_for_publish
+
+        if not video:
+            raise RuntimeError("skip_compose 需要指定 video")
+        video = resolve_video_for_publish(video)
+        log(f"\n=== [{index}/{target}] 跳过生图/合成，使用已有视频 ===")
+        log(f"  视频: {rel(video)}")
+    else:
+        run(script_argv("run-enrich-images", str(script_path)), label="生图")
+        run(script_argv("run-compose", str(script_path)), label="合成")
+        video = latest_video()
+
+    forum_dir = video.parent / video.stem
+    if (forum_dir / "post.md").is_file():
+        log(f"论坛图文已存在：{rel(forum_dir)}/")
+    else:
+        generate_forum_pack(script_path, video)
 
     if skip_publish:
         log(f"\n=== [{index}/{target}] 跳过自动发布（--no-publish）===")
@@ -981,6 +1005,55 @@ def pipeline_after_script(
         "xueqiu_title": xueqiu_title,
         "zhihu_title": zhihu_title,
     }
+
+
+    return None
+
+
+def pipeline_publish_only(
+    video: Path,
+    *,
+    script_path: Path | None = None,
+    dry_run: bool = False,
+    skip_publish: bool = False,
+    append_history_fn=None,
+) -> dict:
+    """跳过选题/写稿/生图/合成，对已有 mp4 直接走发布（测试/补发）。"""
+    from paths import resolve_video_for_publish
+    from publish_resolve import load_script, resolve_script_for_video
+
+    video = resolve_video_for_publish(video)
+    script = script_path or resolve_script_for_video(video, None)
+    if not script or not script.is_file():
+        raise RuntimeError(
+            f"找不到 {video.name} 的脚本 JSON，请加 --script logs\\last_script_....json"
+        )
+    data = load_script(script) or {}
+    title = str(data.get("title") or read_script_title(script) or video.stem).strip()
+    log(f"\n=== [publish-only] 直接发布（跳过生成）===")
+    log(f"  视频: {rel(video)}")
+    log(f"  脚本: {rel(script)}")
+    log(f"  标题: {title}")
+
+    from locale_env import locale_logs_dir
+
+    loc = locale_logs_dir()
+    loc.mkdir(parents=True, exist_ok=True)
+    (loc / "last_video.txt").write_text(str(video.resolve()), encoding="utf-8")
+
+    fn = append_history_fn or (lambda _: None)
+    return pipeline_after_script(
+        script,
+        title,
+        index=1,
+        target=1,
+        publish_check=False,
+        dry_run=dry_run,
+        skip_publish=skip_publish,
+        append_history_fn=fn,
+        skip_compose=True,
+        video=video,
+    )
 
 
 def process_topic(

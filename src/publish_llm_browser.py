@@ -29,6 +29,46 @@ LOG_NAMES = {
 FORUM_PLATFORMS = frozenset({"zhihu"})
 
 
+def llm_publish_log_paths(platform: str) -> list[Path]:
+    from locale_env import locale_logs_dir
+
+    name = LOG_NAMES[platform]
+    primary = locale_logs_dir() / name
+    legacy = ROOT / "logs" / name
+    paths = [primary]
+    if legacy.resolve() != primary.resolve():
+        paths.append(legacy)
+    return paths
+
+
+def stamp_llm_publish_log(platform: str, video: Path, *, title: str = "") -> None:
+    import json
+    from datetime import datetime, timezone
+
+    payload = {
+        "ok": False,
+        "video": str(video.resolve()),
+        "title": title,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "method": "llm_browser",
+    }
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    for log_path in llm_publish_log_paths(platform):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(text, encoding="utf-8")
+
+
+def write_llm_publish_log(platform: str, payload: dict) -> Path:
+    import json
+
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    paths = llm_publish_log_paths(platform)
+    for log_path in paths:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(text, encoding="utf-8")
+    return paths[0]
+
+
 def llm_browser_default() -> bool:
     raw = os.environ.get("AIVIDEO_PUBLISH_LLM_BROWSER", "1").strip().lower()
     return raw not in ("0", "false", "no", "off")
@@ -37,11 +77,9 @@ def llm_browser_default() -> bool:
 def _read_llm_publish_title(platform: str, *, video: Path) -> str:
     import json
 
-    from locale_env import locale_logs_dir
-
     stem = video.stem
-    for base in (locale_logs_dir(), ROOT / "logs"):
-        log_path = base / LOG_NAMES[platform]
+    matched: dict | None = None
+    for log_path in llm_publish_log_paths(platform):
         if not log_path.is_file():
             continue
         try:
@@ -49,21 +87,19 @@ def _read_llm_publish_title(platform: str, *, video: Path) -> str:
         except (OSError, json.JSONDecodeError):
             continue
         if not data.get("ok"):
-            raise RuntimeError(
-                f"{LLM_PLATFORMS[platform]} LLM 发布未确认成功（见 {log_path}）"
-            )
+            continue
         logged = str(data.get("video") or "").strip()
-        if logged:
-            logged_stem = Path(logged).stem
-            if logged_stem and logged_stem != stem:
-                raise RuntimeError(
-                    f"{LLM_PLATFORMS[platform]} 发布记录与当前视频不一致"
-                    f"（日志 {logged_stem} ≠ {stem}，见 {log_path}）"
-                )
-        title = str(data.get("title") or "").strip()
-        if title:
-            return title
-    return stem
+        if logged and Path(logged).stem != stem:
+            continue
+        matched = data
+        break
+    if not matched:
+        raise RuntimeError(
+            f"{LLM_PLATFORMS[platform]} LLM 发布未确认成功"
+            f"（无与 {stem} 匹配的成功日志）"
+        )
+    title = str(matched.get("title") or "").strip()
+    return title or stem
 
 
 def publish_llm_browser(
@@ -78,6 +114,7 @@ def publish_llm_browser(
     if platform not in LLM_PLATFORMS:
         raise ValueError(f"未知 LLM 平台: {platform}")
     video = resolve_video_for_publish(video)
+    stamp_llm_publish_log(platform, video, title="")
 
     cmd = script_argv(
         "publish-llm-browser",
