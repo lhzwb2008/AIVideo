@@ -35,20 +35,26 @@ $Settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -ExecutionTimeLimit (New-TimeSpan -Hours 8)
 
+$TaskUser = $RunAsUser
+if ($TaskUser -notmatch '\\') {
+    $TaskUser = "$env:USERDOMAIN\$TaskUser"
+}
+
+# PS 5.1 / older Server: LogonType goes on Principal, not Register-ScheduledTask
+$Principal = New-ScheduledTaskPrincipal -UserId $TaskUser -LogonType Interactive -RunLevel Highest
+
 Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $Action `
     -Trigger $Trigger `
     -Settings $Settings `
-    -User $RunAsUser `
-    -LogonType Interactive `
-    -RunLevel Highest `
+    -Principal $Principal `
     -Force | Out-Null
 
 Write-Host 'Scheduled task registered.' -ForegroundColor Green
 Write-Host "  TaskName : $TaskName"
 Write-Host "  Schedule : daily at $At"
-Write-Host "  User     : $RunAsUser (Interactive)"
+Write-Host "  User     : $TaskUser (Interactive)"
 Write-Host "  Command  : powershell.exe $PsArgs"
 Write-Host "  WorkDir  : $Root"
 Write-Host "  Logs     : $Root\logs\scheduled\"
