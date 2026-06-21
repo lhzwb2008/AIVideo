@@ -66,10 +66,8 @@ function Invoke-SessionCheck {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-# 各平台登录前统一打 SAU 补丁（B 站由 bilibili_login.py 单独处理 biliup 补丁）
-if ($Platform -notin @('bilibili')) {
-    & $MainPy "$Root\src\apply_sau_patches.py"
-}
+# 各平台登录前统一打 SAU 补丁
+& $MainPy "$Root\src\apply_sau_patches.py"
 
 switch ($Platform) {
     'xhs' { $Platform = 'xiaohongshu' }
@@ -94,18 +92,21 @@ switch ($Platform) {
     }
     'bilibili' {
         $Acct = Get-OrDefault $Account (Get-OrDefault $env:SAU_BILIBILI_ACCOUNT 'main')
-        $LoginArgs = @("$Root\src\bilibili_login.py", '--account', $Acct)
+        $cookie = Join-Path $SauHome "cookies\bilibili_$Acct.json"
+        $BrowserProfile = Join-Path $SauHome "cookies\browser_profiles\bilibili_$Acct"
         if ($Check) {
-            Invoke-SessionCheck $SauPy @LoginArgs '--check'
+            Invoke-SessionCheck $SauPy "$Root\src\bilibili_session.py" '--account' $Acct
             exit 0
         }
         if ($Force) {
-            $LoginArgs += '--force'
+            Remove-Item $cookie, $BrowserProfile -Recurse -Force -ErrorAction SilentlyContinue
         }
-        $LoginArgs += '--login'
-        Write-Host '==> Bilibili login (biliup QR)' -ForegroundColor Cyan
-        & $SauPy @LoginArgs
+        Write-Host '==> Bilibili login (Chrome QR)' -ForegroundColor Cyan
+        Write-Host '即将打开 Chrome 扫码登录 B 站创作中心...'
+        & $SauPy "$Root\src\bilibili_login.py" --login --account $Acct
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Write-Host '登录完成，正在校验...'
+        Invoke-SessionCheck $SauPy "$Root\src\bilibili_session.py" '--account' $Acct
     }
     'xiaohongshu' {
         $Acct = Get-OrDefault $Account (Get-OrDefault $env:SAU_XHS_ACCOUNT 'main')
