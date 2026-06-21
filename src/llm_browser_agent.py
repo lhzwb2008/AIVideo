@@ -699,12 +699,47 @@ async def _bilibili_scroll_to_footer(page) -> None:
         await asyncio.sleep(0.12)
 
 
+# 2026 改版后「发布」在 xhs-publish-btn 的 closed Shadow DOM 内，需 hook 或键盘 Tab。
+XHS_BROWSER_INIT_SCRIPT = """
+(() => {
+  if (window.__aivideoXhsInit) return;
+  window.__aivideoXhsInit = true;
+  const orig = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function(init) {
+    const cfg = Object.assign({}, init || {}, { mode: 'open' });
+    return orig.call(this, cfg);
+  };
+})();
+"""
+
+_XHS_SHADOW_CLICK_JS = """
+() => {
+  const ok = (t) => t === '发布' || t === '立即发布';
+  const hosts = document.querySelectorAll(
+    'xhs-publish-btn, xhs-publish-button, [is="xhs-publish-btn"]'
+  );
+  for (const host of hosts) {
+    const root = host.shadowRoot;
+    if (!root) continue;
+    for (const b of root.querySelectorAll('button, [role="button"]')) {
+      const t = (b.innerText || '').trim();
+      if (!ok(t)) continue;
+      b.scrollIntoView({ block: 'center', inline: 'center' });
+      b.click();
+      return t;
+    }
+  }
+  return '';
+}
+"""
+
+
 def _xhs_viewport() -> dict[str, int]:
     try:
         w = int(_env("XHS_BROWSER_WIDTH", "1440"))
-        h = int(_env("XHS_BROWSER_HEIGHT", "2000"))
+        h = int(_env("XHS_BROWSER_HEIGHT", "2560"))
     except ValueError:
-        w, h = 1440, 2000
+        w, h = 1440, 2560
     return {"width": w, "height": h}
 
 
@@ -713,12 +748,22 @@ def _xhs_use_maximized_window() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+async def install_xhs_browser_hooks(context) -> None:
+    """在首次导航前注入 Shadow open hook，否则无法 query 发布按钮。"""
+    try:
+        await context.add_init_script(XHS_BROWSER_INIT_SCRIPT)
+    except Exception:
+        pass
+
+
 async def _xhs_apply_page_zoom(page) -> None:
-    raw = _env("XHS_BROWSER_ZOOM", "0.85").strip()
+    raw = _env("XHS_BROWSER_ZOOM", "").strip()
+    if not raw:
+        return
     try:
         zoom = float(raw)
     except ValueError:
-        zoom = 0.85
+        return
     if zoom <= 0 or zoom >= 1.0:
         return
     try:
@@ -761,13 +806,26 @@ async def _xhs_publish_button_visible(page) -> bool:
             await page.evaluate(
                 """() => {
                 const ok = (t) => t === '发布' || t === '立即发布';
+                const vh = window.innerHeight;
+                for (const host of document.querySelectorAll(
+                  'xhs-publish-btn, xhs-publish-button, [is="xhs-publish-btn"]'
+                )) {
+                  const root = host.shadowRoot;
+                  if (!root) continue;
+                  for (const b of root.querySelectorAll('button, [role="button"]')) {
+                    const t = (b.innerText || '').trim();
+                    if (!ok(t)) continue;
+                    const r = b.getBoundingClientRect();
+                    if (r.width >= 48 && r.height >= 22 && r.bottom <= vh + 4) return true;
+                  }
+                }
                 for (const b of document.querySelectorAll('button, [role="button"]')) {
                   const t = (b.innerText || '').trim();
                   if (!ok(t)) continue;
                   const r = b.getBoundingClientRect();
                   if (r.width < 48 || r.height < 22) continue;
                   if (r.left < 100) continue;
-                  if (r.top >= 0 && r.bottom <= window.innerHeight + 4) return true;
+                  if (r.top >= 0 && r.bottom <= vh + 4) return true;
                 }
                 return false;
             }"""
@@ -814,8 +872,13 @@ async def _xhs_scroll_to_publish(page) -> None:
         await asyncio.sleep(0.1)
 
 
-async def xhs_prepare_page(page) -> None:
-    """最大化/加高视口并滚到底，确保底部「发布」按钮可见。"""
+async def xhs_prepare_page(page, *, verbose: bool = True) -> None:
+    """加高视口并滚到底；发布按钮在 Shadow DOM 内，滚动 alone 可能仍不可见。"""
+    vp = _xhs_viewport()
+    try:
+        await page.set_viewport_size(vp)
+    except Exception:
+        pass
     if _xhs_use_maximized_window():
         try:
             await page.evaluate(
@@ -828,23 +891,22 @@ async def xhs_prepare_page(page) -> None:
             )
         except Exception:
             pass
-    else:
-        vp = _xhs_viewport()
-        try:
-            await page.set_viewport_size(vp)
-        except Exception:
-            pass
     await dismiss_overlays(page, platform_key="xiaohongshu")
     await _xhs_disable_pk_cover(page)
     await _xhs_try_collapse_preview(page)
     await _xhs_apply_page_zoom(page)
     await _xhs_scroll_to_publish(page)
-    vp = _xhs_viewport()
+    if not verbose:
+        return
     mode = "最大化" if _xhs_use_maximized_window() else f"{vp['width']}x{vp['height']}"
     visible = await _xhs_publish_button_visible(page)
+    shadow = await page.evaluate(
+        "() => !!document.querySelector('xhs-publish-btn, xhs-publish-button')"
+    )
+    hint = "可见" if visible else "不可见（Shadow DOM，将尝试 Tab/穿透点击）"
     print(
-        f"  [script] 小红书页面 {mode}，已滚至底部"
-        f"（发布按钮{'可见' if visible else '不可见，将继续尝试'}）",
+        f"  [script] 小红书页面 {mode} {vp['width']}x{vp['height']}，已滚至底部"
+        f"（发布按钮{hint}，publish组件={'有' if shadow else '无'}）",
         flush=True,
     )
 
@@ -1941,6 +2003,9 @@ async def _xhs_publish_succeeded(page) -> bool:
 
 async def _xhs_js_click_publish(page) -> str:
     try:
+        shadow = str(await page.evaluate(_XHS_SHADOW_CLICK_JS)).strip()
+        if shadow:
+            return shadow
         return str(
             await page.evaluate(
                 """() => {
@@ -1972,6 +2037,75 @@ async def _xhs_js_click_publish(page) -> str:
         return ""
 
 
+async def _xhs_playwright_click_publish(page) -> bool:
+    for name in ("发布", "立即发布"):
+        try:
+            btn = (
+                page.locator("xhs-publish-btn, xhs-publish-button")
+                .locator("button")
+                .filter(has_text=re.compile(f"^{re.escape(name)}$"))
+                .last
+            )
+            if await btn.count():
+                await btn.click(timeout=6000)
+                print(f"  [script] Playwright 穿透 Shadow 点击「{name}」", flush=True)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _xhs_click_publish_keyboard(page) -> bool:
+    """closed Shadow DOM 时：焦点链 Tab 到「发布」再 Enter。"""
+    try:
+        for loc in (
+            page.locator('[placeholder*="正文"], [placeholder*="描述"]').first,
+            page.locator(".publish-container").first,
+        ):
+            if not await loc.count():
+                continue
+            try:
+                box = await loc.bounding_box()
+                if box:
+                    await page.mouse.click(
+                        box["x"] + min(40, box["width"] / 2),
+                        box["y"] + box["height"] - 12,
+                    )
+                    break
+            except Exception:
+                continue
+        host = page.locator(
+            'xhs-publish-btn, [class*="publish-footer"], [class*="footer"]'
+        ).last
+        if await host.count():
+            try:
+                box = await host.bounding_box()
+                if box:
+                    await page.mouse.click(box["x"] + 8, box["y"] + box["height"] / 2)
+            except Exception:
+                pass
+        await asyncio.sleep(0.15)
+        for _ in range(18):
+            await page.keyboard.press("Tab")
+            await asyncio.sleep(0.06)
+            label = await page.evaluate(
+                """() => {
+                const el = document.activeElement;
+                if (!el) return '';
+                return (el.innerText || el.textContent || el.value || '').trim();
+            }"""
+            )
+            if label in ("发布", "立即发布"):
+                await page.keyboard.press("Enter")
+                print("  [script] 键盘 Tab+Enter 触发「发布」", flush=True)
+                await asyncio.sleep(0.4)
+                return True
+        return False
+    except Exception as exc:
+        print(f"  [script] 键盘发布失败: {exc}", flush=True)
+        return False
+
+
 async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
     confirm_texts = ("确认发布", "确定发布", "确认", "确定")
     clicked = False
@@ -1992,6 +2126,10 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
         js_clicked = await _xhs_js_click_publish(page)
         if js_clicked:
             print(f"  [script] 已通过 JS 点击小红书「{js_clicked}」", flush=True)
+            clicked = True
+        elif await _xhs_playwright_click_publish(page):
+            clicked = True
+        elif await _xhs_click_publish_keyboard(page):
             clicked = True
         elif not await _xhs_publish_button_visible(page):
             await _xhs_apply_page_zoom(page)
@@ -2059,7 +2197,11 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
                 return True
         print("  [script] 已点击发布，视为已提交", flush=True)
         return True
-    print("  [script] ⚠️ 未找到小红书发布按钮（可设 XHS_BROWSER_ZOOM=0.8）", flush=True)
+    print(
+        "  [script] ⚠️ 未找到小红书发布按钮"
+        "（2026 版在 Shadow DOM；请确认已注入 attachShadow hook 或设 XHS_BROWSER_HEIGHT=2560）",
+        flush=True,
+    )
     return False
 
 
@@ -2756,8 +2898,11 @@ async def run_agent(
         await dismiss_overlays(page, platform_key=platform_key)
 
         if platform_key == "xiaohongshu":
-            await xhs_prepare_page(page)
-            await _xhs_disable_pk_cover(page)
+            if step == 1:
+                await xhs_prepare_page(page)
+            else:
+                await dismiss_overlays(page, platform_key="xiaohongshu")
+                await _xhs_disable_pk_cover(page)
         elif fields and platform_key in ("bilibili", "douyin", "shipinhao", "zhihu"):
             if await _llm_ready_to_publish(page, platform_key) and await _llm_assist_try_publish(
                 page, platform_key=platform_key, fields=fields, cfg=cfg

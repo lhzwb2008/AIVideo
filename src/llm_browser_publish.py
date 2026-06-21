@@ -110,9 +110,9 @@ def _browser_viewport(platform: str) -> dict[str, int]:
     elif platform == "xiaohongshu":
         try:
             w = int(_env("XHS_BROWSER_WIDTH", "1440"))
-            h = int(_env("XHS_BROWSER_HEIGHT", "2000"))
+            h = int(_env("XHS_BROWSER_HEIGHT", "2560"))
         except ValueError:
-            w, h = 1440, 2000
+            w, h = 1440, 2560
     else:
         w, h = 1440, 900
     return {"width": w, "height": h}
@@ -445,19 +445,21 @@ async def _launch_context(p, platform: str, *, headed: bool):
     )
 
     if platform == "xiaohongshu":
-        launch["args"].append("--disable-geolocation")
+        launch["args"].extend(["--disable-geolocation", "--deny-permission-prompts"])
 
     bilibili_max = platform == "bilibili" and _platform_use_maximized("bilibili")
     xhs_max = platform == "xiaohongshu" and _platform_use_maximized("xiaohongshu")
-    if (bilibili_max or xhs_max) and headed:
+    if bilibili_max and headed:
         launch["args"].extend(["--start-maximized", "--window-position=0,0"])
+    elif xhs_max and headed:
+        launch["args"].append("--window-position=0,0")
 
     if use_profile and profile.is_dir() and any(profile.iterdir()):
         ctx_kw: dict = {
             "locale": "zh-CN",
             "timezone_id": "Asia/Shanghai",
         }
-        if (bilibili_max or xhs_max) and headed:
+        if bilibili_max and headed:
             ctx_kw["no_viewport"] = True
         else:
             ctx_kw["viewport"] = vp
@@ -466,6 +468,10 @@ async def _launch_context(p, platform: str, *, headed: bool):
             **ctx_kw,
             **launch,
         )
+        if platform == "xiaohongshu":
+            from llm_browser_agent import install_xhs_browser_hooks
+
+            await install_xhs_browser_hooks(context)
         return context, None
 
     if not cookie:
@@ -480,6 +486,10 @@ async def _launch_context(p, platform: str, *, headed: bool):
         timezone_id="Asia/Shanghai",
         viewport=vp,
     )
+    if platform == "xiaohongshu":
+        from llm_browser_agent import install_xhs_browser_hooks
+
+        await install_xhs_browser_hooks(context)
     try:
         home = str(sau_home())
         if home not in sys.path:
@@ -653,6 +663,12 @@ async def publish_async(
             page = context.pages[0] if context.pages else await context.new_page()
             print(f"  打开 {platform_url(platform)} …", flush=True)
             await _goto_page(page, platform_url(platform))
+            if platform == "xiaohongshu":
+                try:
+                    await page.reload(wait_until="domcontentloaded", timeout=90_000)
+                    await asyncio.sleep(1.5)
+                except Exception:
+                    pass
             await asyncio.sleep(2)
             if platform == "bilibili":
                 from llm_browser_agent import bilibili_prepare_page
