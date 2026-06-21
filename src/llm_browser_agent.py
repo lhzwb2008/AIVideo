@@ -792,35 +792,85 @@ def _bilibili_creation_declaration_choices() -> list[str]:
         return [x.strip() for x in raw.split("|") if x.strip()]
     return [
         "含AI生成内容",
-        "含AI生成",
-        "AI生成",
-        "自主创作",
-        "自主拍摄",
-        "原创",
+        "内容无需标注",
+        "个人观点，仅供参考",
     ]
 
 
 async def _bilibili_declaration_pending(page) -> bool:
-    loc = page.get_by_text("请选择符合您视频内容的创作声明", exact=False).first
-    if await loc.count():
+    """占位符仍可见 = 未填（勿把下拉菜单里的选项当成已选值）。"""
+    ph = page.get_by_text("请选择符合您视频内容的创作声明", exact=False).first
+    if not await ph.count():
+        return False
+    try:
+        return await ph.is_visible()
+    except Exception:
+        return True
+
+
+async def _bilibili_open_declaration_dropdown(page) -> bool:
+    label = page.get_by_text("创作声明", exact=True).first
+    if await label.count():
         try:
-            if await loc.is_visible():
+            await label.scroll_into_view_if_needed(timeout=8000)
+        except Exception:
+            pass
+
+    for trigger in (
+        page.get_by_text("请选择符合您视频内容的创作声明", exact=False).first,
+        page.locator('[class*="creation"]').filter(
+            has_text="请选择符合您视频内容的创作声明"
+        ).first,
+    ):
+        if not await trigger.count():
+            continue
+        try:
+            if await trigger.is_visible():
+                await trigger.click(timeout=8000)
+                await asyncio.sleep(0.6)
+                return True
+        except Exception:
+            continue
+
+    if await label.count():
+        try:
+            row = label.locator(
+                "xpath=ancestor::*[contains(@class,'form') or contains(@class,'item') or contains(@class,'row')][1]"
+            )
+            pick = row.locator(
+                '[class*="select"], [class*="dropdown"], input, [class*="input"]'
+            ).last
+            if await pick.count():
+                await pick.click(timeout=8000)
+                await asyncio.sleep(0.6)
                 return True
         except Exception:
             pass
-    for text in (
-        "含AI生成内容",
-        "含AI生成",
-        "自主创作",
-        "自主拍摄",
-        "转载",
-    ):
-        hit = page.get_by_text(text, exact=True).first
-        if not await hit.count():
+    return False
+
+
+async def _bilibili_click_declaration_option(page, choice: str) -> bool:
+    """点选下拉项（排除仍显示占位符的触发器本身）。"""
+    locators = (
+        page.locator(f'[class*="select-dropdown"] >> text="{choice}"').first,
+        page.locator(f'[class*="dropdown"]:visible >> text="{choice}"').first,
+        page.locator(f'[class*="option"]:visible >> text="{choice}"').first,
+        page.get_by_role("option", name=choice).first,
+        page.locator(f'li:visible >> text="{choice}"').first,
+        page.get_by_text(choice, exact=True).first,
+    )
+    for opt in locators:
+        if not await opt.count():
             continue
         try:
-            if await hit.is_visible():
-                return False
+            if not await opt.is_visible():
+                continue
+            text = (await opt.inner_text()).strip()
+            if "请选择符合您视频内容的创作声明" in text:
+                continue
+            await opt.click(timeout=8000)
+            await asyncio.sleep(0.5)
+            return True
         except Exception:
             continue
     return False
@@ -832,62 +882,25 @@ async def _bilibili_fill_creation_declaration(page) -> bool:
         print("  [script] B站创作声明已填，跳过", flush=True)
         return True
 
-    opened = False
-    for trigger in (
-        page.get_by_text("请选择符合您视频内容的创作声明", exact=False).first,
-        page.locator('input[placeholder*="创作声明"]').first,
-        page.locator('[class*="creation"]').filter(has_text="声明").first,
-    ):
-        if not await trigger.count():
-            continue
-        try:
-            if await trigger.is_visible():
-                await trigger.scroll_into_view_if_needed(timeout=8000)
-                await trigger.click(timeout=8000)
-                opened = True
-                await asyncio.sleep(0.8)
-                break
-        except Exception:
-            continue
-
-    if not opened:
-        label = page.get_by_text("创作声明", exact=True).first
-        if await label.count():
-            try:
-                await label.scroll_into_view_if_needed(timeout=8000)
-                row = label.locator("xpath=ancestor::div[1]")
-                pick = row.locator(
-                    '[class*="select"], [class*="dropdown"], input, [class*="input"]'
-                ).last
-                if await pick.count():
-                    await pick.click(timeout=8000)
-                    opened = True
-                    await asyncio.sleep(0.8)
-            except Exception:
-                pass
-
-    if not opened:
+    print("  [script] 正在选择 B 站创作声明…", flush=True)
+    if not await _bilibili_open_declaration_dropdown(page):
         print("  [script] ⚠️ 未打开 B 站创作声明下拉框", flush=True)
         return False
 
     for choice in _bilibili_creation_declaration_choices():
-        for opt in (
-            page.get_by_role("option", name=choice).first,
-            page.locator(f'[role="option"]:has-text("{choice}")').first,
-            page.get_by_text(choice, exact=False).first,
-            page.locator(f'li:has-text("{choice}")').first,
-        ):
-            if not await opt.count():
-                continue
-            try:
-                if await opt.is_visible():
-                    await opt.click(timeout=8000)
-                    await asyncio.sleep(0.5)
-                    if not await _bilibili_declaration_pending(page):
-                        print(f"  [script] B站创作声明已选: {choice}", flush=True)
-                        return True
-            except Exception:
-                continue
+        if await _bilibili_click_declaration_option(page, choice):
+            if not await _bilibili_declaration_pending(page):
+                print(f"  [script] B站创作声明已选: {choice}", flush=True)
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                return True
+        if not await _bilibili_declaration_pending(page):
+            print(f"  [script] B站创作声明已选: {choice}", flush=True)
+            return True
+        if await _bilibili_open_declaration_dropdown(page):
+            continue
 
     print("  [script] ⚠️ B站创作声明未选中", flush=True)
     return False
