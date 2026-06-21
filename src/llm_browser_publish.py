@@ -92,6 +92,24 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def _browser_viewport(platform: str) -> dict[str, int]:
+    """B 站投稿页底部按钮常被 900px 视口挡住，默认加高。"""
+    if platform == "bilibili":
+        try:
+            w = int(_env("BILIBILI_BROWSER_WIDTH", "1440"))
+            h = int(_env("BILIBILI_BROWSER_HEIGHT", "1400"))
+        except ValueError:
+            w, h = 1440, 1400
+    else:
+        w, h = 1440, 900
+    return {"width": w, "height": h}
+
+
+def _window_size_arg(platform: str) -> str:
+    vp = _browser_viewport(platform)
+    return f"--window-size={vp['width']},{vp['height']}"
+
+
 def sau_home() -> Path:
     custom = _env("SAU_HOME")
     if custom:
@@ -378,13 +396,14 @@ async def _goto_page(page, url: str, *, timeout_ms: int = 90_000) -> None:
 
 
 async def _launch_context(p, platform: str, *, headed: bool):
+    vp = _browser_viewport(platform)
     launch: dict = {
         "headless": not headed,
         "args": [
             "--disable-blink-features=AutomationControlled",
             "--lang=zh-CN",
             "--no-first-run",
-            "--window-size=1440,900",
+            _window_size_arg(platform),
             "--disable-remote-fonts",
         ],
     }
@@ -410,7 +429,7 @@ async def _launch_context(p, platform: str, *, headed: bool):
         ctx_kw: dict = {
             "locale": "zh-CN",
             "timezone_id": "Asia/Shanghai",
-            "viewport": {"width": 1440, "height": 900},
+            "viewport": vp,
         }
         context = await p.chromium.launch_persistent_context(
             str(profile),
@@ -429,7 +448,7 @@ async def _launch_context(p, platform: str, *, headed: bool):
         storage_state=str(cookie),
         locale="zh-CN",
         timezone_id="Asia/Shanghai",
-        viewport={"width": 1440, "height": 900},
+        viewport=vp,
     )
     try:
         home = str(sau_home())
@@ -595,6 +614,10 @@ async def publish_async(
             print(f"  打开 {platform_url(platform)} …", flush=True)
             await _goto_page(page, platform_url(platform))
             await asyncio.sleep(2)
+            if platform == "bilibili":
+                from llm_browser_agent import bilibili_prepare_page
+
+                await bilibili_prepare_page(page)
             await human_pause(AgentConfig())
 
             result = await run_agent(

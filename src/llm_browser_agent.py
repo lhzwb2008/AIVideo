@@ -540,6 +540,58 @@ BILIBILI_MANAGE_URL = (
 )
 
 
+def _bilibili_viewport() -> dict[str, int]:
+    try:
+        w = int(_env("BILIBILI_BROWSER_WIDTH", "1440"))
+        h = int(_env("BILIBILI_BROWSER_HEIGHT", "1400"))
+    except ValueError:
+        w, h = 1440, 1400
+    return {"width": w, "height": h}
+
+
+async def bilibili_prepare_page(page) -> None:
+    """加高视口并滚到底，确保底部「立即投稿」栏可见。"""
+    vp = _bilibili_viewport()
+    try:
+        await page.set_viewport_size(vp)
+    except Exception:
+        pass
+    await _bilibili_scroll_to_footer(page)
+    print(
+        f"  [script] B站页面视口 {vp['width']}x{vp['height']}，已滚至底部",
+        flush=True,
+    )
+
+
+async def _bilibili_scroll_to_footer(page) -> None:
+    await page.evaluate(
+        """() => {
+        const scrollAll = (root) => {
+          root.scrollTop = root.scrollHeight;
+          for (const el of root.querySelectorAll('*')) {
+            const st = getComputedStyle(el);
+            if ((st.overflowY === 'auto' || st.overflowY === 'scroll')
+                && el.scrollHeight > el.clientHeight + 20) {
+              el.scrollTop = el.scrollHeight;
+            }
+          }
+        };
+        scrollAll(document.documentElement);
+        scrollAll(document.body);
+        window.scrollTo(0, Math.max(
+          document.body.scrollHeight,
+          document.documentElement.scrollHeight
+        ));
+    }"""
+    )
+    for _ in range(3):
+        try:
+            await page.keyboard.press("End")
+        except Exception:
+            pass
+        await asyncio.sleep(0.35)
+
+
 async def _bilibili_submit_errors(page) -> list[str]:
     body = await _bilibili_page_body(page)
     hints = (
@@ -850,22 +902,34 @@ async def _bilibili_handle_confirm_dialog(page) -> bool:
 
 
 async def _bilibili_find_submit_button(page):
+    await _bilibili_scroll_to_footer(page)
     handle = await page.evaluate_handle(
         """() => {
-        const labels = ['立即投稿', '投稿', '发布'];
+        const labels = ['立即投稿', '投稿'];
         const nodes = [...document.querySelectorAll(
-          'button, [role="button"], div[class*="submit"], span[class*="submit"]'
+          'button, [role="button"], div[class*="submit"], span[class*="submit"], a'
         )];
+        const score = (n, label) => {
+          const t = (n.innerText || n.textContent || '').trim();
+          if (!t || !t.includes(label)) return -1;
+          const r = n.getBoundingClientRect();
+          if (r.width < 20 || r.height < 10) return -1;
+          const st = getComputedStyle(n);
+          let s = 0;
+          if (t === label || t === '立即投稿') s += 50;
+          if (st.position === 'fixed' || st.position === 'sticky') s += 40;
+          if (r.bottom >= window.innerHeight - 160) s += 30;
+          if (r.top >= window.innerHeight * 0.55) s += 10;
+          return s;
+        };
+        let best = null, bestScore = -1;
         for (const label of labels) {
           for (const n of nodes) {
-            const t = (n.innerText || n.textContent || '').trim();
-            if (!t || !t.includes(label)) continue;
-            const r = n.getBoundingClientRect();
-            if (r.width < 20 || r.height < 10) continue;
-            return n;
+            const sc = score(n, label);
+            if (sc > bestScore) { bestScore = sc; best = n; }
           }
         }
-        return null;
+        return best;
     }"""
     )
     try:
@@ -906,8 +970,7 @@ async def _bilibili_find_submit_button(page):
 
 async def _bilibili_click_submit(page, *, title: str = "") -> bool:
     async def _try_once() -> bool:
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await asyncio.sleep(0.5)
+        await bilibili_prepare_page(page)
         btn = None
         max_wait = int(_env("BILIBILI_SUBMIT_WAIT_ROUNDS", "15"))
         for i in range(max_wait):
@@ -1547,6 +1610,7 @@ async def try_deterministic_publish(
 
     if platform_key == "bilibili":
         await _wait_bilibili_upload_ready(page)
+        await bilibili_prepare_page(page)
         await dismiss_overlays(page, platform_key=platform_key)
         tid = int(fields.get("tid") or 207)
         await _bilibili_select_partition(page, tid=tid)
