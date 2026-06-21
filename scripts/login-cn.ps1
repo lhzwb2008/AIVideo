@@ -5,8 +5,9 @@
 
 .EXAMPLE
   .\scripts\login-cn.ps1 bilibili
+  .\scripts\login-cn.ps1 douyin -Force
   .\scripts\login-cn.ps1 douyin --force
-  .\scripts\login-cn.ps1 xiaohongshu --check
+  .\scripts\login-cn.ps1 xiaohongshu -Check
   .\scripts\login-cn.ps1 shipinhao
   .\scripts\login-cn.ps1 eastmoney
   .\scripts\login-cn.ps1 xueqiu
@@ -19,8 +20,19 @@ param(
 
     [switch]$Check,
     [switch]$Force,
-    [string]$Account = ''
+    [string]$Account = '',
+
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$ExtraArgs = @()
 )
+
+foreach ($arg in $ExtraArgs) {
+    switch ($arg.ToLower()) {
+        { $_ -in '--force', '-force' } { $Force = $true }
+        { $_ -in '--check', '-check' } { $Check = $true }
+        default { throw "未知参数: $arg（请用 -Force / -Check 或 --force / --check）" }
+    }
+}
 
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path

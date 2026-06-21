@@ -191,6 +191,16 @@ WECHAT_DRAFT_ONLY=1
 
 ## 五、常见问题
 
+**Q: PowerShell 里 `&&` 报错？**  
+A: Windows PowerShell 5.1 不支持 `&&`，请分两行或用分号：
+
+```powershell
+git fetch origin; git reset --hard origin/main
+```
+
+**Q: `login-cn.ps1` 不认识 `--force`？**  
+A: 已兼容 `--force` / `--check`；也可写 PowerShell 原生形式 `-Force` / `-Check`。
+
 **Q: greenlet / patchright `DLL load failed`？**  
 A: Windows Server 精简镜像常缺 **VC++ 2015–2022 运行库**。依次尝试：
 
