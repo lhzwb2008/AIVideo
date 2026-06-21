@@ -29,6 +29,51 @@ LOG_NAMES = {
 
 FORUM_PLATFORMS = frozenset({"zhihu"})
 
+_PROFILE_LOCK_DIR = ROOT / "logs" / "locks"
+
+
+class ProfilePublishLockError(RuntimeError):
+    pass
+
+
+def _acquire_profile_lock(platform: str, *, timeout_s: int = 900) -> Path:
+    """同一平台 Chrome Profile 同时只允许一个发布子进程（防无限重开）。"""
+    _PROFILE_LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = _PROFILE_LOCK_DIR / f"{platform}_publish.lock"
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{os.getpid()}\n{time.time()}".encode())
+            os.close(fd)
+            return lock_path
+        except FileExistsError:
+            try:
+                raw = lock_path.read_text(encoding="utf-8").strip().splitlines()
+                owner = int(raw[0]) if raw else 0
+                if owner and owner != os.getpid():
+                    try:
+                        os.kill(owner, 0)
+                    except OSError:
+                        lock_path.unlink(missing_ok=True)
+                        continue
+            except (OSError, ValueError):
+                pass
+            time.sleep(5)
+    raise ProfilePublishLockError(
+        f"{LLM_PLATFORMS.get(platform, platform)} 发布锁占用超时（{timeout_s}s），"
+        f"请关闭该平台 Chrome 窗口后重试: {lock_path}"
+    )
+
+
+def _release_profile_lock(lock_path: Path | None) -> None:
+    if not lock_path:
+        return
+    try:
+        lock_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
 
 def llm_publish_log_paths(platform: str) -> list[Path]:
     from locale_env import locale_logs_dir
@@ -136,9 +181,14 @@ def publish_llm_browser(
     label = LLM_PLATFORMS[platform]
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
-    proc = subprocess.run(cmd, cwd=ROOT, env=env)
+    lock_path: Path | None = None
+    try:
+        lock_path = _acquire_profile_lock(platform)
+        proc = subprocess.run(cmd, cwd=ROOT, env=env)
+    finally:
+        _release_profile_lock(lock_path)
     if proc.returncode != 0:
-        cooldown = int(os.environ.get("LLM_BROWSER_PROFILE_COOLDOWN", "15"))
+        cooldown = int(os.environ.get("LLM_BROWSER_PROFILE_COOLDOWN", "30"))
         if cooldown > 0:
             time.sleep(cooldown)
         raise RuntimeError(f"{label} LLM 发布失败，退出码 {proc.returncode}")

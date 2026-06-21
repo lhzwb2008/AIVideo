@@ -323,29 +323,41 @@ def publish_wechat_api(forum_dir: Path, *, dry_run: bool) -> str:
     return _read_last_publish_url("last_wechat_publish.json", "title")
 
 
-def _retry_config() -> tuple[int, int]:
+def _retry_config(*, llm_browser: bool = False) -> tuple[int, int]:
     """(最多尝试次数, 每次失败后等待秒数)。次数<=0 视为无限重试。"""
+    env_key = (
+        "AIVIDEO_LLM_PUBLISH_MAX_RETRIES"
+        if llm_browser
+        else "AIVIDEO_PUBLISH_MAX_RETRIES"
+    )
+    default = "2" if llm_browser else "0"
     try:
-        max_attempts = int(os.environ.get("AIVIDEO_PUBLISH_MAX_RETRIES", "0"))
+        max_attempts = int(os.environ.get(env_key, default))
     except ValueError:
-        max_attempts = 0
+        max_attempts = 2 if llm_browser else 0
     try:
         sleep_s = int(os.environ.get("AIVIDEO_PUBLISH_RETRY_SLEEP", "20"))
     except ValueError:
         sleep_s = 20
+    if llm_browser:
+        try:
+            sleep_s = max(sleep_s, int(os.environ.get("LLM_BROWSER_PROFILE_COOLDOWN", "30")))
+        except ValueError:
+            sleep_s = max(sleep_s, 30)
     return max_attempts, max(1, sleep_s)
 
 
-def _publish_with_retry(do_fn, *, label: str, dry_run: bool) -> str:
+def _publish_with_retry(
+    do_fn, *, label: str, dry_run: bool, llm_browser: bool = False
+) -> str:
     """发布失败不退出：提示检查网络并一直重试，直到成功或达到上限。
 
-    AIVIDEO_PUBLISH_MAX_RETRIES<=0（默认）= 无限重试；交互式终端可直接回车立即重试、
-    输入 s 跳过本平台（本轮后续视频同渠道也跳过）。
+    AIVIDEO_PUBLISH_MAX_RETRIES<=0（默认）= 无限重试；LLM 浏览器默认最多 2 次。
     """
     if _publish_skipped(label):
         log(f"  ↳ [{label}] 本轮已跳过（前序视频已标记 s）。")
         return ""
-    max_attempts, sleep_s = _retry_config()
+    max_attempts, sleep_s = _retry_config(llm_browser=llm_browser)
     attempt = 0
     while True:
         attempt += 1
@@ -500,7 +512,7 @@ def publish_bilibili(
         return title
 
     return _publish_forum_with_retry(
-        _do, label="B站", dry_run=dry_run, non_retryable=_bilibili_non_retryable
+        _do, label="B站", dry_run=dry_run, non_retryable=_bilibili_non_retryable, llm_browser=True
     )
 
 
@@ -514,7 +526,7 @@ def publish_shipinhao(video: Path, script_path: Path, *, dry_run: bool) -> str:
             log(f"  [视频号] 已提交: {title}")
         return title
 
-    return _publish_with_retry(_do, label="视频号", dry_run=dry_run)
+    return _publish_with_retry(_do, label="视频号", dry_run=dry_run, llm_browser=True)
 
 
 def publish_douyin(video: Path, script_path: Path, *, dry_run: bool) -> str:
@@ -527,7 +539,7 @@ def publish_douyin(video: Path, script_path: Path, *, dry_run: bool) -> str:
             log(f"  [抖音] 已提交: {title}")
         return title
 
-    return _publish_with_retry(_do, label="抖音", dry_run=dry_run)
+    return _publish_with_retry(_do, label="抖音", dry_run=dry_run, llm_browser=True)
 
 
 def publish_xiaohongshu(video: Path, script_path: Path, *, dry_run: bool) -> str:
@@ -540,7 +552,7 @@ def publish_xiaohongshu(video: Path, script_path: Path, *, dry_run: bool) -> str
             log(f"  [小红书] 已提交: {title}")
         return title
 
-    return _publish_with_retry(_do, label="小红书", dry_run=dry_run)
+    return _publish_with_retry(_do, label="小红书", dry_run=dry_run, llm_browser=True)
 
 
 def _bilibili_non_retryable(exc: BaseException) -> bool:
@@ -562,12 +574,13 @@ def _publish_forum_with_retry(
     label: str,
     dry_run: bool,
     non_retryable=None,
+    llm_browser: bool = False,
 ) -> str:
     """论坛 Playwright 发布：cookie 失效已在内部等待扫码；其它错误可重试/跳过。"""
     if _publish_skipped(label):
         log(f"  ↳ [{label}] 本轮已跳过（前序视频已标记 s）。")
         return ""
-    max_attempts, sleep_s = _retry_config()
+    max_attempts, sleep_s = _retry_config(llm_browser=llm_browser)
     attempt = 0
     while True:
         attempt += 1

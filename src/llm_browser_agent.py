@@ -594,17 +594,17 @@ async def _bilibili_page_body(page) -> str:
 
 
 def _bilibili_upload_complete(body: str) -> bool:
-    if any(t in body for t in ("上传完成", "上传成功")):
-        return True
-    if "100%" in body:
-        return True
-    percents = [int(m.group(1)) for m in re.finditer(r"(\d+)\s*%", body)]
-    if percents and max(percents) >= 100:
-        return True
-    if any(t in body for t in ("上传中", "正在上传", "等待上传", "上传失败")):
+    if any(t in body for t in ("上传失败", "上传出错")):
         return False
+    if any(t in body for t in ("上传中", "正在上传", "等待上传", "转码中")):
+        return False
+    percents = [int(m.group(1)) for m in re.finditer(r"(\d+)\s*%", body)]
     if percents and max(percents) < 100:
         return False
+    if percents and max(percents) >= 100:
+        return True
+    if any(t in body for t in ("上传完成", "上传成功", "上传完毕")):
+        return True
     return False
 
 
@@ -1887,6 +1887,9 @@ async def _bilibili_click_submit(page, *, title: str = "") -> bool:
 
 
 async def _bilibili_form_ready(page) -> bool:
+    body = await _bilibili_page_body(page)
+    if not _bilibili_upload_complete(body):
+        return False
     title = page.locator(
         'input[placeholder*="标题"], input[placeholder*="请输入"], input[maxlength="80"]'
     ).first
@@ -2961,6 +2964,8 @@ async def run_agent(
             page, video_path, platform=platform_key, root=ROOT
         ):
             raise LLMBrowserError("视频上传失败，请检查 cookie 或登录态后重试（勿自动连跑）")
+        if platform_key == "bilibili":
+            await _wait_bilibili_upload_ready(page)
 
     state = await extract_page_state(page, screenshot_path=None)
     if _check_success(state, success_patterns, start_url=start_url, platform_key=platform_key):
