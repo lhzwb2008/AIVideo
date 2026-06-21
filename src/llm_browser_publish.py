@@ -280,18 +280,15 @@ def build_task(platform: str, fields: dict) -> str:
     if platform == "bilibili":
         tags = [t.strip().lstrip("#") for t in str(fields.get("tags") or "").split(",") if t.strip()]
         tag_line = ",".join(tags[:12])
-        tid = fields.get("tid", 207)
         return f"""在 B 站创作中心上传并投稿一条视频：
-1. **必须等视频上传 100% 完成**后再操作（进度条到 100% 或显示上传完成）
-2. 若标题/简介/标签已填好，**不要重复 type 修改**，只做：选分区 → 点投稿
-3. 标题（≤80字）: {fields['title']}
+1. **必须等视频上传 100% 完成**后再点投稿
+2. 若标题/简介/标签已填好，**不要重复修改**；分区用默认即可，不必改
+3. 标题: {fields['title']}
 4. 简介: {fields['desc']}
-5. 标签（最多12个）: {tag_line or '（无）'}；删除「生活记录/记录/vlog」等无关默认标签
-6. 分区 tid={tid}：在分区下拉选「财经杂谈」或最接近的财经类（勿留 vlog）
-7. 使用默认封面
-8. 点击「立即投稿」，若有确认弹窗点「确认投稿」
-9. 只有页面明确出现扫码/滑块验证时才 need_human；勿因分区难选就 need_human
-10. 成功：跳转到稿件管理或出现投稿成功提示"""
+5. 标签: {tag_line or '（无）'}
+6. 直接点击底部「立即投稿」，有确认弹窗点「确认投稿」
+7. 只有明确出现扫码/滑块验证时才 need_human
+8. 成功：稿件管理页或投稿成功提示"""
     if platform == "zhihu":
         publish_step = (
             "填写完成后点击「发布」"

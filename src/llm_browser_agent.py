@@ -553,6 +553,12 @@ async def _wait_bilibili_upload_ready(page, *, timeout_s: int = 600) -> None:
 
 
 async def _bilibili_select_partition(page, *, tid: int = 207) -> None:
+    """可选：默认跳过分区（vlog 等默认分区也可投稿）。"""
+    raw = _env("BILIBILI_SELECT_PARTITION", "0").lower()
+    if raw not in ("1", "true", "yes", "on"):
+        print("  [script] 跳过分区选择（使用页面默认分区）", flush=True)
+        return
+
     parent_kw, child_kw = BILIBILI_TID_PARTITION.get(tid, ("财经", "财经杂谈"))
     body = await _bilibili_page_body(page)
     body_lower = body.lower()
@@ -731,12 +737,40 @@ async def _bilibili_handle_confirm_dialog(page) -> None:
 
 
 async def _bilibili_find_submit_button(page):
+    handle = await page.evaluate_handle(
+        """() => {
+        const labels = ['立即投稿', '投稿', '发布'];
+        const nodes = [...document.querySelectorAll(
+          'button, [role="button"], div[class*="submit"], span[class*="submit"]'
+        )];
+        for (const label of labels) {
+          for (const n of nodes) {
+            const t = (n.innerText || n.textContent || '').trim();
+            if (!t || !t.includes(label)) continue;
+            const r = n.getBoundingClientRect();
+            if (r.width < 20 || r.height < 10) continue;
+            return n;
+          }
+        }
+        return null;
+    }"""
+    )
+    try:
+        element = handle.as_element()
+        if element is not None:
+            return element
+    except Exception:
+        pass
+
     for sel in (
         'button:has-text("立即投稿")',
         'button:has-text("投稿")',
+        'div[class*="submit-add"]',
+        'span:has-text("立即投稿")',
         ".submit-add",
         '[class*="submit-add"]',
         '[class*="submit-container"] button',
+        '[class*="footer"] button:has-text("投稿")',
     ):
         btn = page.locator(sel).last
         if not await btn.count():
@@ -761,37 +795,74 @@ async def _bilibili_click_submit(page) -> bool:
     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     await asyncio.sleep(0.5)
     btn = None
-    for _ in range(90):
+    max_wait = int(_env("BILIBILI_SUBMIT_WAIT_ROUNDS", "20"))
+    for i in range(max_wait):
         btn = await _bilibili_find_submit_button(page)
         if btn:
             try:
-                disabled = await btn.is_disabled()
+                if not await btn.is_disabled():
+                    break
             except Exception:
-                disabled = False
-            if not disabled:
                 break
+            if i >= 5:
+                print("  [script] 投稿按钮仍 disabled，将尝试强制点击", flush=True)
+                break
+        if i > 0 and i % 5 == 0:
+            print(f"  [script] 等待投稿按钮… ({i * 2}s)", flush=True)
         await asyncio.sleep(2)
+
     if not btn:
-        print("  [script] ⚠️ 未找到 B 站投稿按钮", flush=True)
-        return False
-    try:
-        await btn.scroll_into_view_if_needed(timeout=10_000)
-        await btn.click(timeout=15_000)
-        print("  [script] 已点击 B 站投稿按钮", flush=True)
-    except Exception as exc:
-        print(f"  [script] ⚠️ B 站投稿按钮点击失败: {exc}", flush=True)
-        return False
+        clicked = await page.evaluate(
+            """() => {
+            for (const label of ['立即投稿', '投稿']) {
+              const nodes = [...document.querySelectorAll('button, [role="button"], div, span')];
+              const el = nodes.find(n => (n.innerText||'').trim().includes(label));
+              if (el) { el.click(); return label; }
+            }
+            return '';
+        }"""
+        )
+        if clicked:
+            print(f"  [script] 已通过 JS 点击 B 站「{clicked}」", flush=True)
+        else:
+            print("  [script] ⚠️ 未找到 B 站投稿按钮", flush=True)
+            return False
+    else:
+        clicked = False
+        for force in (False, True):
+            try:
+                await btn.scroll_into_view_if_needed(timeout=10_000)
+                await btn.click(timeout=15_000, force=force)
+                print(
+                    f"  [script] 已点击 B 站投稿按钮（force={force}）",
+                    flush=True,
+                )
+                clicked = True
+                break
+            except Exception as exc:
+                if force:
+                    print(f"  [script] ⚠️ 投稿按钮点击失败: {exc}", flush=True)
+                continue
+        if not clicked:
+            try:
+                await btn.evaluate("el => el.click()")
+                print("  [script] 已通过 JS 点击投稿按钮", flush=True)
+            except Exception as exc:
+                print(f"  [script] ⚠️ JS 点击投稿失败: {exc}", flush=True)
+                return False
+
     await asyncio.sleep(2)
     await _bilibili_handle_confirm_dialog(page)
     if await _bilibili_publish_succeeded(page):
         print("  [script] 检测到 B 站投稿成功", flush=True)
         return True
-    for _ in range(15):
+    for _ in range(10):
         await asyncio.sleep(2)
         await _bilibili_handle_confirm_dialog(page)
         if await _bilibili_publish_succeeded(page):
             print("  [script] 检测到 B 站投稿成功", flush=True)
             return True
+    print("  [script] 已点击投稿，请在 B 站后台确认稿件状态", flush=True)
     return True
 
 
