@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  修复损坏的 douyin_uploader/main.py（旧补丁误插入 busy_marker 导致 sau 无法启动）
+  Repair corrupted douyin_uploader/main.py (breaks sau.exe / Bilibili login).
 
 .EXAMPLE
   .\scripts\repair-sau-douyin.ps1
@@ -11,17 +11,26 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $Root
 
 $SauHome = Join-Path $Root 'vendor\social-auto-upload'
-$DouyinMain = Join-Path $SauHome 'uploader\douyin_uploader\main.py'
 $MainPy = Join-Path $Root '.venv\Scripts\python.exe'
+$SauExe = Join-Path $SauHome '.venv\Scripts\sau.exe'
 
-Write-Host "==> 从 SAU git 恢复 douyin main.py" -ForegroundColor Cyan
+Write-Host '==> Restore douyin main.py from SAU git' -ForegroundColor Cyan
 Push-Location $SauHome
 git checkout -- uploader/douyin_uploader/main.py
+if ($LASTEXITCODE -ne 0) {
+    Pop-Location
+    throw 'git checkout failed - is vendor/social-auto-upload a git repo?'
+}
 Pop-Location
 
-Write-Host "==> 重新打补丁" -ForegroundColor Cyan
+Write-Host '==> Re-apply SAU patches' -ForegroundColor Cyan
 & $MainPy (Join-Path $Root 'src\apply_sau_patches.py')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "==> 验证 sau.exe" -ForegroundColor Cyan
-& (Join-Path $SauHome '.venv\Scripts\sau.exe') --help | Select-Object -First 3
-Write-Host "修复完成" -ForegroundColor Green
+Write-Host '==> Verify sau.exe' -ForegroundColor Cyan
+& $SauExe --help | Select-Object -First 3
+if ($LASTEXITCODE -ne 0) {
+    throw 'sau.exe still fails - check output above'
+}
+
+Write-Host 'Done. You can run: .\scripts\login-cn.ps1 bilibili' -ForegroundColor Green
