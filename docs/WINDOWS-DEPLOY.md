@@ -24,7 +24,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 .\setup-windows.ps1 -UseWinget
 ```
 
-脚本会安装/检测：Git、Python 3.10–3.12、ffmpeg、Chrome、主 `.venv`、`vendor/social-auto-upload`、patchright Chromium。
+脚本会安装/检测：Git、Python 3.10–3.12、ffmpeg、Chrome、主 `.venv`、`vendor/social-auto-upload`。**已装 Google Chrome 时无需 `patchright install chromium`**（项目用 `channel=chrome` 调系统 Chrome）。
 
 ---
 
@@ -190,6 +190,9 @@ WECHAT_DRAFT_ONLY=1
 ---
 
 ## 五、常见问题
+
+**Q: patchright install chromium 404 或极慢？**  
+A: 可跳过。安装 **Google Chrome** 并设 `LOCAL_CHROME_PATH` 即可；登录/发布走 `channel=chrome`，不依赖 patchright 下载的 Chromium。冒烟测试通过即可继续部署。
 
 **Q: 计划任务跑了但浏览器发布失败？**  
 A: 确认 cookie/profile 存在；LLM 发布需 headless Chromium，首次必须在 RDP 桌面完成登录。

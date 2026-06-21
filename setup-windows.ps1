@@ -179,10 +179,16 @@ if (-not $SkipSau) {
     & $MainPy (Join-Path $Root 'src\apply_sau_patches.py')
 
     if (-not $SkipChromium) {
-        Write-Step "Install Chromium (patchright)"
-        Push-Location $SauHome
-        & $SauPy -m patchright install chromium
-        Pop-Location
+        if ($ChromeExe) {
+            Write-Host "  Skip patchright chromium (using installed Chrome via channel=chrome)"
+        } else {
+            Write-Step "Install Chromium (patchright)"
+            Write-Host "  WARN: No Chrome found. Direct download may be slow; install Google Chrome first." -ForegroundColor Yellow
+            Push-Location $SauHome
+            Remove-Item Env:PLAYWRIGHT_DOWNLOAD_HOST -ErrorAction SilentlyContinue
+            & $SauPy -m patchright install chromium
+            Pop-Location
+        }
     }
     Write-Host ('  SAU = ' + $SauHome)
 }

@@ -16,6 +16,8 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from paths import ffmpeg_executable
+
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
@@ -352,7 +354,7 @@ def _postprocess_audio(in_path: Path, out_path: Path, *, tempo: float) -> Path:
     filters = f"atempo={tempo},loudnorm=I=-16:TP=-1.5:LRA=11"
     subprocess.run(
         [
-            "ffmpeg", "-y",
+            ffmpeg_executable(), "-y",
             "-i", str(in_path),
             "-filter:a", filters,
             "-c:a", "libmp3lame",
@@ -521,7 +523,7 @@ def _ffmpeg_concat(paths: list[Path], out_path: Path, *, pause_ms: int = 250, sr
         silence = tmpdir / "silence.mp3"
         subprocess.run(
             [
-                "ffmpeg", "-y", "-f", "lavfi",
+                ffmpeg_executable(), "-y", "-f", "lavfi",
                 "-i", f"anullsrc=r={audio_sr}:cl=mono",
                 "-t", f"{pause_ms / 1000:.3f}",
                 "-c:a", "libmp3lame", "-b:a", "64k",
@@ -539,7 +541,7 @@ def _ffmpeg_concat(paths: list[Path], out_path: Path, *, pause_ms: int = 250, sr
         list_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(
-            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(out_path)],
+            [ffmpeg_executable(), "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(out_path)],
             check=True,
             capture_output=True,
         )

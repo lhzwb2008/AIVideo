@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 import categories
 from locale_env import locale_logs_dir, locale_output_dir
-from paths import ROOT
+from paths import ROOT, ffmpeg_executable
 from research import load_env
 from tts_client import synthesize as tts_synthesize
 
@@ -646,7 +646,7 @@ def compose_cold_open_clip(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_executable(), "-y",
         "-loop", "1", "-i", str(image_path),
         "-i", str(audio_path),
         "-vf", filter_chain,
@@ -676,7 +676,7 @@ def compose_cover_clip(
     """封面图视频：默认 0.8s 供抖音自动取封面；可叠加第 1 页口播前段，让人声第一时间出现。"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd: list[str] = [
-        "ffmpeg", "-y",
+        ffmpeg_executable(), "-y",
         "-loop", "1", "-i", str(cover_image),
     ]
     if audio_path and audio_path.is_file():
@@ -780,7 +780,7 @@ def _compose_audio_image_clip(
     duration = ffprobe_duration(audio_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_executable(), "-y",
         "-loop", "1", "-i", str(image_path),
         "-i", str(audio_path),
         "-vf", _kenburns_filter(0, duration),
@@ -1010,7 +1010,11 @@ _DRAWTEXT_ESCAPE = str.maketrans({"\\": r"\\", ":": r"\:", "'": r"\'", "%": r"\%
 
 
 def _escape_drawtext_path(p: str) -> str:
-    return p.translate(_DRAWTEXT_ESCAPE)
+    s = str(Path(p).resolve())
+    if os.name == "nt":
+        # ffmpeg drawtext on Windows: forward slashes + escape drive colon only
+        s = s.replace("\\", "/")
+    return s.translate(_DRAWTEXT_ESCAPE)
 
 
 def _make_phrase_textfile(phrase: str, out: Path, *, fontsize: int | None = None) -> Path:
@@ -1084,7 +1088,7 @@ def compose_clip(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_executable(), "-y",
         "-loop", "1", "-i", str(base_image),
     ]
     if audio_start_s > 0:
@@ -1174,7 +1178,7 @@ def _concat_clips_xfade(clips: list[Path], out_path: Path) -> Path:
 
     filter_complex = ";".join(filters)
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_executable(), "-y",
         *inputs,
         "-filter_complex", filter_complex,
         "-map", f"[{prev_v}]", "-map", f"[{prev_a}]",
@@ -1199,7 +1203,7 @@ def _concat_clips_hardcut(clips: list[Path], out_path: Path, work_dir: Path) -> 
         encoding="utf-8",
     )
     cmd = [
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        ffmpeg_executable(), "-y", "-f", "concat", "-safe", "0",
         "-i", str(list_file),
         "-c:v", "libx264", "-preset", "medium",
         "-pix_fmt", "yuv420p",
@@ -1276,7 +1280,7 @@ def mix_bgm(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_executable(), "-y",
         "-i", str(video_path),
         "-stream_loop", "-1", "-i", str(bgm_path),
         "-filter_complex", ";".join(filters),
