@@ -37,7 +37,7 @@ class ProfilePublishLockError(RuntimeError):
 
 
 def _acquire_profile_lock(platform: str, *, timeout_s: int = 900) -> Path:
-    """同一平台 Chrome Profile 同时只允许一个发布子进程（防无限重开）。"""
+    """Chrome Profile 锁；`_global` 表示全平台互斥（同一时刻只跑一个 LLM 发布）。"""
     _PROFILE_LOCK_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = _PROFILE_LOCK_DIR / f"{platform}_publish.lock"
     deadline = time.time() + timeout_s
@@ -91,6 +91,16 @@ def stamp_llm_publish_log(platform: str, video: Path, *, title: str = "") -> Non
     import json
     from datetime import datetime, timezone
 
+    video = resolve_video_for_publish(video)
+    for log_path in llm_publish_log_paths(platform):
+        if log_path.is_file():
+            try:
+                existing = json.loads(log_path.read_text(encoding="utf-8"))
+                if existing.get("ok") and Path(str(existing.get("video") or "")).stem == video.stem:
+                    return
+            except (OSError, json.JSONDecodeError):
+                pass
+
     payload = {
         "ok": False,
         "video": str(video.resolve()),
@@ -120,32 +130,76 @@ def llm_browser_default() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
-def _read_llm_publish_title(platform: str, *, video: Path) -> str:
+def _read_llm_publish_title(platform: str, *, video: Path, retries: int = 8) -> str:
     import json
 
     stem = video.stem
-    matched: dict | None = None
-    for log_path in llm_publish_log_paths(platform):
-        if not log_path.is_file():
+    last_err = ""
+    for attempt in range(max(1, retries)):
+        matched: dict | None = None
+        for log_path in llm_publish_log_paths(platform):
+            if not log_path.is_file():
+                continue
+            try:
+                data = json.loads(log_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not data.get("ok"):
+                continue
+            logged = str(data.get("video") or "").strip()
+            if logged and Path(logged).stem != stem:
+                continue
+            matched = data
+            break
+        if matched:
+            title = str(matched.get("title") or "").strip()
+            return title or stem
+        last_err = f"无与 {stem} 匹配的成功日志"
+        if attempt + 1 < retries:
+            time.sleep(2)
+    raise RuntimeError(
+        f"{LLM_PLATFORMS[platform]} LLM 发布未确认成功（{last_err}）"
+    )
+
+
+def read_llm_publish_title_if_ok(platform: str, video: Path) -> str:
+    try:
+        return _read_llm_publish_title(platform, video=video, retries=1)
+    except RuntimeError:
+        return ""
+
+
+def reconcile_llm_publish_titles(
+    video: Path,
+    *,
+    douyin_title: str = "",
+    xiaohongshu_title: str = "",
+    shipinhao_title: str = "",
+    poll_retries: int = 5,
+) -> dict[str, str]:
+    """流水线判失败后，从成功日志回填（避免并行/延迟写日志误报）。"""
+    video = resolve_video_for_publish(video)
+    out = {
+        "douyin": douyin_title,
+        "xiaohongshu": xiaohongshu_title,
+        "shipinhao": shipinhao_title,
+    }
+    for platform, key in (
+        ("douyin", "douyin"),
+        ("xiaohongshu", "xiaohongshu"),
+        ("shipinhao", "shipinhao"),
+    ):
+        if out[key]:
             continue
         try:
-            data = json.loads(log_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not data.get("ok"):
-            continue
-        logged = str(data.get("video") or "").strip()
-        if logged and Path(logged).stem != stem:
-            continue
-        matched = data
-        break
-    if not matched:
-        raise RuntimeError(
-            f"{LLM_PLATFORMS[platform]} LLM 发布未确认成功"
-            f"（无与 {stem} 匹配的成功日志）"
-        )
-    title = str(matched.get("title") or "").strip()
-    return title or stem
+            title = _read_llm_publish_title(
+                platform, video=video, retries=max(1, poll_retries)
+            )
+        except RuntimeError:
+            title = ""
+        if title:
+            out[key] = title
+    return out
 
 
 def publish_llm_browser(
@@ -160,6 +214,10 @@ def publish_llm_browser(
     if platform not in LLM_PLATFORMS:
         raise ValueError(f"未知 LLM 平台: {platform}")
     video = resolve_video_for_publish(video)
+    if not dry_run:
+        existing = read_llm_publish_title_if_ok(platform, video)
+        if existing:
+            return existing
     stamp_llm_publish_log(platform, video, title="")
 
     cmd = script_argv(
@@ -181,13 +239,26 @@ def publish_llm_browser(
     label = LLM_PLATFORMS[platform]
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
-    lock_path: Path | None = None
+    global_lock: Path | None = None
+    platform_lock: Path | None = None
+    proc: subprocess.CompletedProcess[str] | None = None
     try:
-        lock_path = _acquire_profile_lock(platform)
+        global_lock = _acquire_profile_lock("_global")
+        platform_lock = _acquire_profile_lock(platform)
         proc = subprocess.run(cmd, cwd=ROOT, env=env)
     finally:
-        _release_profile_lock(lock_path)
+        settle = int(os.environ.get("LLM_BROWSER_PROFILE_SETTLE", "5"))
+        if settle > 0:
+            time.sleep(settle)
+        _release_profile_lock(platform_lock)
+        _release_profile_lock(global_lock)
+    if proc is None:
+        raise RuntimeError(f"{label} LLM 发布子进程未启动")
     if proc.returncode != 0:
+        try:
+            return _read_llm_publish_title(platform, video=video, retries=3)
+        except RuntimeError:
+            pass
         cooldown = int(os.environ.get("LLM_BROWSER_PROFILE_COOLDOWN", "30"))
         if cooldown > 0:
             time.sleep(cooldown)
@@ -223,7 +294,20 @@ def publish_llm_browser_forum(
         cmd.append("--confirm")
 
     label = LLM_PLATFORMS[platform]
-    proc = subprocess.run(cmd, cwd=ROOT, env=os.environ.copy())
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    global_lock: Path | None = None
+    proc: subprocess.CompletedProcess[str] | None = None
+    try:
+        global_lock = _acquire_profile_lock("_global")
+        proc = subprocess.run(cmd, cwd=ROOT, env=env)
+    finally:
+        settle = int(os.environ.get("LLM_BROWSER_PROFILE_SETTLE", "5"))
+        if settle > 0:
+            time.sleep(settle)
+        _release_profile_lock(global_lock)
+    if proc is None:
+        raise RuntimeError(f"{label} LLM 发布子进程未启动")
     if proc.returncode != 0:
         raise RuntimeError(f"{label} LLM 发布失败，退出码 {proc.returncode}")
     if dry_run:

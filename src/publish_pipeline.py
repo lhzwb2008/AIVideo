@@ -965,6 +965,31 @@ def pipeline_after_script(
         xueqiu_title = publish_xueqiu(forum_dir, dry_run=False)
         zhihu_title = publish_zhihu(forum_dir, dry_run=False)
 
+    from publish_llm_browser import reconcile_llm_publish_titles
+
+    reconcile_wait = int(os.environ.get("LLM_BROWSER_RECONCILE_WAIT", "20"))
+    if reconcile_wait > 0 and not (
+        douyin_title and xiaohongshu_title and shipinhao_title
+    ):
+        log(f"  等待 {reconcile_wait}s，核对 LLM 发布日志（防 Chrome 延迟落盘）…")
+        time.sleep(reconcile_wait)
+    reconciled = reconcile_llm_publish_titles(
+        video,
+        douyin_title=douyin_title,
+        xiaohongshu_title=xiaohongshu_title,
+        shipinhao_title=shipinhao_title,
+    )
+    douyin_title = reconciled["douyin"]
+    xiaohongshu_title = reconciled["xiaohongshu"]
+    shipinhao_title = reconciled["shipinhao"]
+    for plat, title in (
+        ("抖音", douyin_title),
+        ("小红书", xiaohongshu_title),
+        ("视频号", shipinhao_title),
+    ):
+        if title:
+            log(f"  [{plat}] 发布成功（日志确认）: {title}")
+
     append_history_fn(script_path)
     date_tag = datetime.now().strftime("%Y%m%d")
     archived = archive_publish_bundle(video, date_tag=date_tag)
