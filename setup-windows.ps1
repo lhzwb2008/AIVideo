@@ -38,7 +38,7 @@ function Find-Python312 {
         try {
             $path = (& $try).Trim()
             if (-not $path) { continue }
-            $ver = & $path -c 'import sys; print("{}.{}".format(sys.version_info.major, sys.version_info.minor))'
+            $ver = & $path -c 'import sys; print(str(sys.version_info.major) + chr(46) + str(sys.version_info.minor))'
             $parts = $ver.Split('.')
             $minor = [int]$parts[1]
             if ([int]$parts[0] -eq 3 -and $minor -ge 10 -and $minor -le 12) {
