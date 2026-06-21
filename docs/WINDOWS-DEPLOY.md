@@ -191,6 +191,16 @@ WECHAT_DRAFT_ONLY=1
 
 ## 五、常见问题
 
+**Q: greenlet / patchright `DLL load failed`？**  
+A: Windows Server 精简镜像常缺 **VC++ 2015–2022 运行库**。依次尝试：
+
+```powershell
+winget install --id Microsoft.VCRedist.2015+.x64 -e --accept-source-agreements --accept-package-agreements
+.\scripts\repair-sau-venv.ps1
+# 仍失败则重建 SAU venv
+.\scripts\repair-sau-venv.ps1 -RecreateVenv
+```
+
 **Q: patchright install chromium 404 或极慢？**  
 A: 可跳过。安装 **Google Chrome** 并设 `LOCAL_CHROME_PATH` 即可；登录/发布走 `channel=chrome`，不依赖 patchright 下载的 Chromium。冒烟测试通过即可继续部署。
 
@@ -212,6 +222,7 @@ A: Windows 用 `make-and-publish.ps1` / `setup-windows.ps1`；`publish_pipeline`
 
 ```powershell
 .\setup-windows.ps1 -UseWinget          # 安装依赖
+.\scripts\repair-sau-venv.ps1         # 修复 greenlet DLL 失败
 .\make-and-publish.ps1                  # 默认条数全流水线
 .\make-and-publish.ps1 1 --no-publish   # 试制不发布
 .\scripts\login-cn.ps1 douyin --check   # 校验登录

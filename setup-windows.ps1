@@ -164,6 +164,21 @@ if (-not $SkipSau) {
     & $SauPy -m pip install patchright -i $PipMirror --trusted-host $PipHost
     Pop-Location
 
+    $greenletOk = $false
+    try {
+        & $SauPy -c "import greenlet; from patchright.async_api import async_playwright" 2>$null
+        $greenletOk = ($LASTEXITCODE -eq 0)
+    } catch { }
+    if (-not $greenletOk) {
+        Write-Host "  WARN: greenlet import failed, reinstalling..." -ForegroundColor Yellow
+        & $SauPy -m pip install --force-reinstall --no-cache-dir greenlet -i $PipMirror --trusted-host $PipHost
+        & $SauPy -c "import greenlet; from patchright.async_api import async_playwright" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  WARN: greenlet still broken. Run: .\scripts\repair-sau-venv.ps1" -ForegroundColor Yellow
+            Write-Host "  Or install VC++: winget install Microsoft.VCRedist.2015+.x64" -ForegroundColor Yellow
+        }
+    }
+
     $Conf = Join-Path $SauHome 'conf.py'
     if (-not (Test-Path $Conf)) {
         Copy-Item (Join-Path $SauHome 'conf.example.py') $Conf
