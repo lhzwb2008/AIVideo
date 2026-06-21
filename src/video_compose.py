@@ -1160,11 +1160,12 @@ def _write_ass_subtitles(
 
 
 def _subtitles_filter(ass_path: Path) -> str:
-    esc = _escape_drawtext_path(str(ass_path.resolve()))
+    p = str(ass_path.resolve()).replace("\\", "/")
     if os.name == "nt":
-        fontsdir = _escape_drawtext_path(r"C:\Windows\Fonts")
-        return f"subtitles={esc}:fontsdir={fontsdir}"
-    return f"subtitles={esc}"
+        # Windows：单引号包裹路径，避免 C: 被当成选项分隔符
+        safe = p.replace("'", r"\'")
+        return f"subtitles='{safe}'"
+    return f"subtitles={_escape_drawtext_path(p)}"
 
 
 def _encode_still_with_audio(
