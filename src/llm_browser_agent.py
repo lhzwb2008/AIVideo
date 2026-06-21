@@ -1860,23 +1860,38 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
             print("  [script] 检测到发布成功", flush=True)
             return True
 
-        js_clicked = await page.evaluate(
-            """() => {
-            for (const label of ['立即发布', '发布']) {
-              const nodes = [...document.querySelectorAll('button, [role="button"], div, span')];
-              for (const n of nodes) {
-                const t = (n.innerText || '').trim();
-                if (t !== label && !t.startsWith(label)) continue;
-                const r = n.getBoundingClientRect();
-                if (r.width < 40 || r.height < 20) continue;
-                if (r.bottom < 0 || r.top > window.innerHeight) continue;
-                n.scrollIntoView({ block: 'center', behavior: 'instant' });
-                n.click();
-                return label;
-            }
-            return '';
-        }"""
-        )
+        try:
+            js_clicked = await page.evaluate(
+                """() => {
+                const labels = ['立即发布', '发布'];
+                const candidates = [];
+                for (const n of document.querySelectorAll(
+                  'button, [role="button"], a, div, span'
+                )) {
+                  const t = (n.innerText || '').trim();
+                  if (!t) continue;
+                  for (const label of labels) {
+                    if (t !== label && !t.startsWith(label)) continue;
+                    const r = n.getBoundingClientRect();
+                    if (r.width < 30 || r.height < 16) continue;
+                    candidates.push({ n, r, label, score: r.bottom + r.width });
+                  }
+                }
+                candidates.sort((a, b) => b.score - a.score);
+                for (const c of candidates) {
+                  if (c.r.bottom < 0 || c.r.top > window.innerHeight + 2) continue;
+                  try {
+                    c.n.scrollIntoView({ block: 'center' });
+                    c.n.click();
+                    return c.label;
+                  } catch (e) {}
+                }
+                return '';
+            }"""
+            )
+        except Exception as exc:
+            print(f"  [script] JS 点击发布异常: {exc}", flush=True)
+            js_clicked = ""
         if js_clicked:
             print(f"  [script] 已通过 JS 点击小红书「{js_clicked}」", flush=True)
             clicked = True
@@ -1884,6 +1899,9 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
         if not clicked:
             for name in ("立即发布", "发布"):
                 for btn in (
+                    page.locator('[class*="footer"] button').filter(has_text=name).last,
+                    page.locator('[class*="publish"] button').filter(has_text=name).last,
+                    page.locator('[class*="submit"]').filter(has_text=name).last,
                     page.get_by_role("button", name=name, exact=True),
                     page.locator(f'button:text-is("{name}")'),
                     page.locator(".publish-container").locator(
@@ -2386,7 +2404,6 @@ async def execute_action(
     if name in ("click", "type"):
         if ref is None:
             if platform_key == "xiaohongshu" and name == "click":
-                await xhs_prepare_page(page)
                 ok = await _xhs_click_publish(page, start_url=page.url)
                 return f"fallback:xhs_publish ok={ok}"
             fb = await _llm_action_fallback(
