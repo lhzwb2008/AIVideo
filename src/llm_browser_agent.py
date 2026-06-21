@@ -65,6 +65,11 @@ async def human_pause(cfg: AgentConfig) -> None:
     await asyncio.sleep(random.uniform(cfg.action_delay_min, cfg.action_delay_max))
 
 
+def _xhs_url_published(url: str) -> bool:
+    """小红书提交成功后常回到 upload 页并在 query 带 published=true。"""
+    return "published=true" in (url or "").lower()
+
+
 async def dismiss_overlays(page, *, platform_key: str = "") -> None:
     if platform_key == "shipinhao":
         for text in ("取消", "跳过", "暂不设置", "使用默认", "关闭", "确定"):
@@ -91,7 +96,7 @@ async def dismiss_overlays(page, *, platform_key: str = "") -> None:
             except Exception:
                 continue
     if platform_key == "xiaohongshu":
-        for name in ("Block", "阻止", "不允许"):
+        for name in ("Never allow", "Block", "阻止", "不允许", "禁止", "不再询问"):
             btn = page.get_by_role("button", name=name).first
             try:
                 if await btn.count() and await btn.is_visible():
@@ -399,6 +404,8 @@ def _check_success(
         return False
 
     if platform_key == "xiaohongshu":
+        if _xhs_url_published(url):
+            return True
         if "__debugger__" in url or "bind_status=not_bind" in url:
             return False
         if "publish/success" in url:
@@ -446,7 +453,9 @@ def _check_success(
         seg in current
         for seg in ("content/upload", "post/create", "publish/publish")
     )
-    if still_uploading:
+    if still_uploading and not (
+        platform_key == "xiaohongshu" and _xhs_url_published(url)
+    ):
         return False
 
     if start and current != start:
@@ -735,6 +744,8 @@ async def _xhs_declare_original(page) -> bool:
 
 async def _xhs_publish_succeeded(page) -> bool:
     url = (page.url or "").lower()
+    if _xhs_url_published(url):
+        return True
     if "note-manage" in url or "content-manager" in url:
         return True
     if "publish/success" in url:
@@ -820,12 +831,12 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
             return True
 
     if clicked:
-        for _ in range(45):
-            await asyncio.sleep(2)
+        for wait in range(8):
+            await asyncio.sleep(1)
             if await _xhs_publish_succeeded(page):
+                print("  [script] 检测到发布成功", flush=True)
                 return True
-        # 已点击发布但页面未跳转：后台可能已提交（用户反馈常见）
-        print("  [script] 已点击发布，等待后台确认…", flush=True)
+        print("  [script] 已点击发布，视为已提交", flush=True)
         return True
     return False
 
@@ -977,6 +988,9 @@ async def try_deterministic_publish(
         await _xhs_disable_pk_cover(page)
         if not await _xhs_declare_original(page):
             print("  [script] 原创声明可能未勾选，继续尝试发布…", flush=True)
+        if await _xhs_publish_succeeded(page):
+            print("  [script] 检测到已发布（published=true），完成", flush=True)
+            return True
         await dismiss_overlays(page, platform_key="xiaohongshu")
         print("  [script] 正在点击发布并等待确认…", flush=True)
         if await _xhs_click_publish(page, start_url=start_url):
@@ -1129,8 +1143,8 @@ async def run_agent(
             if await try_deterministic_publish(
                 page, platform_key=platform_key, fields=fields, cfg=cfg
             ):
-                for _ in range(45):
-                    await asyncio.sleep(2)
+                for _ in range(5):
+                    await asyncio.sleep(1)
                     state = await extract_page_state(page, screenshot_path=None)
                     if _check_success(
                         state, success_patterns, start_url=start_url, platform_key=platform_key
@@ -1143,16 +1157,21 @@ async def run_agent(
                             "url": state.url,
                             "history": ["deterministic"],
                         }
-                state = await extract_page_state(page, screenshot_path=None)
-                print(
-                    "  [script] 已提交发布（页面未跳转，请在笔记管理后台确认）",
-                    flush=True,
-                )
+                if platform_key == "xiaohongshu" and _xhs_url_published(page.url):
+                    print("  [script] 检测到 published=true，发布完成", flush=True)
+                    return {
+                        "ok": True,
+                        "steps": 0,
+                        "llm_calls": 0,
+                        "url": page.url,
+                        "history": ["deterministic", "published_query"],
+                    }
+                print("  [script] 已提交发布，退出", flush=True)
                 return {
                     "ok": True,
                     "steps": 0,
                     "llm_calls": 0,
-                    "url": state.url,
+                    "url": page.url,
                     "history": ["deterministic", "submitted_unverified"],
                 }
         except Exception as exc:

@@ -312,14 +312,15 @@ async def _launch_context(p, platform: str, *, headed: bool):
         "on",
     )
 
+    if platform == "xiaohongshu":
+        launch["args"].append("--disable-geolocation")
+
     if use_profile and profile.is_dir() and any(profile.iterdir()):
         ctx_kw: dict = {
             "locale": "zh-CN",
             "timezone_id": "Asia/Shanghai",
             "viewport": {"width": 1440, "height": 900},
         }
-        if platform == "xiaohongshu":
-            launch["args"].append("--disable-geolocation")
         context = await p.chromium.launch_persistent_context(
             str(profile),
             **ctx_kw,
@@ -447,8 +448,6 @@ async def publish_async(
             result["title"] = fields["title"]
             return result
         finally:
-            if headed and page:
-                await asyncio.sleep(2)
             if browser:
                 await browser.close()
             else:
