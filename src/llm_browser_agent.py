@@ -415,6 +415,17 @@ def _check_success(
                 for seg in ("note-manage", "content-manager", "creator/home")
             ):
                 return True
+        # 仍在编辑页但 toast/弹层已提示成功（URL 常不变）
+        for text in (
+            "发布成功",
+            "发布完成",
+            "笔记发布成功",
+            "已发布",
+            "已提交",
+            "提交成功",
+        ):
+            if text in state.body_snippet:
+                return True
 
     url_success_markers = (
         "content/manage",
@@ -756,7 +767,9 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
     confirm_texts = ("确认发布", "确定发布", "确认", "确定")
     clicked = False
 
-    for _ in range(60):
+    for tick in range(60):
+        if tick > 0 and tick % 15 == 0:
+            print(f"  [script] 仍在等待小红书发布确认… ({tick}s)", flush=True)
         await dismiss_overlays(page, platform_key="xiaohongshu")
         await _xhs_disable_pk_cover(page)
         if await page.get_by_text("请至少添加一张 PK 封面", exact=False).count():
@@ -764,6 +777,7 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
             await asyncio.sleep(0.5)
 
         if await _xhs_publish_succeeded(page):
+            print("  [script] 检测到发布成功", flush=True)
             return True
 
         for name in ("立即发布", "发布"):
@@ -802,6 +816,7 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
         await asyncio.sleep(1)
 
         if await _xhs_publish_succeeded(page):
+            print("  [script] 检测到发布成功", flush=True)
             return True
 
     if clicked:
@@ -963,6 +978,7 @@ async def try_deterministic_publish(
         if not await _xhs_declare_original(page):
             print("  [script] 原创声明可能未勾选，继续尝试发布…", flush=True)
         await dismiss_overlays(page, platform_key="xiaohongshu")
+        print("  [script] 正在点击发布并等待确认…", flush=True)
         if await _xhs_click_publish(page, start_url=start_url):
             print("  [script] 已点击发布", flush=True)
             return True
