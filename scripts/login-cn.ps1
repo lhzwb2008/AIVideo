@@ -104,6 +104,7 @@ switch ($Platform) {
         }
         & $SauBin bilibili login --account $Acct
         Pop-Location
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
     'xiaohongshu' {
         $Acct = Get-OrDefault $Account (Get-OrDefault $env:SAU_XHS_ACCOUNT 'main')

@@ -140,7 +140,7 @@ COOKIE_GEN_BLOCK = '''
             page = context.pages[0] if context.pages else await context.new_page()
 '''
 
-WAIT_LOGIN_BUSY_CHECK = '''
+WAIT_LOGIN_BUSY_CHECK = '''        # AIVIDEO_PATCH: douyin busy check
         busy_marker = page.get_by_text("系统繁忙").first
         if await busy_marker.count():
             try:
@@ -155,6 +155,45 @@ WAIT_LOGIN_BUSY_CHECK = '''
                 pass
 
 '''
+
+DOUYIN_BUSY_MARKER = "AIVIDEO_PATCH: douyin busy check"
+
+_DOUYIN_BUSY_BLOCK = re.compile(
+    r"\n        busy_marker = page\.get_by_text\(\"系统繁忙\"\)\.first\n"
+    r"        if await busy_marker\.count\(\):\n"
+    r"            try:\n"
+    r"                if await busy_marker\.is_visible\(\):\n"
+    r"                    douyin_logger\.warning\(_msg\(\"😵\", \"检测到系统繁忙.*?\n"
+    r"                    continue\n"
+    r"            except Exception:\n"
+    r"                pass\n",
+    re.DOTALL,
+)
+
+_DOUYIN_BUSY_INSERT = re.compile(
+    r"(async def _wait_for_douyin_login\([^\)]*\)[^\n]*\n.*?"
+    r"    for _ in range\(max_checks\):\n"
+    r"        if await _is_douyin_login_completed\(page\):[^\n]*\n"
+    r"            douyin_logger\.info\([^\n]+\n"
+    r"            return _build_login_result\([^\n]+\n\n)"
+    r'(        expired_box = page\.get_by_text\("二维码失效")',
+    re.DOTALL,
+)
+
+
+def _fix_douyin_busy_check(text: str) -> str:
+    """Remove orphan busy_marker blocks, insert only inside _wait_for_douyin_login."""
+    text = _DOUYIN_BUSY_BLOCK.sub("\n", text)
+    if DOUYIN_BUSY_MARKER in text:
+        return text
+    match = _DOUYIN_BUSY_INSERT.search(text)
+    if not match:
+        return text
+    return _DOUYIN_BUSY_INSERT.sub(
+        lambda m: m.group(1) + WAIT_LOGIN_BUSY_CHECK + "\n" + m.group(2),
+        text,
+        count=1,
+    )
 
 COOKIE_AUTH = '''
 async def cookie_auth(account_file):
@@ -212,50 +251,54 @@ def patch(path: Path) -> None:
         sys.exit(1)
 
     text = path.read_text(encoding="utf-8")
+    applied: list[str] = []
 
-    helper_pattern = (
-        r"def _resolve_chrome_path\(\) -> str:.*?async def _douyin_goto\(page, url: str\):\n"
-        r"    return await page\.goto\(url, wait_until=\"domcontentloaded\", timeout=120_000\)"
-    )
-    if re.search(helper_pattern, text, re.DOTALL):
-        text = re.sub(helper_pattern, HELPER.strip(), text, count=1, flags=re.DOTALL)
-    elif "def _build_launch_kwargs" in text:
-        simple_pattern = (
-            r"def _build_launch_kwargs\(headless: bool\) -> dict:.*?async def _douyin_goto\(page, url: str\):\n"
+    if "_build_launch_kwargs" not in text or "_douyin_goto" not in text:
+        helper_pattern = (
+            r"def _resolve_chrome_path\(\) -> str:.*?async def _douyin_goto\(page, url: str\):\n"
             r"    return await page\.goto\(url, wait_until=\"domcontentloaded\", timeout=120_000\)"
         )
-        text = re.sub(simple_pattern, HELPER.strip(), text, count=1, flags=re.DOTALL)
-    else:
-        anchor = "async def cookie_auth(account_file):"
-        if anchor not in text:
-            print("补丁锚点缺失，请检查 upstream 是否变更", file=sys.stderr)
-            sys.exit(1)
-        text = text.replace(anchor, HELPER.strip() + "\n\n\n" + anchor)
+        if re.search(helper_pattern, text, re.DOTALL):
+            text = re.sub(helper_pattern, HELPER.strip(), text, count=1, flags=re.DOTALL)
+            applied.append("helper")
+        else:
+            anchor = "async def cookie_auth(account_file):"
+            if anchor not in text:
+                print("补丁锚点缺失，请检查 upstream 是否变更", file=sys.stderr)
+                sys.exit(1)
+            text = text.replace(anchor, HELPER.strip() + "\n\n\n" + anchor)
+            applied.append("helper")
 
-    text = re.sub(
-        r"await playwright\.chromium\.launch\(headless=True, channel=\"chrome\"\)",
-        "await playwright.chromium.launch(**_build_launch_kwargs(headless=True))",
-        text,
-    )
-    text = re.sub(
-        r"await playwright\.chromium\.launch\(headless=headless, channel=\"chrome\"\)",
-        "await playwright.chromium.launch(**_build_launch_kwargs(headless=headless))",
-        text,
-    )
-    text = re.sub(
-        r"await playwright\.chromium\.launch\(headless=self\.headless, channel=\"chrome\"\)",
-        "await playwright.chromium.launch(**_build_launch_kwargs(headless=self.headless))",
-        text,
-    )
+    if "**_build_launch_kwargs(headless=True)" not in text:
+        text = re.sub(
+            r"await playwright\.chromium\.launch\(headless=True, channel=\"chrome\"\)",
+            "await playwright.chromium.launch(**_build_launch_kwargs(headless=True))",
+            text,
+        )
+        applied.append("launch_kwargs")
+    if "**_build_launch_kwargs(headless=headless)" not in text:
+        text = re.sub(
+            r"await playwright\.chromium\.launch\(headless=headless, channel=\"chrome\"\)",
+            "await playwright.chromium.launch(**_build_launch_kwargs(headless=headless))",
+            text,
+        )
+    if "**_build_launch_kwargs(headless=self.headless)" not in text:
+        text = re.sub(
+            r"await playwright\.chromium\.launch\(headless=self\.headless, channel=\"chrome\"\)",
+            "await playwright.chromium.launch(**_build_launch_kwargs(headless=self.headless))",
+            text,
+        )
 
-    text = text.replace(
-        'await page.goto("https://creator.douyin.com/")',
-        'await _douyin_goto(page, "https://creator.douyin.com/")',
-    )
-    text = text.replace(
-        'await page.goto("https://creator.douyin.com/creator-micro/content/upload")',
-        'await _douyin_goto(page, "https://creator.douyin.com/creator-micro/content/upload")',
-    )
+    if "_douyin_goto(page," not in text:
+        text = text.replace(
+            'await page.goto("https://creator.douyin.com/")',
+            'await _douyin_goto(page, "https://creator.douyin.com/")',
+        )
+        text = text.replace(
+            'await page.goto("https://creator.douyin.com/creator-micro/content/upload")',
+            'await _douyin_goto(page, "https://creator.douyin.com/creator-micro/content/upload")',
+        )
+        applied.append("goto")
 
     if "launch_persistent_context" not in text:
         cookie_gen_pattern = (
@@ -267,7 +310,9 @@ def patch(path: Path) -> None:
             r"        try:\n"
             r"            page = await context\.new_page\(\)"
         )
-        text = re.sub(cookie_gen_pattern, COOKIE_GEN_BLOCK.strip(), text, count=1)
+        if re.search(cookie_gen_pattern, text):
+            text = re.sub(cookie_gen_pattern, COOKIE_GEN_BLOCK.strip(), text, count=1)
+            applied.append("persistent_context")
 
     if "storage_state=account_file, **_build_context_kwargs()" not in text:
         text = re.sub(
@@ -275,13 +320,12 @@ def patch(path: Path) -> None:
             "await browser.new_context(storage_state=account_file, **_build_context_kwargs())",
             text,
         )
+        applied.append("context_kwargs")
 
-    if "检测到系统繁忙" not in text:
-        text = text.replace(
-            '        expired_box = page.get_by_text("二维码失效", exact=True).locator("..").first',
-            WAIT_LOGIN_BUSY_CHECK.strip() + '\n        expired_box = page.get_by_text("二维码失效", exact=True).locator("..").first',
-            1,
-        )
+    before_busy = text
+    text = _fix_douyin_busy_check(text)
+    if text != before_busy:
+        applied.append("busy_check")
 
     if "if browser:\n                await browser.close()" not in text:
         text = text.replace(
@@ -289,27 +333,55 @@ def patch(path: Path) -> None:
             "            await context.close()\n            if browser:\n                await browser.close()",
             1,
         )
+        applied.append("browser_close")
 
     cookie_auth_pattern = r"async def cookie_auth\(account_file\):.*?async def douyin_setup\("
-    if re.search(cookie_auth_pattern, text, re.DOTALL):
-        text = re.sub(cookie_auth_pattern, COOKIE_AUTH.strip() + "\n\n\nasync def douyin_setup(", text, count=1, flags=re.DOTALL)
+    if "_cookie_auth_once" not in text and re.search(cookie_auth_pattern, text, re.DOTALL):
+        text = re.sub(
+            cookie_auth_pattern,
+            COOKIE_AUTH.strip() + "\n\n\nasync def douyin_setup(",
+            text,
+            count=1,
+            flags=re.DOTALL,
+        )
+        applied.append("cookie_auth")
 
-    text = text.replace(
-        'await page.wait_for_url("https://creator.douyin.com/creator-micro/content/upload")',
-        'if "creator-micro/content/upload" not in page.url:\n            raise RuntimeError(f"未能进入抖音上传页: {page.url}")',
-    )
+    if 'await page.wait_for_url("https://creator.douyin.com/creator-micro/content/upload")' in text:
+        text = text.replace(
+            'await page.wait_for_url("https://creator.douyin.com/creator-micro/content/upload")',
+            'if "creator-micro/content/upload" not in page.url:\n            raise RuntimeError(f"未能进入抖音上传页: {page.url}")',
+        )
+        applied.append("upload_url_check")
 
-    text = re.sub(
-        r"storage_state=f\"\{self\.account_file\}\",\n            permissions=\[\"geolocation\"\],\n        \)",
-        'storage_state=f"{self.account_file}",\n            permissions=["geolocation"],\n            **_build_context_kwargs(),\n        )',
-        text,
-    )
+    if "**_build_context_kwargs(),\n        )" not in text:
+        text = re.sub(
+            r"storage_state=f\"\{self\.account_file\}\",\n            permissions=\[\"geolocation\"\],\n        \)",
+            'storage_state=f"{self.account_file}",\n            permissions=["geolocation"],\n            **_build_context_kwargs(),\n        )',
+            text,
+        )
+        applied.append("uploader_context")
 
     if DOUYIN_SKIP_COVER_MARKER not in text and DOUYIN_SKIP_COVER_OLD in text:
         text = text.replace(DOUYIN_SKIP_COVER_OLD, DOUYIN_SKIP_COVER_NEW, 1)
+        applied.append("skip_cover")
+
+    import ast
+
+    try:
+        ast.parse(text)
+    except SyntaxError as exc:
+        print(f"抖音补丁导致语法错误: {exc}", file=sys.stderr)
+        print(
+            "请从 SAU 恢复 uploader/douyin_uploader/main.py 后重跑 apply_sau_patches.py",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     path.write_text(text, encoding="utf-8")
-    print(f"已打补丁: {path}")
+    if applied:
+        print(f"已打抖音补丁({', '.join(applied)}): {path}")
+    else:
+        print(f"抖音补丁已是最新，跳过: {path}")
 
 
 # 小红书创作页 goto 容错：默认 wait_until="load" 在创作页常 30s 不触发被误判 cookie 失效，
