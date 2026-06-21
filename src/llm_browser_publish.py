@@ -100,16 +100,32 @@ def _env(name: str, default: str = "") -> str:
 
 
 def _browser_viewport(platform: str) -> dict[str, int]:
-    """B 站投稿页底部按钮常被 900px 视口挡住，默认加高。"""
+    """投稿页底部按钮易被默认 900px 视口挡住，B 站/小红书默认加高。"""
     if platform == "bilibili":
         try:
             w = int(_env("BILIBILI_BROWSER_WIDTH", "1440"))
             h = int(_env("BILIBILI_BROWSER_HEIGHT", "2000"))
         except ValueError:
             w, h = 1440, 2000
+    elif platform == "xiaohongshu":
+        try:
+            w = int(_env("XHS_BROWSER_WIDTH", "1440"))
+            h = int(_env("XHS_BROWSER_HEIGHT", "2000"))
+        except ValueError:
+            w, h = 1440, 2000
     else:
         w, h = 1440, 900
     return {"width": w, "height": h}
+
+
+def _platform_use_maximized(platform: str) -> bool:
+    if platform == "bilibili":
+        raw = _env("BILIBILI_BROWSER_MAXIMIZED", "1")
+    elif platform == "xiaohongshu":
+        raw = _env("XHS_BROWSER_MAXIMIZED", "1")
+    else:
+        return False
+    return raw.lower() not in ("0", "false", "no", "off")
 
 
 def _window_size_arg(platform: str) -> str:
@@ -293,16 +309,16 @@ def build_task(platform: str, fields: dict) -> str:
         body = str(fields.get("desc") or "").strip()
         if tag_line and tag_line not in body:
             body = f"{body}\n{tag_line}".strip()
-        return f"""在小红书视频发布页，**只做下面 4 步**，其他表单项一律不要碰：
+        return f"""在小红书视频发布页，**只做下面 3 步**，其他表单项一律不要碰：
 
 1. **上传视频**（若尚未上传；用 upload 选本地 MP4，然后 wait 等传完）
 2. **写描述**：在「正文描述/作品描述」区 type 填入（**不要填标题**，标题留空即可）：
 {body}
-3. **声明原创**：点「设置」或「声明原创」开关，弹窗里勾选同意并确认
-4. **发布**：点「发布」或「立即发布」，有二次确认就点「确认发布」
+3. **发布**：滚到页面底部，点「发布」或「立即发布」，有二次确认就点「确认发布」
 
-**禁止**（做了容易失败或封号）：填标题、改封面、PK封面、单独加话题标签、位置、@人、合集、定时、商品挂载
-封面弹窗出现就点「取消/关闭」或 Escape
+**不要勾选原创声明**（可选，容易误触失败，跳过即可）
+**禁止**：填标题、改封面、PK封面、位置、@人、合集、定时、商品挂载
+若有位置权限弹窗点「不允许」；封面弹窗点「取消/关闭」或 Escape
 每步只做一种 action（wait / click / type），步骤间自然停顿
 成功标志：note-manage 或页面出现「发布成功」"""
     if platform == "bilibili":
@@ -434,12 +450,9 @@ async def _launch_context(p, platform: str, *, headed: bool):
     if platform == "xiaohongshu":
         launch["args"].append("--disable-geolocation")
 
-    bilibili_max = (
-        platform == "bilibili"
-        and _env("BILIBILI_BROWSER_MAXIMIZED", "1").lower()
-        not in ("0", "false", "no", "off")
-    )
-    if bilibili_max and headed:
+    bilibili_max = platform == "bilibili" and _platform_use_maximized("bilibili")
+    xhs_max = platform == "xiaohongshu" and _platform_use_maximized("xiaohongshu")
+    if (bilibili_max or xhs_max) and headed:
         launch["args"].extend(["--start-maximized", "--window-position=0,0"])
 
     if use_profile and profile.is_dir() and any(profile.iterdir()):
@@ -447,7 +460,7 @@ async def _launch_context(p, platform: str, *, headed: bool):
             "locale": "zh-CN",
             "timezone_id": "Asia/Shanghai",
         }
-        if bilibili_max and headed:
+        if (bilibili_max or xhs_max) and headed:
             ctx_kw["no_viewport"] = True
         else:
             ctx_kw["viewport"] = vp
@@ -643,6 +656,10 @@ async def publish_async(
                 from llm_browser_agent import bilibili_prepare_page
 
                 await bilibili_prepare_page(page)
+            if platform == "xiaohongshu":
+                from llm_browser_agent import xhs_prepare_page
+
+                await xhs_prepare_page(page)
             await human_pause(AgentConfig())
 
             result = await run_agent(

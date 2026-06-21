@@ -124,11 +124,26 @@ async def dismiss_overlays(page, *, platform_key: str = "") -> None:
             except Exception:
                 continue
     if platform_key == "xiaohongshu":
-        for name in ("Never allow", "Block", "阻止", "不允许", "禁止", "不再询问"):
+        for name in (
+            "Never allow",
+            "Block",
+            "阻止",
+            "不允许",
+            "禁止",
+            "不再询问",
+        ):
             btn = page.get_by_role("button", name=name).first
             try:
                 if await btn.count() and await btn.is_visible():
                     await btn.click(timeout=2000, force=True)
+                    await asyncio.sleep(0.5)
+            except Exception:
+                pass
+        for text in ("不允许", "Block", "Never allow"):
+            loc = page.get_by_text(text, exact=False).first
+            try:
+                if await loc.count() and await loc.is_visible():
+                    await loc.click(timeout=2000, force=True)
                     await asyncio.sleep(0.5)
             except Exception:
                 pass
@@ -404,8 +419,8 @@ click/type **必须**带 ref（元素列表里的数字）。若目标是点「�
         base += """
 
 小红书视频发布极简流程（严格遵守）：
-只做：上传视频 → 正文描述 type → 声明原创 click → 发布 click。
-不要填标题、不要动封面、不要单独加话题/标签栏、不要点其他任何表单项。"""
+只做：上传视频 → 正文描述 type → 发布 click。
+不要填标题、不要动封面、**不要勾选原创声明**；要发布时 click 可省略 ref，系统会滚到底并代点发布。"""
     return base
 
 
@@ -666,6 +681,76 @@ async def _bilibili_scroll_to_footer(page) -> None:
         except Exception:
             pass
         await asyncio.sleep(0.12)
+
+
+def _xhs_viewport() -> dict[str, int]:
+    try:
+        w = int(_env("XHS_BROWSER_WIDTH", "1440"))
+        h = int(_env("XHS_BROWSER_HEIGHT", "2000"))
+    except ValueError:
+        w, h = 1440, 2000
+    return {"width": w, "height": h}
+
+
+def _xhs_use_maximized_window() -> bool:
+    raw = _env("XHS_BROWSER_MAXIMIZED", "1").lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+async def _xhs_scroll_to_publish(page) -> None:
+    await page.evaluate(
+        """() => {
+        for (const sel of [
+          '.publish-container', '[class*="publish-container"]',
+          '[class*="Publish"]', 'main', '[class*="content"]',
+        ]) {
+          for (const el of document.querySelectorAll(sel)) {
+            if (el.scrollHeight > el.clientHeight + 40) {
+              el.scrollTop = el.scrollHeight;
+            }
+          }
+        }
+        window.scrollTo(0, Math.max(
+          document.body.scrollHeight,
+          document.documentElement.scrollHeight
+        ));
+    }"""
+    )
+    for _ in range(10):
+        try:
+            await page.keyboard.press("End")
+            await page.mouse.wheel(0, 800)
+        except Exception:
+            pass
+        await asyncio.sleep(0.12)
+
+
+async def xhs_prepare_page(page) -> None:
+    """最大化/加高视口并滚到底，确保底部「发布」按钮可见。"""
+    if _xhs_use_maximized_window():
+        try:
+            await page.evaluate(
+                """() => {
+                try {
+                  window.moveTo(0, 0);
+                  window.resizeTo(screen.availWidth, screen.availHeight);
+                } catch (e) {}
+            }"""
+            )
+        except Exception:
+            pass
+    else:
+        vp = _xhs_viewport()
+        try:
+            await page.set_viewport_size(vp)
+        except Exception:
+            pass
+    await dismiss_overlays(page, platform_key="xiaohongshu")
+    await _xhs_disable_pk_cover(page)
+    await _xhs_scroll_to_publish(page)
+    vp = _xhs_viewport()
+    mode = "最大化" if _xhs_use_maximized_window() else f"{vp['width']}x{vp['height']}"
+    print(f"  [script] 小红书页面 {mode}，已滚至底部", flush=True)
 
 
 async def _bilibili_submit_errors(page) -> list[str]:
@@ -1722,22 +1807,7 @@ async def _xhs_open_settings(page) -> bool:
 
 
 async def _xhs_declare_original(page) -> bool:
-    """勾选小红书原创声明（优先设置面板，也尝试页内开关）。"""
-    await _xhs_disable_pk_cover(page)
-
-    if await _xhs_toggle_original_switch(page, settings_opened=False):
-        print("  [script] 已勾选原创声明", flush=True)
-        await _xhs_disable_pk_cover(page)
-        return True
-
-    if await _xhs_open_settings(page):
-        if await _xhs_toggle_original_switch(page, settings_opened=True):
-            print("  [script] 已勾选原创声明（设置面板）", flush=True)
-            await _xhs_disable_pk_cover(page)
-            return True
-
-    print("  [script] ⚠️ 未找到原创声明开关，继续尝试发布…", flush=True)
-    await _xhs_disable_pk_cover(page)
+    """已禁用：不勾选原创声明（易误触且非必需）。"""
     return False
 
 
@@ -1777,42 +1847,67 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
     confirm_texts = ("确认发布", "确定发布", "确认", "确定")
     clicked = False
 
-    for tick in range(60):
-        if tick > 0 and tick % 15 == 0:
-            print(f"  [script] 仍在等待小红书发布确认… ({tick}s)", flush=True)
+    await xhs_prepare_page(page)
+
+    for tick in range(30):
+        if tick > 0 and tick % 10 == 0:
+            print(f"  [script] 仍在等待小红书发布… ({tick}s)", flush=True)
         await dismiss_overlays(page, platform_key="xiaohongshu")
         await _xhs_disable_pk_cover(page)
-        if await page.get_by_text("请至少添加一张 PK 封面", exact=False).count():
-            await _xhs_disable_pk_cover(page)
-            await asyncio.sleep(0.5)
+        await _xhs_scroll_to_publish(page)
 
         if await _xhs_publish_succeeded(page):
             print("  [script] 检测到发布成功", flush=True)
             return True
 
-        for name in ("立即发布", "发布"):
-            for btn in (
-                page.get_by_role("button", name=name, exact=True),
-                page.locator(f'button:text-is("{name}")'),
-                page.locator(".publish-container").locator(f'button:has-text("{name}")').last,
-            ):
-                try:
-                    if not await btn.count():
-                        continue
-                    target = btn.first if await btn.count() == 1 else btn.last
-                    await target.scroll_into_view_if_needed(timeout=3000)
+        js_clicked = await page.evaluate(
+            """() => {
+            for (const label of ['立即发布', '发布']) {
+              const nodes = [...document.querySelectorAll('button, [role="button"], div, span')];
+              for (const n of nodes) {
+                const t = (n.innerText || '').trim();
+                if (t !== label && !t.startsWith(label)) continue;
+                const r = n.getBoundingClientRect();
+                if (r.width < 40 || r.height < 20) continue;
+                if (r.bottom < 0 || r.top > window.innerHeight) continue;
+                n.scrollIntoView({ block: 'center', behavior: 'instant' });
+                n.click();
+                return label;
+            }
+            return '';
+        }"""
+        )
+        if js_clicked:
+            print(f"  [script] 已通过 JS 点击小红书「{js_clicked}」", flush=True)
+            clicked = True
+
+        if not clicked:
+            for name in ("立即发布", "发布"):
+                for btn in (
+                    page.get_by_role("button", name=name, exact=True),
+                    page.locator(f'button:text-is("{name}")'),
+                    page.locator(".publish-container").locator(
+                        f'button:has-text("{name}")'
+                    ).last,
+                ):
                     try:
-                        if not await target.is_enabled():
+                        if not await btn.count():
                             continue
+                        target = btn.first if await btn.count() == 1 else btn.last
+                        await target.scroll_into_view_if_needed(timeout=3000)
+                        try:
+                            if not await target.is_enabled():
+                                continue
+                        except Exception:
+                            pass
+                        await target.click(timeout=6000)
+                        clicked = True
+                        print(f"  [script] 已点击小红书「{name}」", flush=True)
+                        break
                     except Exception:
-                        pass
-                    await target.click(timeout=6000)
-                    clicked = True
+                        continue
+                if clicked:
                     break
-                except Exception:
-                    continue
-            if clicked:
-                break
 
         await asyncio.sleep(0.8)
         for ct in confirm_texts:
@@ -1837,6 +1932,7 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
                 return True
         print("  [script] 已点击发布，视为已提交", flush=True)
         return True
+    print("  [script] ⚠️ 未找到小红书发布按钮（请检查视口是否最大化）", flush=True)
     return False
 
 
@@ -2211,12 +2307,28 @@ async def _llm_action_fallback(
             return f"fallback:shipinhao_publish ok={ok}"
 
     if platform_key == "xiaohongshu":
-        if any(k in blob for k in ("原创", "声明")):
-            ok = await _xhs_declare_original(page)
-            return f"fallback:xhs_original ok={ok}"
-        if any(k in blob for k in ("发布", "立即发布", "确认发布")):
+        if any(
+            k in blob
+            for k in (
+                "发布",
+                "立即发布",
+                "确认发布",
+                "发布按钮",
+                "点发布",
+                "点击发布",
+            )
+        ):
             ok = await _xhs_click_publish(page, start_url=page.url)
             return f"fallback:xhs_publish ok={ok}"
+        if any(k in blob for k in ("滚", "底部", "scroll")):
+            try:
+                await page.evaluate(
+                    "window.scrollTo(0, document.body.scrollHeight)"
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+            return "fallback:xhs_scroll"
 
     return None
 
@@ -2273,6 +2385,10 @@ async def execute_action(
 
     if name in ("click", "type"):
         if ref is None:
+            if platform_key == "xiaohongshu" and name == "click":
+                await xhs_prepare_page(page)
+                ok = await _xhs_click_publish(page, start_url=page.url)
+                return f"fallback:xhs_publish ok={ok}"
             fb = await _llm_action_fallback(
                 page, action, platform_key=platform_key, fields=fields, cfg=cfg
             )
@@ -2446,6 +2562,7 @@ async def run_agent(
         await dismiss_overlays(page, platform_key=platform_key)
 
         if platform_key == "xiaohongshu":
+            await xhs_prepare_page(page)
             await _xhs_disable_pk_cover(page)
         elif fields and platform_key in ("bilibili", "douyin", "shipinhao"):
             if await _llm_ready_to_publish(page, platform_key) and await _llm_assist_try_publish(
