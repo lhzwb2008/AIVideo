@@ -397,7 +397,8 @@ def _build_system_prompt(platform: str, *, platform_key: str = "") -> str:
     base = f"""你是真人运营，在 {platform} 创作者后台发视频。根据页面元素（和截图）每次只输出**一步** JSON。
 像人一样：先 wait 等上传/加载，再 click/type；不要连点同一按钮；打字用 type 逐段输入。
 字段：thought, action, ref, text, wait_seconds, reason
-action：click | type | wait | press_key | done | need_human
+action：click | type | wait | press_key | scroll | done | need_human
+click/type **必须**带 ref（元素列表里的数字）。若目标是点「发布/投稿/立即投稿」可省略 ref，系统会用脚本代点。
 卡住或验证码时用 need_human。只输出 JSON，不要 markdown。"""
     if platform_key == "xiaohongshu":
         base += """
@@ -851,6 +852,22 @@ _DECLARATION_INDEX = {
 }
 
 
+def _declaration_choice_variants(choice: str) -> list[str]:
+    variants = [choice]
+    if "AI" in choice or "ai" in choice.lower():
+        variants.extend(["含AI生成内容", "含AI生成", "AI生成"])
+    for opt in _DECLARATION_OPTIONS:
+        if opt not in variants and (choice in opt or opt in choice):
+            variants.append(opt)
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in variants:
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
 async def _bilibili_declaration_selected(page) -> str:
     try:
         picked = await page.evaluate(
@@ -866,17 +883,109 @@ async def _bilibili_declaration_selected(page) -> str:
                 return t;
               }
             }
+            for (const inp of document.querySelectorAll('input')) {
+              const ph2 = inp.getAttribute('placeholder') || '';
+              if (!ph2.includes('创作声明') && !ph2.includes('请选择符合')) continue;
+              const v = (inp.value || '').trim();
+              if (v && !v.includes(ph)) return v;
+            }
             return '';
         }""",
             _DECLARATION_PLACEHOLDER,
         )
-        return str(picked or "").strip()
+        text = str(picked or "").strip()
+        if text:
+            return text
     except Exception:
-        return ""
+        pass
+    try:
+        inp = page.locator(
+            'input[placeholder*="请选择符合"], input[placeholder*="创作声明"]'
+        ).first
+        if await inp.count():
+            val = (await inp.input_value()).strip()
+            if val and _DECLARATION_PLACEHOLDER not in val:
+                return val
+    except Exception:
+        pass
+    return ""
 
 
 async def _bilibili_declaration_pending(page) -> bool:
     return not bool(await _bilibili_declaration_selected(page))
+
+
+async def _bilibili_open_declaration_dropdown_pw(page) -> bool:
+    for loc in (
+        page.locator(f'input[placeholder="{_DECLARATION_PLACEHOLDER}"]'),
+        page.locator('input[placeholder*="请选择符合您视频"]'),
+        page.locator('input[placeholder*="创作声明"]'),
+        page.get_by_text(_DECLARATION_PLACEHOLDER, exact=True),
+    ):
+        if not await loc.count():
+            continue
+        try:
+            target = loc.first
+            await target.scroll_into_view_if_needed(timeout=8000)
+            await target.click(timeout=8000, force=True)
+            await asyncio.sleep(0.6)
+            return True
+        except Exception:
+            continue
+    label = page.get_by_text("创作声明", exact=True).first
+    if await label.count():
+        try:
+            row = label.locator(
+                'xpath=ancestor::div[contains(@class,"form") or contains(@class,"item")'
+                ' or contains(@class,"field")][1]'
+            )
+            trigger = row.locator(
+                '[class*="select-selector"], [class*="bcc-select"], [class*="select"]'
+            ).first
+            if await trigger.count():
+                await trigger.click(timeout=8000, force=True)
+                await asyncio.sleep(0.6)
+                return True
+        except Exception:
+            pass
+    return await _bilibili_open_declaration_dropdown_js(page)
+
+
+async def _bilibili_click_declaration_option_pw(page, choices: list[str]) -> bool:
+    for choice in choices:
+        for loc in (
+            page.locator(f'[class*="select-dropdown"] >> text="{choice}"'),
+            page.locator(f'[class*="bcc-select-dropdown"] >> text="{choice}"'),
+            page.locator('[class*="popover"], [class*="dropdown"]').get_by_text(
+                choice, exact=True
+            ),
+        ):
+            if not await loc.count():
+                continue
+            for i in range(min(await loc.count(), 5)):
+                item = loc.nth(i)
+                try:
+                    if not await item.is_visible():
+                        continue
+                    await item.click(timeout=5000, force=True)
+                    await asyncio.sleep(0.5)
+                    if not await _bilibili_declaration_pending(page):
+                        return True
+                except Exception:
+                    continue
+        items = page.get_by_text(choice, exact=True)
+        for i in range(min(await items.count(), 8)):
+            item = items.nth(i)
+            try:
+                if not await item.is_visible():
+                    continue
+                await item.click(timeout=5000, force=True)
+                await asyncio.sleep(0.5)
+                if not await _bilibili_declaration_pending(page):
+                    return True
+            except Exception:
+                continue
+    return False
 
 
 async def _bilibili_open_declaration_dropdown_js(page) -> bool:
@@ -934,7 +1043,7 @@ async def _bilibili_click_declaration_option_js(page, choice: str) -> bool:
 
 
 async def _bilibili_keyboard_pick_declaration(page, choice: str) -> bool:
-    if not await _bilibili_open_declaration_dropdown_js(page):
+    if not await _bilibili_open_declaration_dropdown_pw(page):
         return False
     await asyncio.sleep(0.5)
     idx = _DECLARATION_INDEX.get(choice, 1)
@@ -942,18 +1051,20 @@ async def _bilibili_keyboard_pick_declaration(page, choice: str) -> bool:
         await page.keyboard.press("ArrowDown")
     await page.keyboard.press("Enter")
     await asyncio.sleep(0.4)
-    return bool(await _bilibili_declaration_selected(page))
+    return not await _bilibili_declaration_pending(page)
 
 
 async def _bilibili_fill_creation_declaration(page) -> bool:
-    """B 站必填「创作声明」：只选一次，不循环。"""
-    choice = _bilibili_creation_declaration_choices()[0]
-    selected = await _bilibili_declaration_selected(page)
-    if selected:
+    """B 站必填「创作声明」：多策略重试。"""
+    if not await _bilibili_declaration_pending(page):
+        selected = await _bilibili_declaration_selected(page)
         print(f"  [script] B站创作声明已填: {selected}，跳过", flush=True)
         return True
 
-    print(f"  [script] 选择 B 站创作声明: {choice}", flush=True)
+    preferred = _bilibili_creation_declaration_choices()[0]
+    variants = _declaration_choice_variants(preferred)
+    print(f"  [script] 选择 B 站创作声明: {preferred}", flush=True)
+
     label = page.get_by_text("创作声明", exact=True).first
     if await label.count():
         try:
@@ -961,26 +1072,40 @@ async def _bilibili_fill_creation_declaration(page) -> bool:
         except Exception:
             pass
 
-    await _bilibili_open_declaration_dropdown_js(page)
-    await asyncio.sleep(0.5)
-    if await _bilibili_click_declaration_option_js(page, choice):
-        await asyncio.sleep(0.4)
-    elif await _bilibili_keyboard_pick_declaration(page, choice):
-        pass
-    else:
-        print("  [script] ⚠️ B站创作声明未选中", flush=True)
-        return False
-
-    selected = await _bilibili_declaration_selected(page)
-    if selected:
-        print(f"  [script] B站创作声明已选: {selected}", flush=True)
+    for attempt in range(1, 4):
+        opened = await _bilibili_open_declaration_dropdown_pw(page)
+        if not opened:
+            await asyncio.sleep(0.5)
+            continue
+        await asyncio.sleep(0.5)
+        if await _bilibili_click_declaration_option_pw(page, variants):
+            break
+        for choice in variants:
+            if await _bilibili_click_declaration_option_js(page, choice):
+                await asyncio.sleep(0.4)
+                break
+            if await _bilibili_keyboard_pick_declaration(page, choice):
+                break
+        if not await _bilibili_declaration_pending(page):
+            break
+        print(f"  [script] 创作声明第 {attempt} 次未选中，重试…", flush=True)
         try:
             await page.keyboard.press("Escape")
         except Exception:
             pass
-        return True
-    print("  [script] ⚠️ B站创作声明未选中", flush=True)
-    return False
+        await asyncio.sleep(0.4)
+
+    if await _bilibili_declaration_pending(page):
+        print("  [script] ⚠️ B站创作声明未选中", flush=True)
+        return False
+
+    selected = await _bilibili_declaration_selected(page)
+    print(f"  [script] B站创作声明已选: {selected or preferred}", flush=True)
+    try:
+        await page.keyboard.press("Escape")
+    except Exception:
+        pass
+    return True
 
 
 async def _bilibili_remove_unwanted_tags(page, keep: list[str]) -> None:
@@ -2045,6 +2170,57 @@ def _check_stuck_loop(history: list[str], signature: str) -> None:
         )
 
 
+async def _llm_action_fallback(
+    page,
+    action: dict[str, Any],
+    *,
+    platform_key: str,
+    fields: dict[str, Any],
+    cfg: AgentConfig,
+) -> str | None:
+    """LLM 未给 ref 时，按意图走平台脚本（避免 click 缺少 ref 直接失败）。"""
+    thought = str(action.get("thought") or "")
+    text = str(action.get("text") or "")
+    blob = f"{thought} {text}"
+
+    if platform_key == "bilibili":
+        if any(k in blob for k in ("立即投稿", "投稿", "发布", "submit")):
+            ok = await _bilibili_click_submit(
+                page, title=str(fields.get("title") or "")
+            )
+            return f"fallback:bilibili_submit ok={ok}"
+        if any(k in blob for k in ("创作声明", "声明", "AI生成")):
+            ok = await _bilibili_fill_creation_declaration(page)
+            return f"fallback:bilibili_declaration ok={ok}"
+        if any(k in blob for k in ("滚", "底部", "scroll")):
+            await _bilibili_scroll_to_footer(page)
+            return "fallback:bilibili_scroll"
+
+    if platform_key == "douyin":
+        if any(k in blob for k in ("发布", "提交")):
+            from douyin_publisher import _click_publish, _dismiss_overlays
+
+            await _dismiss_overlays(page)
+            ok = await _click_publish(page, assist=False)
+            return f"fallback:douyin_publish ok={ok}"
+
+    if platform_key == "shipinhao":
+        if any(k in blob for k in ("发表", "发布", "提交")):
+            await dismiss_overlays(page, platform_key="shipinhao")
+            ok = await _shipinhao_click_publish(page)
+            return f"fallback:shipinhao_publish ok={ok}"
+
+    if platform_key == "xiaohongshu":
+        if any(k in blob for k in ("原创", "声明")):
+            ok = await _xhs_declare_original(page)
+            return f"fallback:xhs_original ok={ok}"
+        if any(k in blob for k in ("发布", "立即发布", "确认发布")):
+            ok = await _xhs_click_publish(page, start_url=page.url)
+            return f"fallback:xhs_publish ok={ok}"
+
+    return None
+
+
 async def execute_action(
     page,
     action: dict[str, Any],
@@ -2052,7 +2228,9 @@ async def execute_action(
     video_path: Path | None,
     platform_key: str,
     cfg: AgentConfig,
+    fields: dict[str, Any] | None = None,
 ) -> str:
+    fields = fields or {}
     name = str(action.get("action") or "").strip().lower()
     ref = action.get("ref")
     text = str(action.get("text") or "")
@@ -2095,6 +2273,11 @@ async def execute_action(
 
     if name in ("click", "type"):
         if ref is None:
+            fb = await _llm_action_fallback(
+                page, action, platform_key=platform_key, fields=fields, cfg=cfg
+            )
+            if fb:
+                return fb
             raise LLMBrowserError(f"{name} 缺少 ref")
         await dismiss_overlays(page, platform_key=platform_key)
         el = await resolve_element(page, int(ref))
@@ -2348,9 +2531,23 @@ async def run_agent(
         sig = _action_signature(action)
         _check_stuck_loop(history, sig)
         summary = await execute_action(
-            page, action, video_path=llm_video_path, platform_key=platform_key, cfg=cfg
+            page, action, video_path=llm_video_path, platform_key=platform_key, cfg=cfg,
+            fields=fields,
         )
         history.append(summary)
+        if summary.startswith("fallback:"):
+            hit = await _llm_publish_success(
+                page,
+                success_patterns=success_patterns,
+                start_url=start_url,
+                platform_key=platform_key,
+                history=history,
+                steps=step,
+                llm_calls=llm_calls,
+            )
+            if hit:
+                print(f"  [agent] 脚本兜底成功 step={step} url={hit['url']}", flush=True)
+                return hit
         await human_pause(cfg)
 
     raise LLMBrowserError(
