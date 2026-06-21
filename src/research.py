@@ -1167,10 +1167,23 @@ def soft_sanitize_script(data: dict) -> dict:
     """把模型的简单 JSON 规范化为合成管线需要的完整 schema。"""
     if not isinstance(data, dict):
         return data
+    article = data.get("article") if isinstance(data.get("article"), dict) else {}
+    edu = _is_edu_explain(article)
+    if edu or _is_internal_source_url(str((data.get("source") or {}).get("url") or "")):
+        src = data.get("source") if isinstance(data.get("source"), dict) else {}
+        data["source"] = {
+            "title": src.get("title") or article.get("title") or "",
+            "url": "",
+            "site": src.get("site") or article.get("site") or "AI财知道科普",
+        }
     title = _strip_stock_codes(str(data.get("title") or "").strip())
+    if edu:
+        title = _edu_soft_replace(title)
     if title:
         data["title"] = _compact_title(title)
     cold_open = _strip_stock_codes(str(data.get("cold_open") or "").strip())
+    if edu:
+        cold_open = _edu_soft_replace(cold_open)
     if cold_open:
         data["cold_open"] = _trim_to(cold_open, 28)
     data["angle"] = _trim_to(_strip_stock_codes(str(data.get("angle") or "").strip()), 24)
@@ -1228,6 +1241,8 @@ def soft_sanitize_script(data: dict) -> dict:
         for _f in ("headline", "narration", "subtitle", "lead_in", "concept"):
             if isinstance(slide.get(_f), str):
                 slide[_f] = _strip_stock_codes(slide[_f])
+                if edu:
+                    slide[_f] = _edu_soft_replace(slide[_f])
         if isinstance(slide.get("narration"), str):
             slide["narration"] = _trim_narration_to(
                 slide["narration"],
@@ -1245,7 +1260,11 @@ def soft_sanitize_script(data: dict) -> dict:
         labels = slide.get("on_image_text")
         if not isinstance(labels, list):
             labels = []
-        labels = [_trim_to(_strip_stock_codes(str(x)), 12) for x in labels if _strip_stock_codes(str(x)).strip()]
+        labels = [
+            _trim_to(_edu_soft_replace(_strip_stock_codes(str(x))) if edu else _strip_stock_codes(str(x)), 12)
+            for x in labels
+            if _strip_stock_codes(str(x)).strip()
+        ]
         while len(labels) < 3:
             labels.append(_trim_to(headline, 12) or "AI热点")
         slide["on_image_text"] = labels[:8]
@@ -1407,6 +1426,24 @@ _RECO_BANNED_STRICT = (
 _RECO_BANNED_RELAXED = tuple(
     x for x in _RECO_BANNED_STRICT if x not in ("买入", "卖出")
 )
+# 周末科普讲解：只禁荐股/收益承诺，允许「回报率/波动/回撤」等教学用语
+_RECO_BANNED_EDU = (
+    "荐股", "喊单", "带单", "跟我买", "带你赚", "目标价", "买入评级", "卖出评级",
+    "满仓", "加仓", "减仓", "抄底", "梭哈", "全仓", "买点", "卖点", "买入信号",
+    "稳赚", "包赚", "稳赢", "必涨", "必跌", "内幕消息", "内部消息",
+    "保证收益", "稳赚不赔", "躺赚", "免费荐股", "涨停板预测", "跟我买", "带你赚",
+)
+# 科普口播里模型易误用的词 → 自动替换（soft_sanitize 阶段）
+_EDU_HYPE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("稳赚", "划算"),
+    ("包赚", "划算"),
+    ("稳赢", "更可靠"),
+    ("必涨", "上涨"),
+    ("必跌", "下跌"),
+    ("跟我买", "跟着学"),
+    ("带你赚", "帮你懂"),
+    ("保证收益", "风险调整"),
+)
 _RECO_BANNED = _RECO_BANNED_STRICT  # 兼容旧引用
 
 
@@ -1426,10 +1463,39 @@ def compliance_relaxed(*, article: dict | None = None, script: dict | None = Non
     return False
 
 
+def _is_internal_source_url(url: str) -> bool:
+    u = (url or "").strip().lower()
+    return u.startswith(("cursor-draft://", "cursor-edu-draft://"))
+
+
+def _is_edu_explain(article: dict | None) -> bool:
+    if not isinstance(article, dict):
+        return False
+    if article.get("_edu_explain") or article.get("_no_source"):
+        return True
+    plan = article.get("_topic_plan")
+    if isinstance(plan, dict) and plan.get("script_mode") == "edu_explain":
+        return True
+    st = str(article.get("source_type") or "")
+    return st.startswith("cursor:edu:")
+
+
 def _reco_banned_for(*, article: dict | None = None, script: dict | None = None) -> tuple[str, ...]:
+    art = article
+    if art is None and isinstance(script, dict):
+        art = script.get("article")
+    if _is_edu_explain(art):
+        return _RECO_BANNED_EDU
     if compliance_relaxed(article=article, script=script):
         return _RECO_BANNED_RELAXED
     return _RECO_BANNED_STRICT
+
+
+def _edu_soft_replace(text: str) -> str:
+    out = text or ""
+    for bad, good in _EDU_HYPE_REPLACEMENTS:
+        out = out.replace(bad, good)
+    return out
 
 # 抖音预审/灵犬常见敏感表达（发布前扫描，命中则警告或拦截）
 _DOUYIN_SENSITIVE_WARN = (
@@ -1527,11 +1593,14 @@ def validate_article_script(data: dict, article: dict) -> dict:
 
     src = data.get("source") or {}
     src_url = str(src.get("url") or "")
-    # 指定话题模式（自带内容/模型自写）允许没有来源 URL；有 URL 时必须合法。
-    if src_url and not src_url.startswith("http"):
-        raise ValueError("source.url 必须是有效链接")
-    if not src_url and not article.get("_no_source"):
-        raise ValueError("source.url 必须是有效链接")
+    edu = _is_edu_explain(article)
+    internal = _is_internal_source_url(src_url) or _is_internal_source_url(str(article.get("url") or ""))
+    # 科普/内部草稿：无外部链接，不校验 http URL
+    if not edu and not internal and not article.get("_no_source"):
+        if src_url and not src_url.startswith("http"):
+            raise ValueError("source.url 必须是有效链接")
+        if not src_url:
+            raise ValueError("source.url 必须是有效链接")
 
     slides = data["slides"]
     limit = max_slides()
@@ -1614,9 +1683,12 @@ def merge_article_into_script(data: dict, article: dict) -> dict:
     src = data.get("source")
     if not isinstance(src, dict):
         src = {}
+    raw_url = str(src.get("url") or article.get("url") or "")
+    if _is_edu_explain(article) or _is_internal_source_url(raw_url) or article.get("_no_source"):
+        raw_url = ""
     data["source"] = {
         "title": src.get("title") or article.get("title") or "",
-        "url": src.get("url") or article.get("url") or "",
+        "url": raw_url,
         "site": src.get("site") or article.get("site") or "",
     }
     if not str(data.get("keyword") or "").strip():
@@ -1642,6 +1714,40 @@ ADAPT_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重�
 - 【合规红线】：标题/口播/上屏文字/hashtags 都严禁出现任何股票代码（A股6位、港股带.HK、美股字母代码等），也严禁荐股、喊单、目标价、买卖点、仓位建议、「稳赚/必涨/翻倍/收益率/内幕/买入/卖出」等字眼，只做客观信息梳理与原理解释。
 """
 
+ADAPT_FIX_PROMPT_EDU = """你上一轮输出的 JSON 脚本未通过校验。请重新输出**完整脚本 JSON**（不要 markdown，不要解释）。
+
+校验错误：
+{errors}
+
+仍按之前要求：
+- slides 3-4 页；不要输出 source / article / layout / lead_in / chapter_title / concept
+- 本篇是**财经概念科普**，只解释原理与公式，不给买卖建议
+- 不要输出 source 字段；无外部链接
+- 讲解指标时可用「回报率、波动、回撤、性价比」等教学用语；严禁「稳赚、包赚、必涨、跟我买、带你赚、荐股、喊单、内幕」
+- cold_open 12-28 字，生活场景+反差；封面 narration 40-120 字且不重复 cold_open
+- 最后一页口播须带「收藏」引导
+"""
+
+
+def _edu_explain_adapt_block(article: dict) -> str:
+    if not _is_edu_explain(article):
+        return ""
+    return (
+        "【本篇类型：财经科普讲解（必须服从）】\n"
+        "- 无外部文章来源，**不要输出 source 字段**；程序会自动补全\n"
+        "- 只讲概念/公式/怎么理解，不写当日新闻、不推荐个股\n"
+        "- 可用「回报率、波动幅度、风险、性价比、回撤」等教学词；"
+        "禁用「稳赚、包赚、必涨、必跌、跟我买、带你赚、荐股、喊单、内幕、保证收益」\n"
+        "- title 用问句即可（如「夏普比率是什么？」）；hashtags 写 2-3 个概念相关词（如「量化指标」「夏普比率」），不要 AI/财经/投资 等泛标签\n"
+        "- 口播像老师讲课，多生活类比（买菜、点外卖），禁止「文章认为/作者指出」\n\n"
+    )
+
+
+def _adapt_fix_prompt(article: dict, *, errors: str) -> str:
+    if _is_edu_explain(article):
+        return ADAPT_FIX_PROMPT_EDU.format(errors=errors)
+    return ADAPT_FIX_PROMPT.format(errors=errors, url=article.get("url", ""))
+
 
 def _build_adapt_user_message(article: dict, details: dict) -> str:
     meta_block = (
@@ -1661,9 +1767,15 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
     )
     topic_block = _topic_plan_block(article)
     recap_block = _daily_recap_adapt_block(article)
+    edu_block = _edu_explain_adapt_block(article)
     offday_block = _offday_astock_ban_block(article)
     relaxed_note = ""
-    if compliance_relaxed(article=article):
+    if _is_edu_explain(article):
+        relaxed_note = (
+            "\n【科普模式合规】只禁荐股/收益承诺；允许「回报率、波动、回撤、性价比」等教学用语。"
+            "不要输出 source 字段。\n"
+        )
+    elif compliance_relaxed(article=article):
         relaxed_note = (
             "\n【合规说明·Cursor 新流水线】客观复盘里可以使用「买入」「卖出」等中性表述"
             "（如资金卖出、抛售、买入意愿），但不要写成荐股喊单（跟我买、目标价、必涨、买卖点建议等）。\n"
@@ -1680,7 +1792,7 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
     else:
         title_rule = "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
     return (
-        f"{recap_block}{offday_block}{topic_block}{meta_block}\n\n{details_block}\n{relaxed_note}\n"
+        f"{recap_block}{offday_block}{edu_block}{topic_block}{meta_block}\n\n{details_block}\n{relaxed_note}\n"
         "请严格根据上面的「原文深读细节」改编。输出字段须含 title / keyword / cold_open / "
         "cold_open_type / theme_cluster / angle / hashtags / slides；"
         f"{title_rule}"
@@ -1835,6 +1947,8 @@ def _topic_plan_block(article: dict) -> str:
     header = (
         "【选题已定·每日报盘】\n"
         if _is_daily_recap(article)
+        else "【选题已定·财经科普】\n"
+        if _is_edu_explain(article)
         else "【选题已定（Hook-First，请服从）】\n"
     )
     return header + "\n".join(parts) + "\n\n"
@@ -1851,6 +1965,12 @@ def adapt_article_to_script(
     agent_id 仅用于占位/兼容旧调用，本步骤不再使用 Cursor Cloud。
     """
     system_prompt = ADAPT_SCRIPT_PROMPT
+    if _is_edu_explain(article):
+        system_prompt = (
+            ADAPT_SCRIPT_PROMPT
+            + "\n\n【科普模式补充】不要输出 source；无外部 URL。"
+            "允许「回报率、波动、回撤」等教学词；禁「稳赚/包赚/必涨/荐股/喊单/跟我买」。"
+        )
     print(f"  📄 喂给 {text_model()} 改编（含 {len(details.get('outline') or [])} 段 outline / "
           f"{len(details.get('all_quotes') or [])} 条引语 / "
           f"{len(details.get('all_numbers') or [])} 个数字）…")
@@ -1892,7 +2012,7 @@ def adapt_article_to_script(
             if attempt >= max_attempts - 1:
                 break
             print(f"  ⚠️  第 {attempt + 1}/{max_attempts} 轮未通过，让 {text_model()} 修正… ({e})", file=sys.stderr)
-            fix_msg = ADAPT_FIX_PROMPT.format(errors=str(e), url=article.get("url", ""))
+            fix_msg = _adapt_fix_prompt(article, errors=str(e))
             if last_parsed is not None:
                 # 已 parse 出 JSON → 让模型基于上一轮 JSON 做小改，命中率最高
                 fix_msg += (

@@ -451,6 +451,8 @@ def build_weekend_edu_research(
         "source_type": f"cursor:edu:{slot}",
         "_cursor_draft": str(draft_path),
         "_compliance_relaxed": True,
+        "_edu_explain": True,
+        "_no_source": True,
         "_topic_plan": plan,
     }
     if video_title:

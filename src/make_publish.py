@@ -28,7 +28,7 @@ from cursor_daily_topics import (
     topic_plan_for_slot,
 )
 from paths import ROOT
-from publish_pipeline import log, pipeline_publish_only, process_topic, recover_missing_forum_packs
+from publish_pipeline import log, process_topic, recover_missing_forum_packs
 from locale_env import load_locale_env, locale_logs_dir
 from research import load_env
 from weekend_edu_topics import (
@@ -121,38 +121,7 @@ def main() -> int:
         action="store_true",
         help="只跑写稿+Opus 深读，不生成视频（调试用）",
     )
-    parser.add_argument(
-        "--publish-only",
-        metavar="VIDEO",
-        help="跳过生成，仅发布指定 mp4（output 或 archive 路径）",
-    )
-    parser.add_argument(
-        "--script",
-        help="配合 --publish-only 指定脚本 JSON（默认按视频名匹配 last_script_*.json）",
-    )
     args = parser.parse_args()
-
-    if args.publish_only:
-        from pathlib import Path as _Path
-
-        from paths import resolve_video_for_publish
-
-        video = resolve_video_for_publish(_Path(args.publish_only))
-        script = _Path(args.script) if args.script else None
-        if script and not script.is_absolute():
-            script = ROOT / script
-        try:
-            pipeline_publish_only(
-                video,
-                script_path=script,
-                dry_run=args.dry_run,
-                skip_publish=args.no_publish,
-                append_history_fn=append_history_from_script,
-            )
-        except Exception as exc:
-            log(f"\n✗ publish-only 失败：{exc}")
-            return 1
-        return 0
 
     max_slots = 99 if weekend else len(CURSOR_SLOT_ORDER)
 

@@ -12,7 +12,6 @@
   .\make-and-publish.ps1 1
   .\make-and-publish.ps1 --no-publish
   .\make-and-publish.ps1 --slot edu_quant
-  .\make-and-publish.ps1 --publish-only archive\published\20260621\zh\20260621_212358.mp4
 #>
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -35,39 +34,31 @@ if (-not (Test-Path $Py)) {
     $Py = 'python'
 }
 
-$ModeLine = (& $Py (Join-Path $Root 'src\print_default_count.py')).Trim()
-$ModeParts = $ModeLine -split '\|', 2
+$ModeInfo = & $Py -c @'
+from weekend_edu_topics import is_weekend_edu_mode, weekend_default_count
+from cursor_daily_topics import CURSOR_SLOT_ORDER
+if is_weekend_edu_mode():
+    print(f"weekend|{weekend_default_count()}|周末科普（Opus 选题，默认 {weekend_default_count()} 条）")
+else:
+    print(f"weekday|{len(CURSOR_SLOT_ORDER)}|工作日新闻五槽位（默认 {len(CURSOR_SLOT_ORDER)} 条）")
+'@
+$ModeParts = $ModeInfo -split '\|', 3
 $DefaultCount = $ModeParts[1]
-if ($ModeParts[0] -eq 'weekend') {
-    $ModeLabel = "weekend edu mode, default $DefaultCount video(s)"
-} else {
-    $ModeLabel = "weekday news slots, default $DefaultCount video(s)"
-}
-Write-Host "[make-and-publish] $ModeLabel" -ForegroundColor Cyan
+Write-Host "[make-and-publish] $($ModeParts[2])" -ForegroundColor Cyan
 
-$PublishOnly = $false
-foreach ($a in $RemainingArgs) {
-    if ($a -eq '--publish-only' -or $a -like '--publish-only=*') {
-        $PublishOnly = $true
-        break
-    }
-}
-
-if ($PublishOnly) {
-    $PyArgs = @((Join-Path $Root 'src\make_publish.py')) + $RemainingArgs
-} elseif ($RemainingArgs.Count -gt 0 -and $RemainingArgs[0] -match '^--') {
+if ($RemainingArgs.Count -gt 0 -and $RemainingArgs[0] -match '^--') {
     $Count = $DefaultCount
     $Extra = $RemainingArgs
-    $PyArgs = @((Join-Path $Root 'src\make_publish.py'), '--count', $Count) + $Extra
 } elseif ($RemainingArgs.Count -gt 0) {
     $Count = $RemainingArgs[0]
     $Extra = @()
     if ($RemainingArgs.Count -gt 1) { $Extra = $RemainingArgs[1..($RemainingArgs.Count - 1)] }
-    $PyArgs = @((Join-Path $Root 'src\make_publish.py'), '--count', $Count) + $Extra
 } else {
     $Count = if ($env:AIVIDEO_MAX_VIDEOS_PER_RUN) { $env:AIVIDEO_MAX_VIDEOS_PER_RUN } else { $DefaultCount }
-    $PyArgs = @((Join-Path $Root 'src\make_publish.py'), '--count', $Count)
+    $Extra = @()
 }
+
+$PyArgs = @((Join-Path $Root 'src\make_publish.py'), '--count', $Count) + $Extra
 Write-Host "[make-and-publish] $($PyArgs -join ' ')" -ForegroundColor DarkGray
 & $Py @PyArgs
 exit $LASTEXITCODE
