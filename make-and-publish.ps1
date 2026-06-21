@@ -45,19 +45,29 @@ if ($ModeParts[0] -eq 'weekend') {
 }
 Write-Host "[make-and-publish] $ModeLabel" -ForegroundColor Cyan
 
-if ($RemainingArgs.Count -gt 0 -and $RemainingArgs[0] -match '^--') {
+$PublishOnly = $false
+foreach ($a in $RemainingArgs) {
+    if ($a -eq '--publish-only' -or $a -like '--publish-only=*') {
+        $PublishOnly = $true
+        break
+    }
+}
+
+if ($PublishOnly) {
+    $PyArgs = @((Join-Path $Root 'src\make_publish.py')) + $RemainingArgs
+} elseif ($RemainingArgs.Count -gt 0 -and $RemainingArgs[0] -match '^--') {
     $Count = $DefaultCount
     $Extra = $RemainingArgs
+    $PyArgs = @((Join-Path $Root 'src\make_publish.py'), '--count', $Count) + $Extra
 } elseif ($RemainingArgs.Count -gt 0) {
     $Count = $RemainingArgs[0]
     $Extra = @()
     if ($RemainingArgs.Count -gt 1) { $Extra = $RemainingArgs[1..($RemainingArgs.Count - 1)] }
+    $PyArgs = @((Join-Path $Root 'src\make_publish.py'), '--count', $Count) + $Extra
 } else {
     $Count = if ($env:AIVIDEO_MAX_VIDEOS_PER_RUN) { $env:AIVIDEO_MAX_VIDEOS_PER_RUN } else { $DefaultCount }
-    $Extra = @()
+    $PyArgs = @((Join-Path $Root 'src\make_publish.py'), '--count', $Count)
 }
-
-$PyArgs = @((Join-Path $Root 'src\make_publish.py'), '--count', $Count) + $Extra
 Write-Host "[make-and-publish] $($PyArgs -join ' ')" -ForegroundColor DarkGray
 & $Py @PyArgs
 exit $LASTEXITCODE

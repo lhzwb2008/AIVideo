@@ -989,6 +989,17 @@ def main() -> int:
         print(f"  记录: {log_path}")
         return 0
     except (PublishError, LLMBrowserError) as exc:
+        if video and platform != "zhihu":
+            try:
+                from publish_llm_browser import stamp_llm_publish_log
+
+                stamp_llm_publish_log(
+                    platform,
+                    video,
+                    title=fields.get("title") or "",
+                )
+            except Exception:
+                pass
         print(f"\n❌ {exc}", file=sys.stderr)
         return 1
 

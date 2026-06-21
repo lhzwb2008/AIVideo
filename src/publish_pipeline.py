@@ -1007,9 +1007,6 @@ def pipeline_after_script(
     }
 
 
-    return None
-
-
 def pipeline_publish_only(
     video: Path,
     *,

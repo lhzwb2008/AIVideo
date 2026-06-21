@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 from invoke_script import script_argv
@@ -137,6 +138,9 @@ def publish_llm_browser(
     env.setdefault("PYTHONUNBUFFERED", "1")
     proc = subprocess.run(cmd, cwd=ROOT, env=env)
     if proc.returncode != 0:
+        cooldown = int(os.environ.get("LLM_BROWSER_PROFILE_COOLDOWN", "15"))
+        if cooldown > 0:
+            time.sleep(cooldown)
         raise RuntimeError(f"{label} LLM 发布失败，退出码 {proc.returncode}")
     if dry_run:
         return ""
