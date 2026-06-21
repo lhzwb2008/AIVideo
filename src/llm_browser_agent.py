@@ -498,6 +498,315 @@ def _parse_tags(raw: str) -> list[str]:
     return [t.strip().lstrip("#") for t in str(raw or "").split(",") if t.strip()][:5]
 
 
+def _parse_bilibili_tags(raw: str) -> list[str]:
+    return [t.strip().lstrip("#") for t in str(raw or "").split(",") if t.strip()][:12]
+
+
+BILIBILI_TID_PARTITION: dict[int, tuple[str, str]] = {
+    207: ("财经", "财经杂谈"),
+    208: ("财经", "财经综合"),
+    209: ("知识", "社科"),
+    124: ("知识", "科学科普"),
+    229: ("科技", "软件应用"),
+}
+
+
+async def _bilibili_page_body(page) -> str:
+    try:
+        return await page.evaluate(
+            "() => (document.body && document.body.innerText) || ''"
+        )
+    except Exception:
+        return ""
+
+
+def _bilibili_upload_complete(body: str) -> bool:
+    if any(t in body for t in ("上传完成", "上传成功", "转码中", "稿件处理中")):
+        return True
+    if "100%" in body:
+        return True
+    percents = [int(m.group(1)) for m in re.finditer(r"(\d+)\s*%", body)]
+    if percents and max(percents) >= 100:
+        return True
+    if any(t in body for t in ("上传中", "正在上传", "等待上传", "上传失败")):
+        return False
+    if percents and max(percents) < 100:
+        return False
+    return False
+
+
+async def _wait_bilibili_upload_ready(page, *, timeout_s: int = 600) -> None:
+    last_pct = -1
+    for _ in range(timeout_s // 2):
+        body = await _bilibili_page_body(page)
+        if _bilibili_upload_complete(body):
+            print("  [script] B站视频上传完成", flush=True)
+            await asyncio.sleep(1)
+            return
+        percents = [int(m.group(1)) for m in re.finditer(r"(\d+)\s*%", body)]
+        pct = max(percents) if percents else -1
+        if 0 <= pct != last_pct:
+            print(f"  [script] B站上传进度 {pct}%…", flush=True)
+            last_pct = pct
+        await asyncio.sleep(2)
+    raise LLMBrowserError("B站视频上传超时")
+
+
+async def _bilibili_select_partition(page, *, tid: int = 207) -> None:
+    parent_kw, child_kw = BILIBILI_TID_PARTITION.get(tid, ("财经", "财经杂谈"))
+    body = await _bilibili_page_body(page)
+    body_lower = body.lower()
+    if child_kw in body and "vlog" not in body_lower:
+        return
+    if parent_kw in body and "vlog" not in body_lower and "请选择分区" not in body:
+        return
+
+    opened = False
+    for loc in (
+        page.locator('[class*="video-type"]').first,
+        page.locator('[class*="type-select"]').first,
+        page.locator('[class*="select-type"]').first,
+        page.get_by_text("请选择分区", exact=False).first,
+        page.get_by_text("分区", exact=True).first,
+    ):
+        if not await loc.count():
+            continue
+        try:
+            if await loc.is_visible():
+                await loc.click(timeout=5000)
+                opened = True
+                break
+        except Exception:
+            continue
+    if not opened:
+        for hint in ("vlog", "Vlog", "日常", "生活"):
+            chip = page.get_by_text(hint, exact=False).first
+            if not await chip.count():
+                continue
+            try:
+                if await chip.is_visible():
+                    await chip.click(timeout=5000)
+                    opened = True
+                    break
+            except Exception:
+                continue
+    if not opened:
+        print("  [script] ⚠️ 未找到 B 站分区选择器，继续…", flush=True)
+        return
+
+    await asyncio.sleep(1)
+    search = page.locator(
+        'input[placeholder*="搜索"], input[placeholder*="分区"], input[class*="search"]'
+    ).first
+    if await search.count():
+        try:
+            await search.fill(child_kw)
+            await asyncio.sleep(0.8)
+        except Exception:
+            pass
+
+    for kw in (child_kw, parent_kw):
+        opt = page.get_by_text(kw, exact=False).first
+        if not await opt.count():
+            continue
+        try:
+            if await opt.is_visible():
+                await opt.click(timeout=5000)
+                print(f"  [script] B站分区已选: {kw}", flush=True)
+                await asyncio.sleep(0.5)
+                return
+        except Exception:
+            continue
+    print(f"  [script] ⚠️ B站分区未选中（目标 tid={tid}），继续…", flush=True)
+
+
+async def _bilibili_remove_unwanted_tags(page, keep: list[str]) -> None:
+    keep_lower = {k.lower() for k in keep}
+    for _ in range(20):
+        chips = page.locator('[class*="label-item"], [class*="tag-item-v2"]')
+        count = await chips.count()
+        removed = False
+        for i in range(count):
+            chip = chips.nth(i)
+            try:
+                text = (await chip.inner_text()).strip().lstrip("#").split("\n")[0]
+            except Exception:
+                continue
+            if not text or text.lower() in keep_lower:
+                continue
+            close = chip.locator(
+                '[class*="close"], [class*="delete"], [class*="icon-close"]'
+            ).first
+            if not await close.count():
+                continue
+            try:
+                await close.click(timeout=3000)
+                removed = True
+                await asyncio.sleep(0.35)
+                break
+            except Exception:
+                continue
+        if not removed:
+            break
+
+
+async def _bilibili_fill_form(
+    page, *, title: str, desc: str, tags: list[str], cfg: AgentConfig
+) -> None:
+    tin = page.locator(
+        'input[placeholder*="标题"], input[placeholder*="请输入"], input[maxlength="80"]'
+    ).first
+    await tin.wait_for(state="visible", timeout=120_000)
+    await tin.click(timeout=8000)
+    await page.keyboard.press("Control+A")
+    await page.keyboard.press("Backspace")
+    await tin.fill(title[:80])
+    filled_desc = False
+    for sel in (
+        "div.ql-editor",
+        '[contenteditable="true"]',
+        "textarea",
+    ):
+        ed = page.locator(sel).first
+        if not await ed.count():
+            continue
+        try:
+            await ed.click(timeout=8000)
+            await page.keyboard.press("Control+A")
+            await page.keyboard.press("Backspace")
+            await human_type(page, desc[:2000], cfg)
+            filled_desc = True
+            break
+        except Exception:
+            continue
+    if not filled_desc:
+        print("  [script] ⚠️ B站简介区未找到，继续…", flush=True)
+
+    await _bilibili_remove_unwanted_tags(page, tags)
+    existing_body = await _bilibili_page_body(page)
+    for tag in tags[:12]:
+        if tag.lower() in existing_body.lower():
+            continue
+        tag_in = page.locator(
+            'input[placeholder*="标签"], input[placeholder*="回车"], input[placeholder*="Enter"]'
+        ).first
+        if not await tag_in.count():
+            break
+        try:
+            await tag_in.click(timeout=5000)
+            await tag_in.fill(tag)
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(0.35)
+            existing_body = await _bilibili_page_body(page)
+        except Exception:
+            break
+    print("  [script] 已填写 B 站标题/简介/标签", flush=True)
+
+
+async def _bilibili_publish_succeeded(page) -> bool:
+    url = (page.url or "").lower()
+    if "upload-manager" in url or "manage" in url:
+        return True
+    body = await _bilibili_page_body(page)
+    return any(
+        t in body
+        for t in ("投稿成功", "提交成功", "稿件投递成功", "已提交审核")
+    )
+
+
+async def _bilibili_handle_confirm_dialog(page) -> None:
+    for text in ("确认投稿", "确定投稿", "确定", "提交"):
+        btn = page.get_by_role("button", name=text).first
+        if not await btn.count():
+            btn = page.locator(f'button:has-text("{text}")').first
+        if not await btn.count():
+            continue
+        try:
+            if await btn.is_visible():
+                await btn.click(timeout=8000)
+                await asyncio.sleep(2)
+                return
+        except Exception:
+            continue
+
+
+async def _bilibili_find_submit_button(page):
+    for sel in (
+        'button:has-text("立即投稿")',
+        'button:has-text("投稿")',
+        ".submit-add",
+        '[class*="submit-add"]',
+        '[class*="submit-container"] button',
+    ):
+        btn = page.locator(sel).last
+        if not await btn.count():
+            continue
+        try:
+            if await btn.is_visible():
+                return btn
+        except Exception:
+            continue
+    for name in ("立即投稿", "投稿", "发布"):
+        btn = page.get_by_role("button", name=name).last
+        if await btn.count():
+            try:
+                if await btn.is_visible():
+                    return btn
+            except Exception:
+                continue
+    return None
+
+
+async def _bilibili_click_submit(page) -> bool:
+    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    await asyncio.sleep(0.5)
+    btn = None
+    for _ in range(90):
+        btn = await _bilibili_find_submit_button(page)
+        if btn:
+            try:
+                disabled = await btn.is_disabled()
+            except Exception:
+                disabled = False
+            if not disabled:
+                break
+        await asyncio.sleep(2)
+    if not btn:
+        print("  [script] ⚠️ 未找到 B 站投稿按钮", flush=True)
+        return False
+    try:
+        await btn.scroll_into_view_if_needed(timeout=10_000)
+        await btn.click(timeout=15_000)
+        print("  [script] 已点击 B 站投稿按钮", flush=True)
+    except Exception as exc:
+        print(f"  [script] ⚠️ B 站投稿按钮点击失败: {exc}", flush=True)
+        return False
+    await asyncio.sleep(2)
+    await _bilibili_handle_confirm_dialog(page)
+    if await _bilibili_publish_succeeded(page):
+        print("  [script] 检测到 B 站投稿成功", flush=True)
+        return True
+    for _ in range(15):
+        await asyncio.sleep(2)
+        await _bilibili_handle_confirm_dialog(page)
+        if await _bilibili_publish_succeeded(page):
+            print("  [script] 检测到 B 站投稿成功", flush=True)
+            return True
+    return True
+
+
+async def _bilibili_form_ready(page) -> bool:
+    title = page.locator(
+        'input[placeholder*="标题"], input[placeholder*="请输入"], input[maxlength="80"]'
+    ).first
+    if not await title.count():
+        return False
+    try:
+        return await title.is_visible()
+    except Exception:
+        return False
+
+
 async def _wait_xhs_video_uploaded(page, *, timeout_s: int = 300) -> None:
     """视频传完、标题框出现即可填表，不等封面。"""
     for _ in range(timeout_s // 2):
@@ -983,107 +1292,6 @@ async def _wait_video_ready(page, platform_key: str, *, timeout_s: int = 300) ->
         return
 
 
-async def _wait_bilibili_upload_ready(page, *, timeout_s: int = 600) -> None:
-    for _ in range(timeout_s // 2):
-        title = page.locator(
-            'input[placeholder*="标题"], input[placeholder*="请输入"], input[maxlength="80"]'
-        ).first
-        if await title.count():
-            try:
-                if await title.is_visible():
-                    body = await page.evaluate(
-                        "() => (document.body && document.body.innerText) || ''"
-                    )
-                    if any(t in body for t in ("上传完成", "100%", "上传成功")):
-                        return
-                    if "上传中" not in body and "正在上传" not in body:
-                        return
-            except Exception:
-                pass
-        await asyncio.sleep(2)
-    raise LLMBrowserError("B站视频上传超时")
-
-
-async def _bilibili_fill_form(
-    page, *, title: str, desc: str, tags: list[str], cfg: AgentConfig
-) -> None:
-    tin = page.locator(
-        'input[placeholder*="标题"], input[placeholder*="请输入"], input[maxlength="80"]'
-    ).first
-    await tin.wait_for(state="visible", timeout=120_000)
-    await tin.fill(title[:80])
-    filled_desc = False
-    for sel in (
-        "div.ql-editor",
-        '[contenteditable="true"]',
-        "textarea",
-    ):
-        ed = page.locator(sel).first
-        if not await ed.count():
-            continue
-        try:
-            await ed.click(timeout=8000)
-            await page.keyboard.press("Meta+A")
-            await page.keyboard.press("Backspace")
-            await human_type(page, desc[:2000], cfg)
-            filled_desc = True
-            break
-        except Exception:
-            continue
-    if not filled_desc:
-        print("  [script] ⚠️ B站简介区未找到，继续…", flush=True)
-    for tag in tags[:12]:
-        tag_in = page.locator(
-            'input[placeholder*="标签"], input[placeholder*="回车"], input[placeholder*="Enter"]'
-        ).first
-        if not await tag_in.count():
-            break
-        try:
-            await tag_in.fill(tag)
-            await page.keyboard.press("Enter")
-            await asyncio.sleep(0.3)
-        except Exception:
-            break
-    print(f"  [script] 已填写 B 站标题/简介/标签", flush=True)
-
-
-async def _bilibili_publish_succeeded(page) -> bool:
-    url = (page.url or "").lower()
-    if "upload-manager" in url or "manage" in url:
-        return True
-    try:
-        body = await page.evaluate(
-            "() => (document.body && document.body.innerText) || ''"
-        )
-    except Exception:
-        body = ""
-    return any(
-        t in body
-        for t in ("投稿成功", "提交成功", "稿件投递成功", "已提交审核")
-    )
-
-
-async def _bilibili_click_submit(page) -> bool:
-    for name in ("立即投稿", "投稿", "发布"):
-        for btn in (
-            page.get_by_role("button", name=name).first,
-            page.locator(f'button:has-text("{name}")').last,
-        ):
-            try:
-                if not await btn.count():
-                    continue
-                await btn.scroll_into_view_if_needed(timeout=5000)
-                await btn.click(timeout=8000)
-                await asyncio.sleep(2)
-                if await _bilibili_publish_succeeded(page):
-                    print("  [script] 检测到 B 站投稿成功", flush=True)
-                    return True
-                return True
-            except Exception:
-                continue
-    return False
-
-
 async def try_deterministic_publish(
     page,
     *,
@@ -1141,10 +1349,13 @@ async def try_deterministic_publish(
     if platform_key == "bilibili":
         await _wait_bilibili_upload_ready(page)
         await dismiss_overlays(page, platform_key=platform_key)
+        tid = int(fields.get("tid") or 207)
+        await _bilibili_select_partition(page, tid=tid)
         bili_title = str(fields.get("title") or "")[:80]
         bili_desc = str(fields.get("desc") or "")
+        bili_tags = _parse_bilibili_tags(str(fields.get("tags") or ""))
         await _bilibili_fill_form(
-            page, title=bili_title, desc=bili_desc, tags=tags, cfg=cfg
+            page, title=bili_title, desc=bili_desc, tags=bili_tags, cfg=cfg
         )
         print("  [script] 正在点击 B 站投稿…", flush=True)
         if await _bilibili_click_submit(page):
@@ -1322,6 +1533,10 @@ async def run_agent(
     if platform_key == "xiaohongshu" and await _xhs_form_ready(page):
         llm_video_path = None
         print("  [script] 表单已就绪，LLM 兜底不再重复上传视频", flush=True)
+
+    if platform_key == "bilibili" and await _bilibili_form_ready(page):
+        llm_video_path = None
+        print("  [script] B站表单已就绪，LLM 兜底不再重复上传视频", flush=True)
 
     print(f"  [agent] 进入 LLM 兜底（最多 {cfg.max_steps} 步）…", flush=True)
     for step in range(1, cfg.max_steps + 1):
