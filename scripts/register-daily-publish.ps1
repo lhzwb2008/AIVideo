@@ -2,17 +2,12 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-  注册 Windows 计划任务，每日自动运行 make-and-publish
-
-.DESCRIPTION
-  默认每天 17:30 执行（适合下班前出片）。
-  浏览器发布（抖音/小红书/视频号等）需用户已登录桌面；任务使用 Interactive 模式。
+  Register a Windows scheduled task to run make-and-publish daily.
 
 .EXAMPLE
   .\scripts\register-daily-publish.ps1
   .\scripts\register-daily-publish.ps1 -At 17:30
   .\scripts\register-daily-publish.ps1 -At 17:30 -Count 1
-  .\scripts\register-daily-publish.ps1 -At 08:00 -Count 5 -TaskName AIVideoMorning
 #>
 param(
     [string]$At = '17:30',
@@ -26,7 +21,7 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $Wrapper = Join-Path $Root 'scripts\run-scheduled-publish.ps1'
 
 if (-not (Test-Path $Wrapper)) {
-    throw "未找到 $Wrapper"
+    throw "Wrapper not found: $Wrapper"
 }
 
 $CountArg = if ($Count -gt 0) { " -Count $Count" } else { '' }
@@ -40,35 +35,33 @@ $Settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -ExecutionTimeLimit (New-TimeSpan -Hours 8)
 
-$LogonType = 'Interactive'
-
 Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $Action `
     -Trigger $Trigger `
     -Settings $Settings `
     -User $RunAsUser `
-    -LogonType $LogonType `
+    -LogonType Interactive `
     -RunLevel Highest `
     -Force | Out-Null
 
-Write-Host '已注册计划任务' -ForegroundColor Green
-Write-Host "  名称: $TaskName"
-Write-Host "  时间: 每天 $At"
-Write-Host "  用户: $RunAsUser ($LogonType)"
-Write-Host "  命令: powershell.exe $PsArgs"
-Write-Host "  工作目录: $Root"
-Write-Host "  日志目录: $Root\logs\scheduled\"
+Write-Host 'Scheduled task registered.' -ForegroundColor Green
+Write-Host "  TaskName : $TaskName"
+Write-Host "  Schedule : daily at $At"
+Write-Host "  User     : $RunAsUser (Interactive)"
+Write-Host "  Command  : powershell.exe $PsArgs"
+Write-Host "  WorkDir  : $Root"
+Write-Host "  Logs     : $Root\logs\scheduled\"
 if ($Count -gt 0) {
-    Write-Host "  条数: $Count"
+    Write-Host "  Count    : $Count video(s) per run"
 } else {
-    Write-Host '  条数: 由 .env 的 AIVIDEO_MAX_VIDEOS_PER_RUN / 工作日槽位决定'
+    Write-Host '  Count    : from .env AIVIDEO_MAX_VIDEOS_PER_RUN (weekday/weekend default)'
 }
 Write-Host ''
-Write-Host '管理命令:'
-Write-Host "  立即试跑: Start-ScheduledTask -TaskName $TaskName"
-Write-Host "  查看状态: Get-ScheduledTask -TaskName $TaskName | Get-ScheduledTaskInfo"
-Write-Host "  查看日志: Get-ChildItem $Root\logs\scheduled\ | Sort-Object LastWriteTime -Descending | Select-Object -First 3"
-Write-Host "  删除任务: Unregister-ScheduledTask -TaskName $TaskName -Confirm:`$false"
+Write-Host 'Manage:'
+Write-Host "  Run now   : Start-ScheduledTask -TaskName $TaskName"
+Write-Host "  Status    : Get-ScheduledTask -TaskName $TaskName | Get-ScheduledTaskInfo"
+Write-Host "  View logs : Get-ChildItem $Root\logs\scheduled\ | Sort-Object LastWriteTime -Descending | Select-Object -First 3"
+Write-Host "  Remove    : Unregister-ScheduledTask -TaskName $TaskName -Confirm:`$false"
 Write-Host ''
-Write-Host '注意: Interactive 模式需保持 Administrator 已登录 RDP 桌面，浏览器发布才能成功。' -ForegroundColor Yellow
+Write-Host 'NOTE: Interactive logon - keep Administrator signed in to RDP desktop for browser publish.' -ForegroundColor Yellow

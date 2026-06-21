@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  计划任务入口：运行 make-and-publish 并将输出写入 logs\scheduled\
+  Scheduled-task entry: run make-and-publish and log to logs\scheduled\
 
 .EXAMPLE
   .\scripts\run-scheduled-publish.ps1
@@ -23,14 +23,14 @@ $LogDir = Join-Path $Root 'logs\scheduled'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $LogFile = Join-Path $LogDir ("{0}.log" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
 
-Write-Host "==> AIVideo scheduled run" -ForegroundColor Cyan
+Write-Host '==> AIVideo scheduled run' -ForegroundColor Cyan
 Write-Host "    Log: $LogFile"
 Write-Host "    Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Write-Host ""
+Write-Host ''
 
 $Main = Join-Path $Root 'make-and-publish.ps1'
 if (-not (Test-Path $Main)) {
-    throw "未找到 $Main"
+    throw "make-and-publish.ps1 not found: $Main"
 }
 
 $RunArgs = @()
@@ -47,7 +47,7 @@ try {
     & $Main @RunArgs
     $ExitCode = $LASTEXITCODE
     if ($ExitCode -ne 0) {
-        Write-Host "make-and-publish 退出码: $ExitCode" -ForegroundColor Red
+        Write-Host "make-and-publish exit code: $ExitCode" -ForegroundColor Red
     }
 } catch {
     $ExitCode = 1
@@ -55,7 +55,7 @@ try {
     "FATAL: $_" | Add-Content -Path $LogFile -Encoding UTF8
 } finally {
     try { Stop-Transcript | Out-Null } catch { }
-    Write-Host ""
+    Write-Host ''
     Write-Host "    Finished: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     Write-Host "    Log: $LogFile"
 }
