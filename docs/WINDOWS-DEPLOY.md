@@ -34,7 +34,40 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ### 1. 拉代码
 
-- [ ] `git clone <repo> C:\AIVideo`（或 `git pull` 更新）
+**国内服务器若 `github.com` 连不上**，用镜像（仅适用于**公开仓库**；私有库见下文「私有仓库」）：
+
+```powershell
+# 方式 A：域名替换（优先试，一般最稳）
+git clone https://kkgithub.com/lhzwb2008/AIVideo.git
+
+# 方式 B：URL 前缀代理（镜像失效时换 ghproxy.net / gh.llkk.cc）
+git clone https://ghproxy.net/https://github.com/lhzwb2008/AIVideo.git
+
+# 方式 C：gitclone
+git clone https://gitclone.com/github.com/lhzwb2008/AIVideo.git
+```
+
+装好后可设**全局镜像**，以后 `git pull` 也走代理（仅 HTTPS 公开库）：
+
+```powershell
+git config --global url."https://ghproxy.net/https://github.com/".insteadOf "https://github.com/"
+cd AIVideo
+git pull
+```
+
+`setup-windows.ps1` 里克隆 `social-auto-upload` 若同样失败，可手动：
+
+```powershell
+git clone https://kkgithub.com/dreammis/social-auto-upload.git vendor\social-auto-upload
+.\setup-windows.ps1 -SkipSau
+```
+
+**私有仓库**镜像站无法代登录，只能三选一：
+1. 在服务器生成 SSH 密钥并加到 GitHub → `git clone git@github.com:lhzwb2008/AIVideo.git`
+2. 本机打包 zip/scp 上传到服务器
+3. 在 Gitee 导入 GitHub 仓库，从 Gitee 克隆
+
+- [ ] 代码已在 `C:\AIVideo`（或你选的路径）
 - [ ] 确认 `assets/`、`assets/bgm/`、字体文件存在
 
 ### 2. 运行安装脚本

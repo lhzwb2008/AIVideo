@@ -21,11 +21,7 @@ if (-not (Test-Path $Py)) {
     $Py = 'python'
 }
 
-$DefaultCount = & $Py -c @"
-from weekend_edu_topics import is_weekend_edu_mode, weekend_default_count
-from cursor_daily_topics import CURSOR_SLOT_ORDER
-print(weekend_default_count() if is_weekend_edu_mode() else len(CURSOR_SLOT_ORDER))
-"@
+$DefaultCount = & $Py -c 'from weekend_edu_topics import is_weekend_edu_mode, weekend_default_count; from cursor_daily_topics import CURSOR_SLOT_ORDER; print(weekend_default_count() if is_weekend_edu_mode() else len(CURSOR_SLOT_ORDER))'
 
 if ($RemainingArgs.Count -gt 0 -and $RemainingArgs[0] -match '^--') {
     $Count = $DefaultCount
