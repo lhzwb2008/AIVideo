@@ -786,6 +786,17 @@ async def _bilibili_select_partition(page, *, tid: int = 207) -> None:
     print(f"  [script] ⚠️ B站分区未选中（目标 tid={tid}），继续…", flush=True)
 
 
+_DECLARATION_PLACEHOLDER = "请选择符合您视频内容的创作声明"
+_DECLARATION_OPTIONS = (
+    "含AI生成内容",
+    "内容无需标注",
+    "含虚构演绎内容",
+    "内容含营销信息",
+    "个人观点，仅供参考",
+    "内容为转载",
+)
+
+
 def _bilibili_creation_declaration_choices() -> list[str]:
     raw = _env("BILIBILI_CREATION_DECLARATION", "")
     if raw:
@@ -797,15 +808,99 @@ def _bilibili_creation_declaration_choices() -> list[str]:
     ]
 
 
-async def _bilibili_declaration_pending(page) -> bool:
-    """占位符仍可见 = 未填（勿把下拉菜单里的选项当成已选值）。"""
-    ph = page.get_by_text("请选择符合您视频内容的创作声明", exact=False).first
-    if not await ph.count():
-        return False
+async def _bilibili_declaration_selected(page) -> str:
+    """已选中的创作声明文案（空 = 未填）。"""
+    options = _DECLARATION_OPTIONS
     try:
-        return await ph.is_visible()
+        picked = await page.evaluate(
+            """(options, ph) => {
+            const isVisible = (el) => {
+              const r = el.getBoundingClientRect();
+              const st = getComputedStyle(el);
+              return r.width > 0 && r.height > 0
+                && st.display !== 'none' && st.visibility !== 'hidden';
+            };
+            for (const lab of document.querySelectorAll('*')) {
+              if ((lab.innerText || '').trim() !== '创作声明') continue;
+              let row = lab.parentElement;
+              for (let d = 0; d < 8 && row; d++, row = row.parentElement) {
+                const triggers = row.querySelectorAll(
+                  '[class*="select-selector"], [class*="selection"], [class*="select"]'
+                );
+                for (const tr of triggers) {
+                  if (!isVisible(tr)) continue;
+                  const t = (tr.innerText || '').trim();
+                  if (!t || t.includes(ph) || t === '创作声明') continue;
+                  for (const opt of options) {
+                    if (t === opt || t.includes(opt)) return opt;
+                  }
+                }
+              }
+            }
+            return '';
+        }""",
+            list(options),
+            _DECLARATION_PLACEHOLDER,
+        )
+        return str(picked or "").strip()
     except Exception:
-        return True
+        return ""
+
+
+async def _bilibili_declaration_pending(page) -> bool:
+    selected = await _bilibili_declaration_selected(page)
+    if selected:
+        return False
+    loc = page.get_by_text(_DECLARATION_PLACEHOLDER, exact=False)
+    count = await loc.count()
+    for i in range(count):
+        try:
+            if await loc.nth(i).is_visible():
+                return True
+        except Exception:
+            continue
+    return True
+
+
+async def _bilibili_click_declaration_option_js(page, choice: str) -> bool:
+    try:
+        return bool(
+            await page.evaluate(
+                """(choice, ph) => {
+                const isVisible = (el) => {
+                  const r = el.getBoundingClientRect();
+                  const st = getComputedStyle(el);
+                  return r.width > 8 && r.height > 8
+                    && st.display !== 'none' && st.visibility !== 'hidden';
+                };
+                const tryClick = (n) => {
+                  const t = (n.innerText || '').trim();
+                  if (t !== choice) return false;
+                  if (!isVisible(n)) return false;
+                  n.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                  n.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                  n.click();
+                  return true;
+                };
+                const roots = [
+                  ...document.querySelectorAll(
+                    '[class*="select-dropdown"], [class*="dropdown"], [class*="popover"], [class*="option"]'
+                  ),
+                  document.body,
+                ];
+                for (const root of roots) {
+                  for (const n of root.querySelectorAll('div, li, span, p')) {
+                    if (tryClick(n)) return true;
+                  }
+                }
+                return false;
+            }""",
+                choice,
+                _DECLARATION_PLACEHOLDER,
+            )
+        )
+    except Exception:
+        return False
 
 
 async def _bilibili_open_declaration_dropdown(page) -> bool:
@@ -816,14 +911,10 @@ async def _bilibili_open_declaration_dropdown(page) -> bool:
         except Exception:
             pass
 
-    for trigger in (
-        page.get_by_text("请选择符合您视频内容的创作声明", exact=False).first,
-        page.locator('[class*="creation"]').filter(
-            has_text="请选择符合您视频内容的创作声明"
-        ).first,
-    ):
-        if not await trigger.count():
-            continue
+    loc = page.get_by_text(_DECLARATION_PLACEHOLDER, exact=False)
+    count = await loc.count()
+    for i in range(count):
+        trigger = loc.nth(i)
         try:
             if await trigger.is_visible():
                 await trigger.click(timeout=8000)
@@ -838,8 +929,8 @@ async def _bilibili_open_declaration_dropdown(page) -> bool:
                 "xpath=ancestor::*[contains(@class,'form') or contains(@class,'item') or contains(@class,'row')][1]"
             )
             pick = row.locator(
-                '[class*="select"], [class*="dropdown"], input, [class*="input"]'
-            ).last
+                '[class*="select-selector"], [class*="select"], [class*="dropdown"]'
+            ).first
             if await pick.count():
                 await pick.click(timeout=8000)
                 await asyncio.sleep(0.6)
@@ -850,23 +941,21 @@ async def _bilibili_open_declaration_dropdown(page) -> bool:
 
 
 async def _bilibili_click_declaration_option(page, choice: str) -> bool:
-    """点选下拉项（排除仍显示占位符的触发器本身）。"""
+    if await _bilibili_click_declaration_option_js(page, choice):
+        await asyncio.sleep(0.5)
+        return True
     locators = (
         page.locator(f'[class*="select-dropdown"] >> text="{choice}"').first,
         page.locator(f'[class*="dropdown"]:visible >> text="{choice}"').first,
         page.locator(f'[class*="option"]:visible >> text="{choice}"').first,
         page.get_by_role("option", name=choice).first,
         page.locator(f'li:visible >> text="{choice}"').first,
-        page.get_by_text(choice, exact=True).first,
     )
     for opt in locators:
         if not await opt.count():
             continue
         try:
             if not await opt.is_visible():
-                continue
-            text = (await opt.inner_text()).strip()
-            if "请选择符合您视频内容的创作声明" in text:
                 continue
             await opt.click(timeout=8000)
             await asyncio.sleep(0.5)
@@ -878,29 +967,36 @@ async def _bilibili_click_declaration_option(page, choice: str) -> bool:
 
 async def _bilibili_fill_creation_declaration(page) -> bool:
     """B 站必填「创作声明」下拉框。"""
-    if not await _bilibili_declaration_pending(page):
-        print("  [script] B站创作声明已填，跳过", flush=True)
+    selected = await _bilibili_declaration_selected(page)
+    if selected:
+        print(f"  [script] B站创作声明已填: {selected}，跳过", flush=True)
         return True
 
     print("  [script] 正在选择 B 站创作声明…", flush=True)
-    if not await _bilibili_open_declaration_dropdown(page):
-        print("  [script] ⚠️ 未打开 B 站创作声明下拉框", flush=True)
-        return False
-
-    for choice in _bilibili_creation_declaration_choices():
-        if await _bilibili_click_declaration_option(page, choice):
-            if not await _bilibili_declaration_pending(page):
-                print(f"  [script] B站创作声明已选: {choice}", flush=True)
-                try:
-                    await page.keyboard.press("Escape")
-                except Exception:
-                    pass
-                return True
-        if not await _bilibili_declaration_pending(page):
-            print(f"  [script] B站创作声明已选: {choice}", flush=True)
-            return True
-        if await _bilibili_open_declaration_dropdown(page):
-            continue
+    for attempt in range(3):
+        for choice in _bilibili_creation_declaration_choices():
+            if await _bilibili_click_declaration_option(page, choice):
+                await asyncio.sleep(0.4)
+                picked = await _bilibili_declaration_selected(page)
+                if picked:
+                    print(f"  [script] B站创作声明已选: {picked}", flush=True)
+                    try:
+                        await page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+                    return True
+            if not await _bilibili_open_declaration_dropdown(page):
+                continue
+            if await _bilibili_click_declaration_option(page, choice):
+                await asyncio.sleep(0.4)
+                picked = await _bilibili_declaration_selected(page)
+                if picked:
+                    print(f"  [script] B站创作声明已选: {picked}", flush=True)
+                    try:
+                        await page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+                    return True
 
     print("  [script] ⚠️ B站创作声明未选中", flush=True)
     return False
@@ -949,7 +1045,7 @@ async def _bilibili_fill_form(
     await tin.fill(title[:80])
 
     if not await _bilibili_fill_creation_declaration(page):
-        print("  [script] ⚠️ 创作声明可能未填，投稿可能失败", flush=True)
+        print("  [script] ❌ 创作声明未填，后续投稿将失败", flush=True)
 
     filled_desc = False
     for sel in (
@@ -1139,8 +1235,10 @@ async def _bilibili_find_submit_button(page):
 async def _bilibili_click_submit(page, *, title: str = "") -> bool:
     async def _try_once() -> bool:
         await bilibili_prepare_page(page)
-        if await _bilibili_declaration_pending(page):
-            await _bilibili_fill_creation_declaration(page)
+        if not await _bilibili_declaration_selected(page):
+            if not await _bilibili_fill_creation_declaration(page):
+                print("  [script] ❌ 创作声明未填，无法投稿", flush=True)
+                return False
         btn = None
         max_wait = int(_env("BILIBILI_SUBMIT_WAIT_ROUNDS", "15"))
         for i in range(max_wait):
