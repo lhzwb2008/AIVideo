@@ -37,7 +37,21 @@ def _model_uses_dashscope(model: str) -> bool:
     return "qwen" in model.lower()
 
 
-def browser_max_steps() -> int:
+def browser_max_steps(platform_key: str | None = None) -> int:
+    key = (platform_key or "").strip().lower()
+    if key:
+        per = _env(f"LLM_BROWSER_MAX_STEPS_{key.upper()}", "")
+        if per:
+            return max(1, int(per))
+        defaults = {
+            "xiaohongshu": 35,
+            "zhihu": 30,
+            "bilibili": 12,
+            "douyin": 12,
+            "shipinhao": 12,
+        }
+        if key in defaults:
+            return defaults[key]
     raw = _env("LLM_BROWSER_MAX_STEPS")
     if raw:
         return max(1, int(raw))

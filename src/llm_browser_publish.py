@@ -273,26 +273,24 @@ def build_task(platform: str, fields: dict) -> str:
     if platform == "douyin":
         return f"""在抖音创作者平台上传并发布一条短视频：
 1. 上传本地 MP4（若尚未上传）
-2. 标题（≤30字）: {fields['title']}
-3. 作品描述/简介: {fields['desc']}
-4. 添加话题（最多5个）: {tag_line or '（无额外话题）'}
-5. 使用默认首帧封面，不要折腾自定义封面
-6. 不要主动勾选 AI 内容声明
-7. 等视频上传完成后点击「发布」
-8. 成功标志：跳转到内容管理页或出现发布成功提示"""
+2. **标题/描述/话题已由系统脚本预填**，禁止再 type 填表
+3. 等视频上传完成后点击「发布」
+4. 使用默认首帧封面，不要折腾自定义封面
+5. 不要主动勾选 AI 内容声明
+6. 成功标志：跳转到内容管理页或出现发布成功提示
+（预填内容：标题 {fields['title'][:30]}；描述见素材）"""
     if platform == "shipinhao":
         body = f"{fields['desc']} {tag_line}".strip()
         return f"""在微信视频号创作者平台上传并发布一条短视频：
 1. 上传本地 MP4（若尚未上传）
-2. 等视频文件传完即可，**不要**上传/编辑封面，**不要**等待封面预览加载
-3. 若有封面相关弹窗，点「取消/关闭/跳过」关掉
-4. 在描述区填写: {body}
-5. 勾选「视频为原创」并完成原创声明
-6. 不要填写短标题
-7. 直接点击「发表」
-8. 成功标志：跳转到 platform/post/list 或出现发表成功"""
+2. **描述/原创声明已由系统脚本预填**，禁止再 type 填表
+3. 等视频传完即可，**不要**上传/编辑封面
+4. 若有封面弹窗，点「取消/关闭/跳过」
+5. 直接点击「发表」
+6. 成功标志：platform/post/list 或发表成功
+（预填描述: {body[:200]}…）"""
     if platform == "xiaohongshu":
-        return f"""在小红书创作者平台发布一条短视频：
+        return f"""在小红书创作者平台发布一条短视频（**必须像真人一样逐步操作，禁止批量脚本填表**）：
 1. 上传本地 MP4（视频发布页，不是图文）
 2. 等视频传完即可，**不要**编辑/等待/设置封面；若有封面弹窗点「取消/关闭」或 Escape 关掉
 3. 标题（≤20字）: {fields['title']}
@@ -301,32 +299,32 @@ def build_task(platform: str, fields: dict) -> str:
 6. **不要**开启「PK封面」；**不要**编辑/等待封面，使用默认主封面即可
 7. 点击左下角「设置」→ 开启「声明原创」（勿在封面区域点任何开关）
 8. 点击「发布」或「立即发布」，若有二次确认弹窗点「确认发布」
-9. 成功标志：note-manage 或页面出现「发布成功」（非带 __debugger__ 的假跳转）"""
+9. 每步只做一种操作（wait / click / type），步骤间自然停顿
+10. 成功标志：note-manage 或页面出现「发布成功」（非带 __debugger__ 的假跳转）"""
     if platform == "bilibili":
         tags = [t.strip().lstrip("#") for t in str(fields.get("tags") or "").split(",") if t.strip()]
         tag_line = ",".join(tags[:12])
         return f"""在 B 站创作中心上传并投稿一条视频：
 1. **必须等视频上传 100% 完成**后再点投稿
-2. **必填「创作声明」**：点击下拉选「含AI生成」或「自主创作」（未选无法投稿）
-3. 标题: {fields['title']}
-4. 简介: {fields['desc']}
-5. 标签: {tag_line or '（无）'}
-6. 滚到页面底部点「立即投稿」，有确认弹窗点「确认投稿」
-7. 只有明确出现扫码/滑块验证时才 need_human
-8. 成功：稿件管理页或投稿成功提示"""
+2. **标题/简介/创作声明/标签已由系统脚本预填**，禁止再 type/press_key 填表或加标签
+3. 滚到页面底部点「立即投稿」，有确认弹窗点「确认投稿」
+4. 只有明确出现扫码/滑块验证时才 need_human
+5. 成功：稿件管理页或投稿成功提示
+（预填标题: {fields['title'][:40]}；标签: {tag_line or '无'}）"""
     if platform == "zhihu":
         publish_step = (
             "填写完成后点击「发布」"
             if fields.get("auto_publish")
             else "填写完成后点击「保存草稿」"
         )
-        return f"""在知乎专栏写作页发布长文（论坛图文包）：
-1. 打开写作页，标题: {fields['title']}
-2. 论坛包目录: {fields.get('forum_dir')}（含 post.md、cover.jpg、images/）
-3. 正文需按 post.md 分段填入，并在对应位置插入 images/ 配图
-4. 正文摘要（供参考）:\n{fields.get('desc', '')[:1200]}
+        return f"""在知乎专栏写作页发布长文（像真人运营一样逐步操作）：
+1. 标题: {fields['title']}
+2. 论坛包: {fields.get('forum_dir')}（post.md 为正文，images/ 为配图）
+3. 先 type 标题，再按 post.md 分段填入正文；需要配图时在对应段落点击插入图片
+4. 正文参考（勿一次粘贴整篇，分段 type）:\n{fields.get('desc', '')[:1200]}
 5. {publish_step}
-6. 成功：草稿箱出现该标题，或发布成功页"""
+6. 每步只做一个 click/type/wait；不要重复同一操作
+7. 成功：出现该标题的草稿/已发布文章"""
     raise PublishError(f"未知平台 task: {platform}")
 
 
@@ -534,29 +532,34 @@ async def publish_zhihu_async(
     *,
     headed: bool,
 ) -> dict:
-    """知乎：优先确定性填表（含配图），失败再走 LLM 视觉兜底。"""
+    """知乎专栏：默认 LLM 逐步操作；ZHIHU_LLM_FIRST=0 时先走确定性填表。"""
     draft_only = not fields.get("auto_publish")
-    try:
-        from zhihu_publisher import publish_forum_pack
+    use_det = platform_use_deterministic("zhihu")
 
-        result = await publish_forum_pack(
-            forum_dir,
-            headless=not headed,
-            draft_only=draft_only,
-        )
-        print("  [script] 知乎专栏发布完成（确定性）", flush=True)
-        return {
-            "ok": True,
-            "steps": 0,
-            "llm_calls": 0,
-            "url": result.get("url") or "",
-            "history": ["deterministic"],
-            "published": bool(result.get("published")),
-            "draft_only": draft_only,
-            "title": result.get("title") or fields.get("title"),
-        }
-    except Exception as exc:
-        print(f"  [script] 知乎确定性失败，进入 LLM 兜底: {exc}", flush=True)
+    if use_det:
+        try:
+            from zhihu_publisher import publish_forum_pack
+
+            result = await publish_forum_pack(
+                forum_dir,
+                headless=not headed,
+                draft_only=draft_only,
+            )
+            print("  [script] 知乎专栏发布完成（确定性）", flush=True)
+            return {
+                "ok": True,
+                "steps": 0,
+                "llm_calls": 0,
+                "url": result.get("url") or "",
+                "history": ["deterministic"],
+                "published": bool(result.get("published")),
+                "draft_only": draft_only,
+                "title": result.get("title") or fields.get("title"),
+            }
+        except Exception as exc:
+            print(f"  [script] 知乎确定性失败，进入 LLM: {exc}", flush=True)
+    else:
+        print("  [agent] 知乎 LLM 逐步操作（模拟真人填表/发布）…", flush=True)
 
     _ensure_patchright()
     from patchright.async_api import async_playwright
@@ -713,15 +716,22 @@ def main() -> int:
     if not platform:
         raise SystemExit(f"未知平台: {args.platform}")
 
-    forum_dir = Path(args.forum_dir).resolve() if args.forum_dir else None
     if platform == "zhihu":
-        if not forum_dir or not forum_dir.is_dir():
-            raise SystemExit("知乎发布需要 --forum-dir（含 post.md 的论坛包目录）")
+        if not args.forum_dir or not str(args.forum_dir).strip():
+            raise SystemExit(
+                "知乎发布需要 --forum-dir（含 post.md 的论坛包目录）。\n"
+                "示例: --forum-dir archive\\published\\20260621\\zh\\20260621_190311\n"
+                "（PowerShell 请先设 $Forum=...，勿留空变量）"
+            )
+        forum_dir = Path(args.forum_dir).resolve()
+        if not forum_dir.is_dir():
+            raise SystemExit(f"论坛包目录不存在: {forum_dir}")
         fields = resolve_zhihu_fields(forum_dir)
         video = None
         archive_dir = None
         script_path = None
     else:
+        forum_dir = None
         archive_dir = Path(args.archive_dir).resolve() if args.archive_dir else None
         if args.random or not args.video:
             video, auto_dir = pick_random_archive_video("zh")
@@ -772,7 +782,7 @@ def main() -> int:
     )
     print(
         f"模型: {browser_model()}（{browser_provider_label()} · {mode}，"
-        f"最多 {browser_max_steps()} 步）"
+        f"最多 {browser_max_steps(platform)} 步）"
     )
     ck = cookie_path(platform, required=False)
     prof = profile_dir(platform)

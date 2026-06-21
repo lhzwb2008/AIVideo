@@ -40,15 +40,31 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _llm_first_enabled(env_key: str) -> bool:
+    """默认 1：填表/发布交 LLM 逐步操作；设为 0 才走固定脚本。"""
+    return _env(env_key, "1").lower() not in ("0", "false", "no", "off")
+
+
 def platform_use_deterministic(platform_key: str) -> bool:
-    """是否走固定脚本填表。B 站默认 False（LLM 逐步操作，更像真人）。"""
+    """是否走固定脚本填表。"""
+    # 小红书曾因固定脚本发布被封，强制 LLM 逐步操作（忽略全局/per-platform 确定性开关）
+    if platform_key == "xiaohongshu":
+        return False
     if _env("LLM_BROWSER_DETERMINISTIC", "1").lower() in ("0", "false", "no", "off"):
         return False
     per = _env(f"LLM_BROWSER_DETERMINISTIC_{platform_key.upper()}", "")
     if per:
         return per.lower() in ("1", "true", "yes", "on")
-    if platform_key == "bilibili":
-        return _env("BILIBILI_LLM_FIRST", "1").lower() in ("0", "false", "no", "off")
+    llm_first_by_platform = {
+        "douyin": "DOUYIN_LLM_FIRST",
+        "shipinhao": "SHIPINHAO_LLM_FIRST",
+        "xiaohongshu": "XIAOHONGSHU_LLM_FIRST",
+        "bilibili": "BILIBILI_LLM_FIRST",
+        "zhihu": "ZHIHU_LLM_FIRST",
+    }
+    env_key = llm_first_by_platform.get(platform_key)
+    if env_key:
+        return not _llm_first_enabled(env_key)
     return True
 
 
@@ -990,6 +1006,54 @@ async def _bilibili_remove_unwanted_tags(page, keep: list[str]) -> None:
             break
 
 
+async def _bilibili_fill_tags_only(
+    page, tags: list[str], cfg: AgentConfig
+) -> int:
+    """批量填写 B 站标签（本地脚本，不消耗 LLM 步数）。"""
+    if not tags:
+        return 0
+    await _bilibili_remove_unwanted_tags(page, tags)
+    existing_body = await _bilibili_page_body(page)
+    added = 0
+    for tag in tags[:12]:
+        if tag.lower() in existing_body.lower():
+            continue
+        tag_in = page.locator(
+            'input[placeholder*="标签"], input[placeholder*="回车"], input[placeholder*="Enter"]'
+        ).first
+        if not await tag_in.count():
+            break
+        try:
+            await tag_in.click(timeout=5000)
+            await tag_in.fill(tag)
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(0.25)
+            existing_body = await _bilibili_page_body(page)
+            added += 1
+        except Exception:
+            break
+    return added
+
+
+async def _bilibili_try_autofill_tags(
+    page, tags: list[str], cfg: AgentConfig
+) -> bool:
+    """上传完成后一次性批量填标签，避免 LLM 逐步 press_key。"""
+    if not tags:
+        return False
+    body = await _bilibili_page_body(page)
+    if not _bilibili_upload_complete(body):
+        return False
+    missing = [t for t in tags[:12] if t.lower() not in body.lower()]
+    if not missing:
+        return False
+    added = await _bilibili_fill_tags_only(page, tags, cfg)
+    if added:
+        print(f"  [script] B站已批量添加 {added} 个标签（LLM 无需再逐个添加）", flush=True)
+        return True
+    return False
+
+
 async def _bilibili_fill_form(
     page, *, title: str, desc: str, tags: list[str], cfg: AgentConfig
 ) -> None:
@@ -1026,24 +1090,7 @@ async def _bilibili_fill_form(
     if not filled_desc:
         print("  [script] ⚠️ B站简介区未找到，继续…", flush=True)
 
-    await _bilibili_remove_unwanted_tags(page, tags)
-    existing_body = await _bilibili_page_body(page)
-    for tag in tags[:12]:
-        if tag.lower() in existing_body.lower():
-            continue
-        tag_in = page.locator(
-            'input[placeholder*="标签"], input[placeholder*="回车"], input[placeholder*="Enter"]'
-        ).first
-        if not await tag_in.count():
-            break
-        try:
-            await tag_in.click(timeout=5000)
-            await tag_in.fill(tag)
-            await page.keyboard.press("Enter")
-            await asyncio.sleep(0.35)
-            existing_body = await _bilibili_page_body(page)
-        except Exception:
-            break
+    await _bilibili_fill_tags_only(page, tags, cfg)
     print("  [script] 已填写 B 站标题/简介/标签", flush=True)
 
 
@@ -1780,6 +1827,140 @@ async def _wait_video_ready(page, platform_key: str, *, timeout_s: int = 300) ->
         return
 
 
+async def _llm_publish_success(
+    page,
+    *,
+    success_patterns: list[str],
+    start_url: str,
+    platform_key: str,
+    history: list[str],
+    steps: int,
+    llm_calls: int,
+) -> dict[str, Any] | None:
+    for _ in range(5):
+        await asyncio.sleep(1)
+        state = await extract_page_state(page, screenshot_path=None)
+        if _check_success(
+            state, success_patterns, start_url=start_url, platform_key=platform_key
+        ):
+            return {
+                "ok": True,
+                "steps": steps,
+                "llm_calls": llm_calls,
+                "url": state.url,
+                "history": history,
+            }
+    if platform_key == "xiaohongshu" and _xhs_url_published(page.url):
+        return {
+            "ok": True,
+            "steps": steps,
+            "llm_calls": llm_calls,
+            "url": page.url,
+            "history": [*history, "published_query"],
+        }
+    return None
+
+
+async def _llm_ready_to_publish(page, platform_key: str) -> bool:
+    if platform_key == "bilibili":
+        body = await _bilibili_page_body(page)
+        if not _bilibili_upload_complete(body):
+            return False
+        if await _bilibili_declaration_pending(page):
+            return False
+        return True
+    return platform_key in ("douyin", "shipinhao")
+
+
+async def _llm_assist_prefill(
+    page, *, platform_key: str, fields: dict[str, Any], cfg: AgentConfig
+) -> bool:
+    """LLM 模式：脚本预填可靠字段（不点发布）。小红书仅等待上传，禁止脚本填表。"""
+    if platform_key == "xiaohongshu":
+        try:
+            await _wait_xhs_video_uploaded(page)
+            await dismiss_overlays(page, platform_key="xiaohongshu")
+            await _xhs_disable_pk_cover(page)
+            print("  [script] 小红书视频已就绪，后续由 LLM 逐步填表", flush=True)
+            return True
+        except Exception as exc:
+            print(f"  [script] 小红书等待上传: {exc}", flush=True)
+            return False
+
+    if not fields:
+        return False
+
+    try:
+        if platform_key == "bilibili":
+            await _wait_bilibili_upload_ready(page)
+            await bilibili_prepare_page(page)
+            tid = int(fields.get("tid") or 207)
+            await _bilibili_select_partition(page, tid=tid)
+            await _bilibili_fill_form(
+                page,
+                title=str(fields.get("title") or "")[:80],
+                desc=str(fields.get("desc") or ""),
+                tags=_parse_bilibili_tags(str(fields.get("tags") or "")),
+                cfg=cfg,
+            )
+            print(
+                "  [script] B站已脚本预填（标题/简介/创作声明/标签），LLM 仅需投稿",
+                flush=True,
+            )
+            return True
+
+        if platform_key == "douyin":
+            await _wait_video_ready(page, "douyin")
+            from douyin_publisher import _dismiss_overlays, _fill_form
+
+            await _dismiss_overlays(page)
+            await _fill_form(
+                page,
+                str(fields.get("title") or "")[:30],
+                str(fields.get("desc") or ""),
+                _parse_tags(str(fields.get("tags") or "")),
+            )
+            print("  [script] 抖音已脚本预填，LLM 仅需点发布", flush=True)
+            return True
+
+        if platform_key == "shipinhao":
+            await _wait_shipinhao_video_uploaded(page)
+            await dismiss_overlays(page, platform_key="shipinhao")
+            tags = _parse_tags(str(fields.get("tags") or ""))
+            tag_line = " ".join(f"#{t}" for t in tags)
+            body = f"{fields.get('desc') or ''} {tag_line}".strip()
+            await _shipinhao_fill_form(page, body, cfg)
+            await _shipinhao_declare_original(page)
+            print("  [script] 视频号已脚本预填，LLM 仅需点发表", flush=True)
+            return True
+    except Exception as exc:
+        print(f"  [script] {platform_key} 预填未完成，LLM 继续: {exc}", flush=True)
+    return False
+
+
+async def _llm_assist_try_publish(
+    page, *, platform_key: str, fields: dict[str, Any], cfg: AgentConfig
+) -> bool:
+    """脚本尝试点击发布/投稿（不消耗 LLM 步数）。"""
+    try:
+        if platform_key == "bilibili":
+            await bilibili_prepare_page(page)
+            return await _bilibili_click_submit(
+                page, title=str(fields.get("title") or "")
+            )
+        if platform_key == "douyin":
+            from douyin_publisher import _click_publish, _dismiss_overlays
+
+            await _dismiss_overlays(page)
+            return await _click_publish(page, assist=False)
+        if platform_key == "shipinhao":
+            await dismiss_overlays(page, platform_key="shipinhao")
+            return await _shipinhao_click_publish(page)
+    except Exception as exc:
+        print(f"  [script] {platform_key} 脚本投稿: {exc}", flush=True)
+    return False
+
+
 async def try_deterministic_publish(
     page,
     *,
@@ -1803,26 +1984,10 @@ async def try_deterministic_publish(
         return await _click_publish(page, assist=False)
 
     if platform_key == "xiaohongshu":
-        start_url = page.url
-        await _wait_xhs_video_uploaded(page)
-        await dismiss_overlays(page, platform_key="xiaohongshu")
-        await _xhs_disable_pk_cover(page)
-        body = desc if tag_line in desc else f"{desc}\n\n{tag_line}".strip()
-        await _xhs_fill_form(page, title=title[:20], body=body, tags=tags, cfg=cfg)
-        await _xhs_disable_pk_cover(page)
-        if not await _xhs_declare_original(page):
-            print("  [script] 原创声明可能未勾选，继续尝试发布…", flush=True)
-        if await _xhs_publish_succeeded(page):
-            print("  [script] 检测到已发布（published=true），完成", flush=True)
-            return True
-        await dismiss_overlays(page, platform_key="xiaohongshu")
-        print("  [script] 正在点击发布并等待确认…", flush=True)
-        if await _xhs_click_publish(page, start_url=start_url):
-            print("  [script] 已点击发布", flush=True)
-            return True
+        # 禁止走固定脚本（封号风险），须由 run_agent LLM 逐步发布
         return False
 
-    if platform_key == "shipinhao":
+    if platform_key == "douyin":
         await _wait_shipinhao_video_uploaded(page)
         await dismiss_overlays(page, platform_key="shipinhao")
         await _shipinhao_fill_form(page, f"{desc} {tag_line}".strip(), cfg)
@@ -1953,7 +2118,7 @@ async def run_agent(
     platform_key = platform_key or platform
     fields = fields or {}
     cfg = cfg or AgentConfig(
-        max_steps=browser_max_steps(),
+        max_steps=browser_max_steps(platform_key),
         action_delay_min=_env_float("LLM_BROWSER_DELAY_MIN", 1.0),
         action_delay_max=_env_float("LLM_BROWSER_DELAY_MAX", 3.5),
         save_screenshots=_env("LLM_BROWSER_SAVE_SCREENSHOTS", "0").lower()
@@ -1979,10 +2144,16 @@ async def run_agent(
         return {"ok": True, "steps": 0, "llm_calls": 0, "url": state.url, "history": []}
 
     if not cfg.use_deterministic and fields:
-        print(
-            "  [agent] LLM 逐步操作（模拟真人填表/投稿，本地 file 上传除外）…",
-            flush=True,
-        )
+        if platform_key == "xiaohongshu":
+            print(
+                "  [agent] 小红书 LLM 逐步发布（禁止脚本填表，仅本地 file 上传除外）…",
+                flush=True,
+            )
+        else:
+            print(
+                "  [agent] LLM 发布（脚本预填表单 + LLM 投稿/异常处理）…",
+                flush=True,
+            )
 
     if cfg.use_deterministic and fields:
         print("  [script] 尝试确定性填表+发布（零 LLM）…", flush=True)
@@ -2038,17 +2209,89 @@ async def run_agent(
         llm_video_path = None
         print("  [script] B站表单已就绪，LLM 兜底不再重复上传视频", flush=True)
 
+    bili_tags: list[str] = []
+    if platform_key == "bilibili" and fields:
+        bili_tags = _parse_bilibili_tags(str(fields.get("tags") or ""))
+
+    llm_assist_platforms = ("bilibili", "douyin", "shipinhao", "xiaohongshu")
+    if fields and platform_key in llm_assist_platforms:
+        if platform_key == "xiaohongshu" or not cfg.use_deterministic:
+            await _llm_assist_prefill(
+                page, platform_key=platform_key, fields=fields, cfg=cfg
+            )
+            if platform_key != "xiaohongshu" and not cfg.use_deterministic:
+                if await _llm_assist_try_publish(
+                    page, platform_key=platform_key, fields=fields, cfg=cfg
+                ):
+                    history.append("script:预填后投稿")
+                    hit = await _llm_publish_success(
+                        page,
+                        success_patterns=success_patterns,
+                        start_url=start_url,
+                        platform_key=platform_key,
+                        history=history,
+                        steps=0,
+                        llm_calls=0,
+                    )
+                    if hit:
+                        print("  [script] 预填+脚本投稿成功", flush=True)
+                        return hit
+                    print("  [agent] 脚本投稿未确认成功，LLM 接手…", flush=True)
+
     from llm_vision_client import llm_vision_available
 
     if not llm_vision_available():
+        if platform_key == "xiaohongshu":
+            raise LLMBrowserError(
+                "小红书仅支持 LLM 逐步发布（不可走脚本兜底），请配置 AIHUBMIX_API_KEY 或 DASHSCOPE_API_KEY。"
+            )
         raise LLMBrowserError(
             "确定性步骤未完成，且未配置 LLM API Key（AIHUBMIX_API_KEY 或 DASHSCOPE_API_KEY）。"
             "请检查 .env，或通过 scripts/publish-llm-browser.sh 启动以自动加载 .env。"
         )
 
-    print(f"  [agent] 进入 LLM 兜底（最多 {cfg.max_steps} 步）…", flush=True)
+    llm_label = "逐步发布" if platform_key == "xiaohongshu" else "投稿/异常"
+    print(f"  [agent] 进入 LLM {llm_label}（最多 {cfg.max_steps} 步）…", flush=True)
     for step in range(1, cfg.max_steps + 1):
         await dismiss_overlays(page, platform_key=platform_key)
+
+        if platform_key == "xiaohongshu":
+            await _xhs_disable_pk_cover(page)
+        elif fields and platform_key in ("bilibili", "douyin", "shipinhao"):
+            if await _llm_ready_to_publish(page, platform_key) and await _llm_assist_try_publish(
+                page, platform_key=platform_key, fields=fields, cfg=cfg
+            ):
+                history.append(f"script:投稿 step{step}")
+                hit = await _llm_publish_success(
+                    page,
+                    success_patterns=success_patterns,
+                    start_url=start_url,
+                    platform_key=platform_key,
+                    history=history,
+                    steps=step,
+                    llm_calls=llm_calls,
+                )
+                if hit:
+                    print(f"  [agent] 成功 step={step} url={hit['url']}", flush=True)
+                    return hit
+                continue
+
+        if bili_tags and await _bilibili_try_autofill_tags(page, bili_tags, cfg):
+            history.append("script:批量填写标签")
+            state = await extract_page_state(page, screenshot_path=None)
+            if _check_success(
+                state, success_patterns, start_url=start_url, platform_key=platform_key
+            ):
+                print(f"  [agent] 成功 step={step} url={state.url}", flush=True)
+                return {
+                    "ok": True,
+                    "steps": step,
+                    "llm_calls": llm_calls,
+                    "url": state.url,
+                    "history": history,
+                }
+            continue
+
         use_shot = cfg.save_screenshots or step == 1
         shot = cfg.screenshot_dir / f"{platform_key}_llm_{step:02d}.png" if use_shot else None
         state = await extract_page_state(page, screenshot_path=shot)
@@ -2104,5 +2347,5 @@ async def run_agent(
         await human_pause(cfg)
 
     raise LLMBrowserError(
-        f"LLM 兜底 {cfg.max_steps} 步仍未完成，已停止（请人工检查后台，勿立即重试）"
+        f"LLM {llm_label} {cfg.max_steps} 步仍未完成，已停止（请人工检查后台，勿立即重试）"
     )
