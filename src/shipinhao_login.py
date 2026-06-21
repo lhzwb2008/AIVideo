@@ -115,7 +115,7 @@ async def login_interactive(
             flush=True,
         )
         print("扫码期间页面不会自动跳转，请安心扫码。", flush=True)
-        print("若窗口被挡住，请从 Dock 点 Google Chrome 切到前台。", flush=True)
+        print("若窗口被挡住，请从任务栏点 Google Chrome 切到前台。", flush=True)
 
         deadline = asyncio.get_event_loop().time() + timeout_s
         last_hint = 0.0

@@ -132,6 +132,7 @@ switch ($Platform) {
             Remove-Item $cookie, $BrowserProfile -Recurse -Force -ErrorAction SilentlyContinue
         }
         & $SauPy "$Root\src\shipinhao_login.py" --login --account $Acct
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
     'eastmoney' {
         $Acct = Get-OrDefault $Account (Get-OrDefault $env:EASTMONEY_ACCOUNT 'main')

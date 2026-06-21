@@ -11,7 +11,9 @@ from pathlib import Path
 
 from paths import ROOT
 from sau_paths import chrome_executable, ensure_patchright_import
+
 LOGIN_URL = "https://channels.weixin.qq.com/login.html"
+UPLOAD_URL = "https://channels.weixin.qq.com/platform/post/create"
 
 
 def _env(name: str, default: str = "") -> str:
