@@ -28,9 +28,11 @@ Write-Host '==> Re-apply SAU patches' -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host '==> Verify sau.exe' -ForegroundColor Cyan
-& $SauExe --help | Select-Object -First 3
+$HelpLines = @(& $SauExe --help 2>&1)
 if ($LASTEXITCODE -ne 0) {
+    $HelpLines | ForEach-Object { Write-Host $_ }
     throw 'sau.exe still fails - check output above'
 }
+$HelpLines | Select-Object -First 3 | ForEach-Object { Write-Host $_ }
 
 Write-Host 'Done. You can run: .\scripts\login-cn.ps1 bilibili' -ForegroundColor Green
