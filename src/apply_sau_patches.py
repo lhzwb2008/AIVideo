@@ -20,6 +20,8 @@ def _patch_block(text: str) -> str:
 
 XHS_TARGET = ROOT / "vendor" / "social-auto-upload" / "uploader" / "xiaohongshu_uploader" / "main.py"
 TENCENT_TARGET = ROOT / "vendor" / "social-auto-upload" / "uploader" / "tencent_uploader" / "main.py"
+BILIUP_RUNTIME = ROOT / "vendor" / "social-auto-upload" / "uploader" / "bilibili_uploader" / "runtime.py"
+BILIUP_GH_PROXY_MARKER = "AIVIDEO_PATCH: GH_PROXY for biliup download"
 
 TENCENT_UPLOAD_MARKER = "AIVIDEO_PATCH: 跳过封面/短标题"
 TENCENT_UPLOAD_OLD = """            await self.upload_video_file(page, self.file_path)
@@ -720,7 +722,50 @@ def patch_tencent(path: Path) -> None:
     print(f"已打视频号补丁(skip_cover): {path}")
 
 
+def patch_biliup_runtime(path: Path) -> None:
+    if not path.is_file():
+        print(f"跳过 biliup 补丁：未找到 {path}", file=sys.stderr)
+        return
+    text = path.read_text(encoding="utf-8")
+    if BILIUP_GH_PROXY_MARKER in text:
+        return
+    if "import requests" not in text:
+        print("biliup runtime 结构异常，跳过 GH_PROXY 补丁", file=sys.stderr)
+        return
+    helper = '''
+def _github_proxy_url(url: str) -> str:
+    """AIVIDEO_PATCH: GH_PROXY for biliup download"""
+    import os
+
+    proxy = os.environ.get("GH_PROXY", "").strip().rstrip("/")
+    if not proxy or "github.com" not in url:
+        return url
+    return f"{proxy}/{url}"
+
+
+'''
+    text = text.replace("import requests\n", "import requests\n" + helper, 1)
+    text = text.replace(
+        "response = requests.get(\n        GITHUB_RELEASE_API,",
+        "response = requests.get(\n        _github_proxy_url(GITHUB_RELEASE_API),",
+        1,
+    )
+    text = text.replace(
+        'return {\n                "asset_name": asset_name,\n                "asset_url": asset.get("browser_download_url", ""),\n            }',
+        'return {\n                "asset_name": asset_name,\n                "asset_url": _github_proxy_url(asset.get("browser_download_url", "")),\n            }',
+        1,
+    )
+    text = text.replace(
+        "with requests.get(release[\"asset_url\"], stream=True, timeout=120) as response:",
+        'with requests.get(_github_proxy_url(release["asset_url"]), stream=True, timeout=120) as response:',
+        1,
+    )
+    path.write_text(text, encoding="utf-8")
+    print(f"已打 biliup 补丁(GH_PROXY): {path}")
+
+
 if __name__ == "__main__":
     patch(TARGET)
     patch_xhs(XHS_TARGET)
     patch_tencent(TENCENT_TARGET)
+    patch_biliup_runtime(BILIUP_RUNTIME)

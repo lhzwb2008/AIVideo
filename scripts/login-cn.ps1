@@ -66,8 +66,10 @@ function Invoke-SessionCheck {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-# 各平台登录前统一打 SAU 补丁（含小红书 fill_tags 修复）
-& $MainPy "$Root\src\apply_sau_patches.py"
+# 各平台登录前统一打 SAU 补丁（B 站由 bilibili_login.py 单独处理 biliup 补丁）
+if ($Platform -notin @('bilibili')) {
+    & $MainPy "$Root\src\apply_sau_patches.py"
+}
 
 switch ($Platform) {
     'xhs' { $Platform = 'xiaohongshu' }
@@ -92,18 +94,17 @@ switch ($Platform) {
     }
     'bilibili' {
         $Acct = Get-OrDefault $Account (Get-OrDefault $env:SAU_BILIBILI_ACCOUNT 'main')
-        $SauBin = Join-Path $SauHome '.venv\Scripts\sau.exe'
-        if (-not (Test-Path $SauBin)) { throw "未找到 sau: $SauBin" }
-        Push-Location $SauHome
+        $LoginArgs = @("$Root\src\bilibili_login.py", '--account', $Acct)
         if ($Check) {
-            & $SauBin bilibili check --account $Acct
-            exit $LASTEXITCODE
+            Invoke-SessionCheck $SauPy @LoginArgs '--check'
+            exit 0
         }
         if ($Force) {
-            Remove-Item "cookies\bilibili_$Acct.json" -Force -ErrorAction SilentlyContinue
+            $LoginArgs += '--force'
         }
-        & $SauBin bilibili login --account $Acct
-        Pop-Location
+        $LoginArgs += '--login'
+        Write-Host '==> Bilibili login (biliup QR)' -ForegroundColor Cyan
+        & $SauPy @LoginArgs
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
     'xiaohongshu' {
