@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import ast
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -158,32 +160,91 @@ WAIT_LOGIN_BUSY_CHECK = '''        # AIVIDEO_PATCH: douyin busy check
 
 DOUYIN_BUSY_MARKER = "AIVIDEO_PATCH: douyin busy check"
 
-_DOUYIN_BUSY_BLOCK = re.compile(
-    r"\n        busy_marker = page\.get_by_text\(\"系统繁忙\"\)\.first\n"
-    r"        if await busy_marker\.count\(\):\n"
-    r"            try:\n"
-    r"                if await busy_marker\.is_visible\(\):\n"
-    r"                    douyin_logger\.warning\(_msg\(\"😵\", \"检测到系统繁忙.*?\n"
-    r"                    continue\n"
-    r"            except Exception:\n"
-    r"                pass\n",
-    re.DOTALL,
+# 匹配任意缩进/CRLF 的 busy_marker 块（含旧版误插入的 orphan）
+_STRIP_BUSY_MARKER = re.compile(
+    r"\r?\n[ \t]*(?:# AIVIDEO_PATCH: douyin busy check\r?\n)?"
+    r"[ \t]*busy_marker = page\.get_by_text\([\"']系统繁忙[\"']\)\.first\r?\n"
+    r"(?:[ \t]*.*\r?\n)*?"
+    r"[ \t]*except Exception(?: as \w+)?:\r?\n"
+    r"[ \t]*pass\r?\n",
 )
 
+
+def _strip_all_busy_marker_blocks(text: str) -> str:
+    prev = None
+    while prev != text:
+        prev = text
+        text = _STRIP_BUSY_MARKER.sub("\n", text)
+    return text
+
+
 _DOUYIN_BUSY_INSERT = re.compile(
-    r"(async def _wait_for_douyin_login\([^\)]*\)[^\n]*\n.*?"
-    r"    for _ in range\(max_checks\):\n"
-    r"        if await _is_douyin_login_completed\(page\):[^\n]*\n"
-    r"            douyin_logger\.info\([^\n]+\n"
-    r"            return _build_login_result\([^\n]+\n\n)"
+    r"(async def _wait_for_douyin_login\([^\)]*\)[^\n]*\r?\n.*?"
+    r"    for _ in range\(max_checks\):\r?\n"
+    r"        if await _is_douyin_login_completed\(page\):[^\n]*\r?\n"
+    r"            douyin_logger\.info\([^\n]+\r?\n"
+    r"            return _build_login_result\([^\n]+\r?\n\r?\n)"
     r'(        expired_box = page\.get_by_text\("二维码失效")',
     re.DOTALL,
 )
 
 
+def _restore_douyin_from_git(path: Path) -> bool:
+    sau_root = path.parents[2]
+    if not (sau_root / ".git").is_dir():
+        return False
+    rel = path.relative_to(sau_root).as_posix()
+    proc = subprocess.run(
+        ["git", "checkout", "--", rel],
+        cwd=sau_root,
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0 and path.is_file()
+
+
+def _ensure_valid_douyin_main(path: Path) -> tuple[str, list[str]]:
+    """语法损坏时先剥离误插入块，仍失败则从 SAU git 恢复 upstream。"""
+    notes: list[str] = []
+    original = path.read_text(encoding="utf-8")
+    text = _strip_all_busy_marker_blocks(original)
+    if text != original:
+        notes.append("strip_orphan_busy")
+
+    try:
+        ast.parse(text)
+        if notes:
+            path.write_text(text, encoding="utf-8")
+        return text, notes
+    except SyntaxError:
+        pass
+
+    if _restore_douyin_from_git(path):
+        notes.append("git_restore")
+        text = path.read_text(encoding="utf-8")
+        try:
+            ast.parse(text)
+            return text, notes
+        except SyntaxError as exc:
+            print(f"git 恢复后仍有语法错误: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        ast.parse(text)
+        path.write_text(text, encoding="utf-8")
+        return text, notes
+    except SyntaxError as exc:
+        print(f"抖音 main.py 无法自动修复: {exc}", file=sys.stderr)
+        print(
+            "请手动执行: .\\scripts\\repair-sau-douyin.ps1",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def _fix_douyin_busy_check(text: str) -> str:
     """Remove orphan busy_marker blocks, insert only inside _wait_for_douyin_login."""
-    text = _DOUYIN_BUSY_BLOCK.sub("\n", text)
+    text = _strip_all_busy_marker_blocks(text)
     if DOUYIN_BUSY_MARKER in text:
         return text
     match = _DOUYIN_BUSY_INSERT.search(text)
@@ -250,8 +311,8 @@ def patch(path: Path) -> None:
         print(f"跳过：未找到 {path}", file=sys.stderr)
         sys.exit(1)
 
-    text = path.read_text(encoding="utf-8")
-    applied: list[str] = []
+    text, pre_notes = _ensure_valid_douyin_main(path)
+    applied: list[str] = list(pre_notes)
 
     if "_build_launch_kwargs" not in text or "_douyin_goto" not in text:
         helper_pattern = (
