@@ -543,53 +543,93 @@ BILIBILI_MANAGE_URL = (
 def _bilibili_viewport() -> dict[str, int]:
     try:
         w = int(_env("BILIBILI_BROWSER_WIDTH", "1440"))
-        h = int(_env("BILIBILI_BROWSER_HEIGHT", "1400"))
+        h = int(_env("BILIBILI_BROWSER_HEIGHT", "2000"))
     except ValueError:
-        w, h = 1440, 1400
+        w, h = 1440, 2000
     return {"width": w, "height": h}
 
 
+def _bilibili_use_maximized_window() -> bool:
+    raw = _env("BILIBILI_BROWSER_MAXIMIZED", "1").lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 async def bilibili_prepare_page(page) -> None:
-    """加高视口并滚到底，确保底部「立即投稿」栏可见。"""
-    vp = _bilibili_viewport()
-    try:
-        await page.set_viewport_size(vp)
-    except Exception:
-        pass
+    """加高视口/最大化并滚到底，确保底部「立即投稿」栏可见。"""
+    if _bilibili_use_maximized_window():
+        try:
+            await page.evaluate(
+                """() => {
+                try {
+                  window.moveTo(0, 0);
+                  window.resizeTo(screen.availWidth, screen.availHeight);
+                } catch (e) {}
+            }"""
+            )
+        except Exception:
+            pass
+    else:
+        vp = _bilibili_viewport()
+        try:
+            await page.set_viewport_size(vp)
+        except Exception:
+            pass
     await _bilibili_scroll_to_footer(page)
-    print(
-        f"  [script] B站页面视口 {vp['width']}x{vp['height']}，已滚至底部",
-        flush=True,
-    )
+    vp = _bilibili_viewport()
+    mode = "最大化" if _bilibili_use_maximized_window() else f"{vp['width']}x{vp['height']}"
+    print(f"  [script] B站页面 {mode}，已滚至底部", flush=True)
 
 
 async def _bilibili_scroll_to_footer(page) -> None:
     await page.evaluate(
         """() => {
-        const scrollAll = (root) => {
-          root.scrollTop = root.scrollHeight;
-          for (const el of root.querySelectorAll('*')) {
-            const st = getComputedStyle(el);
-            if ((st.overflowY === 'auto' || st.overflowY === 'scroll')
-                && el.scrollHeight > el.clientHeight + 20) {
+        const scrollables = [...document.querySelectorAll('*')].filter(el => {
+          const st = getComputedStyle(el);
+          return (st.overflowY === 'auto' || st.overflowY === 'scroll')
+            && el.scrollHeight > el.clientHeight + 40;
+        }).sort((a, b) =>
+          (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)
+        );
+        for (const el of scrollables.slice(0, 5)) {
+          el.scrollTop = el.scrollHeight;
+        }
+        for (const sel of [
+          '.center-module', '[class*="content-scroll"]', '[class*="upload"]',
+          'main', '[class*="container"]',
+        ]) {
+          for (const el of document.querySelectorAll(sel)) {
+            if (el.scrollHeight > el.clientHeight + 40) {
               el.scrollTop = el.scrollHeight;
             }
           }
-        };
-        scrollAll(document.documentElement);
-        scrollAll(document.body);
+        }
         window.scrollTo(0, Math.max(
           document.body.scrollHeight,
           document.documentElement.scrollHeight
         ));
     }"""
     )
-    for _ in range(3):
+    try:
+        box = await page.evaluate(
+            """() => {
+            const el = document.elementFromPoint(
+              Math.floor(window.innerWidth * 0.55),
+              Math.floor(window.innerHeight * 0.45)
+            );
+            const r = (el || document.body).getBoundingClientRect();
+            return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }"""
+        )
+        await page.mouse.move(box["x"], box["y"])
+    except Exception:
+        pass
+    for _ in range(12):
         try:
+            await page.mouse.wheel(0, 900)
             await page.keyboard.press("End")
         except Exception:
             pass
-        await asyncio.sleep(0.35)
+        await asyncio.sleep(0.12)
 
 
 async def _bilibili_submit_errors(page) -> list[str]:
@@ -603,9 +643,12 @@ async def _bilibili_submit_errors(page) -> list[str]:
         "不能为空",
         "稿件标题",
         "请先上传",
-        "创作声明",
+        "请选择符合您视频内容的创作声明",
     )
-    return [h for h in hints if h in body]
+    errors = [h for h in hints if h in body]
+    if await _bilibili_declaration_pending(page):
+        errors.append("创作声明未选择")
+    return errors
 
 
 async def _bilibili_pick_any_partition(page) -> bool:
@@ -748,6 +791,7 @@ def _bilibili_creation_declaration_choices() -> list[str]:
     if raw:
         return [x.strip() for x in raw.split("|") if x.strip()]
     return [
+        "含AI生成内容",
         "含AI生成",
         "AI生成",
         "自主创作",
@@ -757,21 +801,35 @@ def _bilibili_creation_declaration_choices() -> list[str]:
 
 
 async def _bilibili_declaration_pending(page) -> bool:
-    body = await _bilibili_page_body(page)
-    if "请选择符合您视频内容的创作声明" in body:
-        return True
     loc = page.get_by_text("请选择符合您视频内容的创作声明", exact=False).first
-    if not await loc.count():
-        return False
-    try:
-        return await loc.is_visible()
-    except Exception:
-        return False
+    if await loc.count():
+        try:
+            if await loc.is_visible():
+                return True
+        except Exception:
+            pass
+    for text in (
+        "含AI生成内容",
+        "含AI生成",
+        "自主创作",
+        "自主拍摄",
+        "转载",
+    ):
+        hit = page.get_by_text(text, exact=True).first
+        if not await hit.count():
+            continue
+        try:
+            if await hit.is_visible():
+                return False
+        except Exception:
+            continue
+    return False
 
 
 async def _bilibili_fill_creation_declaration(page) -> bool:
     """B 站必填「创作声明」下拉框。"""
     if not await _bilibili_declaration_pending(page):
+        print("  [script] B站创作声明已填，跳过", flush=True)
         return True
 
     opened = False

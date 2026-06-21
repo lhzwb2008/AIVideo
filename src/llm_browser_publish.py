@@ -97,9 +97,9 @@ def _browser_viewport(platform: str) -> dict[str, int]:
     if platform == "bilibili":
         try:
             w = int(_env("BILIBILI_BROWSER_WIDTH", "1440"))
-            h = int(_env("BILIBILI_BROWSER_HEIGHT", "1400"))
+            h = int(_env("BILIBILI_BROWSER_HEIGHT", "2000"))
         except ValueError:
-            w, h = 1440, 1400
+            w, h = 1440, 2000
     else:
         w, h = 1440, 900
     return {"width": w, "height": h}
@@ -425,12 +425,23 @@ async def _launch_context(p, platform: str, *, headed: bool):
     if platform == "xiaohongshu":
         launch["args"].append("--disable-geolocation")
 
+    bilibili_max = (
+        platform == "bilibili"
+        and _env("BILIBILI_BROWSER_MAXIMIZED", "1").lower()
+        not in ("0", "false", "no", "off")
+    )
+    if bilibili_max and headed:
+        launch["args"].extend(["--start-maximized", "--window-position=0,0"])
+
     if use_profile and profile.is_dir() and any(profile.iterdir()):
         ctx_kw: dict = {
             "locale": "zh-CN",
             "timezone_id": "Asia/Shanghai",
-            "viewport": vp,
         }
+        if bilibili_max and headed:
+            ctx_kw["no_viewport"] = True
+        else:
+            ctx_kw["viewport"] = vp
         context = await p.chromium.launch_persistent_context(
             str(profile),
             **ctx_kw,

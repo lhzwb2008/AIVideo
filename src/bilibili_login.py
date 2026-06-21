@@ -100,7 +100,7 @@ async def login_interactive(
             "--disable-infobars",
             "--no-first-run",
             "--no-default-browser-check",
-            "--window-size=1440,1400",
+            "--window-size=1440,2000",
         ],
     }
     if os.name == "nt":
@@ -117,7 +117,7 @@ async def login_interactive(
             str(profile),
             locale="zh-CN",
             timezone_id="Asia/Shanghai",
-            viewport={"width": 1440, "height": 1400},
+            viewport={"width": 1440, "height": 2000},
             **launch,
         )
         page = await _fresh_page(context)
