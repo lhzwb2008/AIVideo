@@ -276,6 +276,19 @@ async def try_upload_video(
         except Exception as exc:
             print(f"  [upload] 抖音专用上传失败，尝试通用方式: {exc}", flush=True)
 
+    if platform == "bilibili":
+        try:
+            loc = page.locator(
+                'input[type="file"][accept*="video"], input[type="file"]'
+            ).first
+            await loc.wait_for(state="attached", timeout=60_000)
+            await loc.set_input_files(str(video_path))
+            print(f"  [upload] B站已选择视频: {video_path.name}", flush=True)
+            await asyncio.sleep(3)
+            return True
+        except Exception as exc:
+            print(f"  [upload] B站专用上传失败: {exc}", flush=True)
+
     if platform == "shipinhao":
         try:
             await page.wait_for_url("**/platform/post/create**", timeout=60_000)
@@ -334,6 +347,7 @@ async def try_upload_video(
         "xiaohongshu": ("上传视频", "点击上传", "上传"),
         "shipinhao": ("上传", "点击上传", "从相册选择"),
         "douyin": ("点击上传", "上传视频"),
+        "bilibili": ("上传视频", "点击上传", "上传"),
     }
     for text in trigger_texts.get(platform, ("点击上传", "上传")):
         trigger = page.get_by_text(text, exact=False).first
@@ -431,6 +445,15 @@ def _check_success(
             "已提交",
             "提交成功",
         ):
+            if text in state.body_snippet:
+                return True
+
+    if platform_key == "bilibili":
+        if "member.bilibili.com" in url and (
+            "upload-manager" in url or "manage" in url
+        ):
+            return True
+        for text in ("投稿成功", "稿件投递成功", "提交成功", "已提交审核"):
             if text in state.body_snippet:
                 return True
 
@@ -955,6 +978,111 @@ async def _wait_video_ready(page, platform_key: str, *, timeout_s: int = 300) ->
         await _wait_shipinhao_video_uploaded(page)
         return
 
+    if platform_key == "bilibili":
+        await _wait_bilibili_upload_ready(page)
+        return
+
+
+async def _wait_bilibili_upload_ready(page, *, timeout_s: int = 600) -> None:
+    for _ in range(timeout_s // 2):
+        title = page.locator(
+            'input[placeholder*="标题"], input[placeholder*="请输入"], input[maxlength="80"]'
+        ).first
+        if await title.count():
+            try:
+                if await title.is_visible():
+                    body = await page.evaluate(
+                        "() => (document.body && document.body.innerText) || ''"
+                    )
+                    if any(t in body for t in ("上传完成", "100%", "上传成功")):
+                        return
+                    if "上传中" not in body and "正在上传" not in body:
+                        return
+            except Exception:
+                pass
+        await asyncio.sleep(2)
+    raise LLMBrowserError("B站视频上传超时")
+
+
+async def _bilibili_fill_form(
+    page, *, title: str, desc: str, tags: list[str], cfg: AgentConfig
+) -> None:
+    tin = page.locator(
+        'input[placeholder*="标题"], input[placeholder*="请输入"], input[maxlength="80"]'
+    ).first
+    await tin.wait_for(state="visible", timeout=120_000)
+    await tin.fill(title[:80])
+    filled_desc = False
+    for sel in (
+        "div.ql-editor",
+        '[contenteditable="true"]',
+        "textarea",
+    ):
+        ed = page.locator(sel).first
+        if not await ed.count():
+            continue
+        try:
+            await ed.click(timeout=8000)
+            await page.keyboard.press("Meta+A")
+            await page.keyboard.press("Backspace")
+            await human_type(page, desc[:2000], cfg)
+            filled_desc = True
+            break
+        except Exception:
+            continue
+    if not filled_desc:
+        print("  [script] ⚠️ B站简介区未找到，继续…", flush=True)
+    for tag in tags[:12]:
+        tag_in = page.locator(
+            'input[placeholder*="标签"], input[placeholder*="回车"], input[placeholder*="Enter"]'
+        ).first
+        if not await tag_in.count():
+            break
+        try:
+            await tag_in.fill(tag)
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(0.3)
+        except Exception:
+            break
+    print(f"  [script] 已填写 B 站标题/简介/标签", flush=True)
+
+
+async def _bilibili_publish_succeeded(page) -> bool:
+    url = (page.url or "").lower()
+    if "upload-manager" in url or "manage" in url:
+        return True
+    try:
+        body = await page.evaluate(
+            "() => (document.body && document.body.innerText) || ''"
+        )
+    except Exception:
+        body = ""
+    return any(
+        t in body
+        for t in ("投稿成功", "提交成功", "稿件投递成功", "已提交审核")
+    )
+
+
+async def _bilibili_click_submit(page) -> bool:
+    for name in ("立即投稿", "投稿", "发布"):
+        for btn in (
+            page.get_by_role("button", name=name).first,
+            page.locator(f'button:has-text("{name}")').last,
+        ):
+            try:
+                if not await btn.count():
+                    continue
+                await btn.scroll_into_view_if_needed(timeout=5000)
+                await btn.click(timeout=8000)
+                await asyncio.sleep(2)
+                if await _bilibili_publish_succeeded(page):
+                    print("  [script] 检测到 B 站投稿成功", flush=True)
+                    return True
+                return True
+            except Exception:
+                continue
+    return False
+
 
 async def try_deterministic_publish(
     page,
@@ -1007,6 +1135,20 @@ async def try_deterministic_publish(
         await dismiss_overlays(page, platform_key="shipinhao")
         if await _shipinhao_click_publish(page):
             print("  [script] 已点击发表", flush=True)
+            return True
+        return False
+
+    if platform_key == "bilibili":
+        await _wait_bilibili_upload_ready(page)
+        await dismiss_overlays(page, platform_key=platform_key)
+        bili_title = str(fields.get("title") or "")[:80]
+        bili_desc = str(fields.get("desc") or "")
+        await _bilibili_fill_form(
+            page, title=bili_title, desc=bili_desc, tags=tags, cfg=cfg
+        )
+        print("  [script] 正在点击 B 站投稿…", flush=True)
+        if await _bilibili_click_submit(page):
+            print("  [script] 已点击 B 站投稿", flush=True)
             return True
         return False
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LLM 视觉 + Playwright 国内短视频发布（抖音 / 视频号 / 小红书）。"""
+"""LLM 视觉 + Playwright 国内短视频发布（抖音 / 视频号 / 小红书 / B站 / 知乎专栏）。"""
 
 from __future__ import annotations
 
@@ -14,13 +14,19 @@ LLM_PLATFORMS = {
     "douyin": "抖音",
     "shipinhao": "视频号",
     "xiaohongshu": "小红书",
+    "bilibili": "B站",
+    "zhihu": "知乎专栏",
 }
 
 LOG_NAMES = {
     "douyin": "last_llm_douyin_publish.json",
     "shipinhao": "last_llm_shipinhao_publish.json",
     "xiaohongshu": "last_llm_xiaohongshu_publish.json",
+    "bilibili": "last_llm_bilibili_publish.json",
+    "zhihu": "last_llm_zhihu_publish.json",
 }
+
+FORUM_PLATFORMS = frozenset({"zhihu"})
 
 
 def llm_browser_default() -> bool:
@@ -85,3 +91,57 @@ def publish_llm_browser(
         if title:
             return title
     return video.stem
+
+
+def publish_llm_browser_forum(
+    platform: str,
+    forum_dir: Path,
+    *,
+    dry_run: bool = False,
+) -> str:
+    """论坛图文 LLM 发布（知乎专栏）。"""
+    if platform not in FORUM_PLATFORMS:
+        raise ValueError(f"非论坛 LLM 平台: {platform}")
+    forum_dir = forum_dir.resolve()
+    if not (forum_dir / "post.md").is_file():
+        raise FileNotFoundError(f"论坛包不存在: {forum_dir}")
+
+    cmd = script_argv(
+        "publish-llm-browser",
+        platform,
+        "--forum-dir",
+        str(forum_dir),
+    )
+    if dry_run:
+        cmd.append("--dry-run")
+    else:
+        cmd.append("--confirm")
+
+    label = LLM_PLATFORMS[platform]
+    proc = subprocess.run(cmd, cwd=ROOT, env=os.environ.copy())
+    if proc.returncode != 0:
+        raise RuntimeError(f"{label} LLM 发布失败，退出码 {proc.returncode}")
+    if dry_run:
+        return ""
+
+    import json
+    from locale_env import locale_logs_dir
+
+    title = ""
+    for base in (locale_logs_dir(), ROOT / "logs"):
+        for name in (LOG_NAMES[platform], f"last_{platform}_publish.json"):
+            log_path = base / name
+            if not log_path.is_file():
+                continue
+            try:
+                data = json.loads(log_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if name.startswith("last_llm") and not data.get("ok"):
+                raise RuntimeError(
+                    f"{label} LLM 发布未确认成功（见 {log_path}）"
+                )
+            title = str(data.get("title") or "").strip()
+            if title:
+                return title
+    return forum_dir.name

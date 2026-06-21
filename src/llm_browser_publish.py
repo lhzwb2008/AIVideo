@@ -10,6 +10,8 @@
   scripts/publish-llm-browser.sh douyin <video.mp4> [--archive-dir ...] [--probe] [--dry-run]
   scripts/publish-llm-browser.sh shipinhao <video.mp4> [--confirm]
   scripts/publish-llm-browser.sh xiaohongshu <video.mp4> [--confirm]
+  scripts/publish-llm-browser.sh bilibili <video.mp4> [--confirm]
+  scripts/publish-llm-browser.sh zhihu --forum-dir output/zh/xxx [--confirm]
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from bilibili_caption import build_bilibili_fields
 from douyin_caption import build_sau_fields, _strip_urls
 from llm_browser_agent import AgentConfig, LLMBrowserError, human_pause, run_agent
 from llm_vision_client import browser_max_steps, browser_model, browser_provider_label
@@ -42,30 +45,42 @@ PLATFORM_ALIASES = {
     "xiaohongshu": "xiaohongshu",
     "xhs": "xiaohongshu",
     "redbook": "xiaohongshu",
+    "bilibili": "bilibili",
+    "bili": "bilibili",
+    "zhihu": "zhihu",
+    "zh": "zhihu",
 }
 
 PLATFORM_LABEL = {
     "douyin": "抖音",
     "shipinhao": "视频号",
     "xiaohongshu": "小红书",
+    "bilibili": "B站",
+    "zhihu": "知乎专栏",
 }
 
 LOGIN_HINT = {
     "douyin": "./douyin-login.sh",
     "shipinhao": "./social-login.sh shipinhao",
     "xiaohongshu": "./social-login.sh xiaohongshu",
+    "bilibili": "./bilibili-login.sh",
+    "zhihu": "./scripts/login-cn.ps1 zhihu",
 }
 
 COOKIE_ENV = {
     "douyin": "SAU_DOUYIN_ACCOUNT",
     "shipinhao": "SAU_SHIPINHAO_ACCOUNT",
     "xiaohongshu": "SAU_XHS_ACCOUNT",
+    "bilibili": "SAU_BILIBILI_ACCOUNT",
+    "zhihu": "ZHIHU_ACCOUNT",
 }
 
 COOKIE_KEY = {
     "douyin": "douyin",
     "shipinhao": "tencent",
     "xiaohongshu": "xiaohongshu",
+    "bilibili": "bilibili",
+    "zhihu": "zhihu",
 }
 
 
@@ -155,6 +170,14 @@ def resolve_fields(
     if script:
         if platform == "douyin":
             fields = build_sau_fields(script)
+        elif platform == "bilibili":
+            fields = build_bilibili_fields(script)
+            return {
+                "title": title or fields["title"],
+                "desc": _strip_urls(desc or fields["desc"]),
+                "tags": tags or fields["tags"],
+                "tid": fields.get("tid", 207),
+            }
         else:
             social_key = "xiaohongshu" if platform == "xiaohongshu" else "tencent"
             fields = build_social_fields(script, social_key)
@@ -203,6 +226,22 @@ def pick_random_archive_video(locale: str = "zh") -> tuple[Path, Path | None]:
     return random.choice(candidates)
 
 
+def resolve_zhihu_fields(forum_dir: Path) -> dict:
+    from publish_caption import zhihu_auto_publish
+    from zhihu_publisher import parse_forum_pack
+
+    data = parse_forum_pack(forum_dir)
+    body_bits = [str(s.get("text") or "").strip() for s in data.get("sections") or []]
+    body = "\n\n".join(x for x in body_bits if x)
+    return {
+        "title": data["title"],
+        "desc": body[:4000],
+        "tags": "",
+        "forum_dir": str(forum_dir.resolve()),
+        "auto_publish": zhihu_auto_publish(),
+    }
+
+
 def build_task(platform: str, fields: dict) -> str:
     tags = [t.strip().lstrip("#") for t in str(fields.get("tags") or "").split(",") if t.strip()]
     tag_line = " ".join(f"#{t}" for t in tags[:5])
@@ -227,7 +266,8 @@ def build_task(platform: str, fields: dict) -> str:
 6. 不要填写短标题
 7. 直接点击「发表」
 8. 成功标志：跳转到 platform/post/list 或出现发表成功"""
-    return f"""在小红书创作者平台发布一条短视频：
+    if platform == "xiaohongshu":
+        return f"""在小红书创作者平台发布一条短视频：
 1. 上传本地 MP4（视频发布页，不是图文）
 2. 等视频传完即可，**不要**编辑/等待/设置封面；若有封面弹窗点「取消/关闭」或 Escape 关掉
 3. 标题（≤20字）: {fields['title']}
@@ -237,6 +277,34 @@ def build_task(platform: str, fields: dict) -> str:
 7. 点击左下角「设置」→ 开启「声明原创」（勿在封面区域点任何开关）
 8. 点击「发布」或「立即发布」，若有二次确认弹窗点「确认发布」
 9. 成功标志：note-manage 或页面出现「发布成功」（非带 __debugger__ 的假跳转）"""
+    if platform == "bilibili":
+        tags = [t.strip().lstrip("#") for t in str(fields.get("tags") or "").split(",") if t.strip()]
+        tag_line = ",".join(tags[:12])
+        tid = fields.get("tid", 207)
+        return f"""在 B 站创作中心上传并投稿一条视频：
+1. 上传本地 MP4（若尚未上传）
+2. 等视频传完（进度 100% 或出现标题输入框）
+3. 标题（≤80字）: {fields['title']}
+4. 简介: {fields['desc']}
+5. 标签（逗号分隔，最多12个）: {tag_line or '（无）'}
+6. 分区 tid={tid}（财经/知识类，若页面需选手动选最接近分区）
+7. 使用默认封面，不要折腾自定义封面
+8. 点击「立即投稿」或「投稿」
+9. 成功：跳转到稿件管理或出现投稿成功提示"""
+    if platform == "zhihu":
+        publish_step = (
+            "填写完成后点击「发布」"
+            if fields.get("auto_publish")
+            else "填写完成后点击「保存草稿」"
+        )
+        return f"""在知乎专栏写作页发布长文（论坛图文包）：
+1. 打开写作页，标题: {fields['title']}
+2. 论坛包目录: {fields.get('forum_dir')}（含 post.md、cover.jpg、images/）
+3. 正文需按 post.md 分段填入，并在对应位置插入 images/ 配图
+4. 正文摘要（供参考）:\n{fields.get('desc', '')[:1200]}
+5. {publish_step}
+6. 成功：草稿箱出现该标题，或发布成功页"""
+    raise PublishError(f"未知平台 task: {platform}")
 
 
 def platform_url(platform: str) -> str:
@@ -244,6 +312,8 @@ def platform_url(platform: str) -> str:
         "douyin": "https://creator.douyin.com/creator-micro/content/upload",
         "shipinhao": "https://channels.weixin.qq.com/platform/post/create",
         "xiaohongshu": "https://creator.xiaohongshu.com/publish/publish?from=homepage&target=video",
+        "bilibili": "https://member.bilibili.com/platform/upload/video/frame",
+        "zhihu": "https://zhuanlan.zhihu.com/write",
     }
     return urls[platform]
 
@@ -258,6 +328,18 @@ def success_patterns(platform: str) -> list[str]:
             "发布成功",
             "笔记管理",
         ],
+        "bilibili": [
+            "platform/upload-manager",
+            "upload-manager",
+            "投稿成功",
+            "稿件管理",
+        ],
+        "zhihu": [
+            "creator/manage",
+            "drafts",
+            "发布成功",
+            "zhuanlan.zhihu.com/p/",
+        ],
     }
     return patterns[platform]
 
@@ -267,7 +349,16 @@ async def _goto_page(page, url: str, *, timeout_ms: int = 90_000) -> None:
     for wait_until in ("commit", "domcontentloaded"):
         try:
             await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
-            if "creator.douyin.com" in page.url or "channels.weixin.qq.com" in page.url or "creator.xiaohongshu.com" in page.url:
+            if any(
+                d in (page.url or "")
+                for d in (
+                    "creator.douyin.com",
+                    "channels.weixin.qq.com",
+                    "creator.xiaohongshu.com",
+                    "member.bilibili.com",
+                    "zhuanlan.zhihu.com",
+                )
+            ):
                 return
             return
         except Exception as exc:
@@ -279,6 +370,8 @@ async def _goto_page(page, url: str, *, timeout_ms: int = 90_000) -> None:
                     "creator.douyin.com",
                     "channels.weixin.qq.com",
                     "creator.xiaohongshu.com",
+                    "member.bilibili.com",
+                    "zhuanlan.zhihu.com",
                 )
             ):
                 return
@@ -400,14 +493,95 @@ async def probe_page(platform: str, *, headed: bool = True) -> dict:
                 await context.close()
 
 
+async def publish_zhihu_async(
+    forum_dir: Path,
+    fields: dict,
+    *,
+    headed: bool,
+) -> dict:
+    """知乎：优先确定性填表（含配图），失败再走 LLM 视觉兜底。"""
+    draft_only = not fields.get("auto_publish")
+    try:
+        from zhihu_publisher import publish_forum_pack
+
+        result = await publish_forum_pack(
+            forum_dir,
+            headless=not headed,
+            draft_only=draft_only,
+        )
+        print("  [script] 知乎专栏发布完成（确定性）", flush=True)
+        return {
+            "ok": True,
+            "steps": 0,
+            "llm_calls": 0,
+            "url": result.get("url") or "",
+            "history": ["deterministic"],
+            "published": bool(result.get("published")),
+            "draft_only": draft_only,
+            "title": result.get("title") or fields.get("title"),
+        }
+    except Exception as exc:
+        print(f"  [script] 知乎确定性失败，进入 LLM 兜底: {exc}", flush=True)
+
+    _ensure_patchright()
+    from patchright.async_api import async_playwright
+
+    task = build_task("zhihu", fields)
+    async with async_playwright() as p:
+        context, browser = await _launch_context(p, "zhihu", headed=headed)
+        try:
+            page = context.pages[0] if context.pages else await context.new_page()
+            print(f"  打开 {platform_url('zhihu')} …", flush=True)
+            await _goto_page(page, platform_url("zhihu"))
+            await asyncio.sleep(2)
+            await human_pause(AgentConfig())
+            result = await run_agent(
+                page,
+                platform=PLATFORM_LABEL["zhihu"],
+                platform_key="zhihu",
+                task=task,
+                fields=fields,
+                video_path=None,
+                success_patterns=success_patterns("zhihu"),
+                pre_upload=False,
+            )
+            cookie = cookie_path("zhihu", required=False)
+            if cookie:
+                try:
+                    await context.storage_state(path=str(cookie))
+                    print(f"  cookie 已更新: {cookie}", flush=True)
+                except Exception:
+                    pass
+            result["forum_dir"] = str(forum_dir)
+            result["title"] = fields.get("title")
+            result["published"] = bool(fields.get("auto_publish"))
+            result["draft_only"] = not fields.get("auto_publish")
+            return result
+        finally:
+            if browser:
+                await browser.close()
+            else:
+                await context.close()
+
+
 async def publish_async(
     platform: str,
-    video: Path,
+    video: Path | None,
     fields: dict,
     *,
     headed: bool,
     probe_only: bool,
+    forum_dir: Path | None = None,
 ) -> dict:
+    if platform == "zhihu":
+        if not forum_dir:
+            raise PublishError("知乎发布需要 --forum-dir")
+        if probe_only:
+            return await probe_page(platform, headed=headed)
+        return await publish_zhihu_async(forum_dir, fields, headed=headed)
+
+    if not video:
+        raise PublishError(f"{platform} 发布需要视频路径")
     _ensure_patchright()
     from patchright.async_api import async_playwright
 
@@ -465,9 +639,15 @@ def resolve_playwright_python() -> Path | None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="大模型视觉浏览器发布（抖音/视频号/小红书）")
-    parser.add_argument("platform", help="douyin | shipinhao | xiaohongshu")
-    parser.add_argument("video", nargs="?", help="MP4 路径；省略则随机选 archive 视频")
+    parser = argparse.ArgumentParser(
+        description="大模型视觉浏览器发布（抖音/视频号/小红书/B站/知乎）"
+    )
+    parser.add_argument(
+        "platform",
+        help="douyin | shipinhao | xiaohongshu | bilibili | zhihu",
+    )
+    parser.add_argument("video", nargs="?", help="MP4 路径（知乎可省略）")
+    parser.add_argument("--forum-dir", help="论坛图文包目录（知乎必填）")
     parser.add_argument("--script", help="脚本 JSON")
     parser.add_argument("--archive-dir", help="归档素材目录（含 README.md）")
     parser.add_argument("--title", help="覆盖标题")
@@ -492,39 +672,51 @@ def main() -> int:
     if not platform:
         raise SystemExit(f"未知平台: {args.platform}")
 
-    archive_dir = Path(args.archive_dir).resolve() if args.archive_dir else None
-    if args.random or not args.video:
-        video, auto_dir = pick_random_archive_video("zh")
-        archive_dir = archive_dir or auto_dir
-        print(f"随机选中: {video}", flush=True)
+    forum_dir = Path(args.forum_dir).resolve() if args.forum_dir else None
+    if platform == "zhihu":
+        if not forum_dir or not forum_dir.is_dir():
+            raise SystemExit("知乎发布需要 --forum-dir（含 post.md 的论坛包目录）")
+        fields = resolve_zhihu_fields(forum_dir)
+        video = None
+        archive_dir = None
+        script_path = None
     else:
-        video = Path(args.video).resolve()
-        if not video.is_file():
-            raise SystemExit(f"视频不存在: {video}")
-        if not archive_dir:
-            sibling = video.parent / video.stem
-            if sibling.is_dir():
-                archive_dir = sibling
-            else:
-                for loc in ("zh", "en"):
-                    loc_pack = video.parent / loc / video.stem
-                    if loc_pack.is_dir():
-                        archive_dir = loc_pack
-                        break
+        archive_dir = Path(args.archive_dir).resolve() if args.archive_dir else None
+        if args.random or not args.video:
+            video, auto_dir = pick_random_archive_video("zh")
+            archive_dir = archive_dir or auto_dir
+            print(f"随机选中: {video}", flush=True)
+        else:
+            video = Path(args.video).resolve()
+            if not video.is_file():
+                raise SystemExit(f"视频不存在: {video}")
+            if not archive_dir:
+                sibling = video.parent / video.stem
+                if sibling.is_dir():
+                    archive_dir = sibling
+                else:
+                    for loc in ("zh", "en"):
+                        loc_pack = video.parent / loc / video.stem
+                        if loc_pack.is_dir():
+                            archive_dir = loc_pack
+                            break
 
-    script_path = resolve_script_for_video(video, args.script)
-    fields = resolve_fields(
-        video,
-        script_path=script_path,
-        archive_dir=archive_dir,
-        platform=platform,
-        title=args.title,
-        desc=args.desc,
-        tags=args.tags,
-    )
+        script_path = resolve_script_for_video(video, args.script)
+        fields = resolve_fields(
+            video,
+            script_path=script_path,
+            archive_dir=archive_dir,
+            platform=platform,
+            title=args.title,
+            desc=args.desc,
+            tags=args.tags,
+        )
 
     print(f"平台: {PLATFORM_LABEL[platform]}（LLM 视觉代理）")
-    print(f"视频: {video}")
+    if video:
+        print(f"视频: {video}")
+    if forum_dir:
+        print(f"论坛包: {forum_dir}")
     print(f"标题: {fields['title']}")
     print(f"简介: {fields['desc'][:120]}{'…' if len(fields['desc']) > 120 else ''}")
     if fields.get("tags"):
@@ -574,7 +766,14 @@ def main() -> int:
     print("\n=== 开始 LLM 视觉发布 ===", flush=True)
     try:
         result = asyncio.run(
-            publish_async(platform, video, fields, headed=headed, probe_only=False)
+            publish_async(
+                platform,
+                video,
+                fields,
+                headed=headed,
+                probe_only=False,
+                forum_dir=forum_dir,
+            )
         )
         log_path = ROOT / "logs" / f"last_llm_{platform}_publish.json"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -584,6 +783,32 @@ def main() -> int:
             "published_at": datetime.now(timezone.utc).isoformat(),
         }
         log_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        if platform == "zhihu":
+            zh_log = {
+                "at": payload["published_at"],
+                "title": payload.get("title") or fields.get("title"),
+                "pack_dir": str(forum_dir) if forum_dir else "",
+                "published": bool(payload.get("published")),
+                "draft_only": bool(payload.get("draft_only")),
+                "url": payload.get("url") or "",
+                "method": "llm_browser",
+            }
+            (ROOT / "logs" / "last_zhihu_publish.json").write_text(
+                json.dumps(zh_log, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        if platform == "bilibili":
+            bili_log = {
+                "at": payload["published_at"],
+                "title": payload.get("title") or fields.get("title"),
+                "video": str(video) if video else "",
+                "method": "llm_browser",
+                "ok": payload.get("ok"),
+            }
+            (ROOT / "logs" / "last_bilibili_publish.json").write_text(
+                json.dumps(bili_log, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         if not result.get("ok"):
             print(
                 f"\n❌ 发布未确认成功（url={result.get('url', '')}）",

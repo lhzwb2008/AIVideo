@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# 大模型视觉 + Playwright 自适应发布（抖音 / 视频号 / 小红书）
+# 大模型视觉 + Playwright 自适应发布（抖音 / 视频号 / 小红书 / B站 / 知乎专栏）
 # 用法:
 #   scripts/publish-llm-browser.sh douyin <video.mp4> --confirm --headless
 #   scripts/publish-llm-browser.sh shipinhao <video.mp4> --confirm --headless
 #   scripts/publish-llm-browser.sh xiaohongshu <video.mp4> --confirm --headless
+#   scripts/publish-llm-browser.sh bilibili <video.mp4> --script <script.json> --confirm --headed
+#   scripts/publish-llm-browser.sh zhihu --forum-dir <forum_pack_dir> --confirm --headed
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

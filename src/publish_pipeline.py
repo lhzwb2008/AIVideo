@@ -31,7 +31,11 @@ from publish_caption import (
     youtube_enabled,
     zhihu_enabled,
 )
-from publish_llm_browser import llm_browser_default, publish_llm_browser
+from publish_llm_browser import (
+    llm_browser_default,
+    publish_llm_browser,
+    publish_llm_browser_forum,
+)
 from forum_auth import is_login_error
 from invoke_script import script_argv
 from research import run_article_research
@@ -206,6 +210,26 @@ def publish_bilibili_api(
     dry_run: bool,
     skip_video: bool = False,
 ) -> str:
+    if skip_video or _bilibili_skip_video():
+        cmd = script_argv(
+            "publish-bilibili",
+            rel(video),
+            "--script",
+            rel(script_path),
+            "--skip-video",
+        )
+        if dry_run:
+            cmd.append("--dry-run")
+        run(cmd, label="发布B站")
+        if dry_run:
+            return ""
+        return _read_last_publish_url("last_bilibili_publish.json", "title")
+
+    if llm_browser_default():
+        return publish_llm_browser(
+            "bilibili", video, script_path, dry_run=dry_run
+        )
+
     cmd = script_argv(
         "publish-bilibili",
         rel(video),
@@ -624,9 +648,12 @@ def publish_zhihu(forum_dir: str | Path, *, dry_run: bool) -> str:
         return ""
 
     def _do() -> str:
-        from publish_zhihu import publish_forum_dir
+        if llm_browser_default():
+            title = publish_llm_browser_forum("zhihu", path, dry_run=dry_run)
+        else:
+            from publish_zhihu import publish_forum_dir
 
-        title = publish_forum_dir(path, dry_run=dry_run)
+            title = publish_forum_dir(path, dry_run=dry_run)
         if title and not dry_run:
             log_path = ROOT / "logs" / "last_zhihu_publish.json"
             published = False
