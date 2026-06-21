@@ -290,17 +290,21 @@ def build_task(platform: str, fields: dict) -> str:
 6. 成功标志：platform/post/list 或发表成功
 （预填描述: {body[:200]}…）"""
     if platform == "xiaohongshu":
-        return f"""在小红书创作者平台发布一条短视频（**必须像真人一样逐步操作，禁止批量脚本填表**）：
-1. 上传本地 MP4（视频发布页，不是图文）
-2. 等视频传完即可，**不要**编辑/等待/设置封面；若有封面弹窗点「取消/关闭」或 Escape 关掉
-3. 标题（≤20字）: {fields['title']}
-4. 正文描述: {fields['desc']}
-5. 话题（行内 #，最多5个）: {tag_line or '（无）'}
-6. **不要**开启「PK封面」；**不要**编辑/等待封面，使用默认主封面即可
-7. 点击左下角「设置」→ 开启「声明原创」（勿在封面区域点任何开关）
-8. 点击「发布」或「立即发布」，若有二次确认弹窗点「确认发布」
-9. 每步只做一种操作（wait / click / type），步骤间自然停顿
-10. 成功标志：note-manage 或页面出现「发布成功」（非带 __debugger__ 的假跳转）"""
+        body = str(fields.get("desc") or "").strip()
+        if tag_line and tag_line not in body:
+            body = f"{body}\n{tag_line}".strip()
+        return f"""在小红书视频发布页，**只做下面 4 步**，其他表单项一律不要碰：
+
+1. **上传视频**（若尚未上传；用 upload 选本地 MP4，然后 wait 等传完）
+2. **写描述**：在「正文描述/作品描述」区 type 填入（**不要填标题**，标题留空即可）：
+{body}
+3. **声明原创**：点「设置」或「声明原创」开关，弹窗里勾选同意并确认
+4. **发布**：点「发布」或「立即发布」，有二次确认就点「确认发布」
+
+**禁止**（做了容易失败或封号）：填标题、改封面、PK封面、单独加话题标签、位置、@人、合集、定时、商品挂载
+封面弹窗出现就点「取消/关闭」或 Escape
+每步只做一种 action（wait / click / type），步骤间自然停顿
+成功标志：note-manage 或页面出现「发布成功」"""
     if platform == "bilibili":
         tags = [t.strip().lstrip("#") for t in str(fields.get("tags") or "").split(",") if t.strip()]
         tag_line = ",".join(tags[:12])

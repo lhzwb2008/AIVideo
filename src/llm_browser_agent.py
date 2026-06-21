@@ -393,12 +393,19 @@ async def try_upload_video(
     return False
 
 
-def _build_system_prompt(platform: str) -> str:
-    return f"""你是真人运营，在 {platform} 创作者后台发视频。根据页面元素（和截图）每次只输出**一步** JSON。
+def _build_system_prompt(platform: str, *, platform_key: str = "") -> str:
+    base = f"""你是真人运营，在 {platform} 创作者后台发视频。根据页面元素（和截图）每次只输出**一步** JSON。
 像人一样：先 wait 等上传/加载，再 click/type；不要连点同一按钮；打字用 type 逐段输入。
 字段：thought, action, ref, text, wait_seconds, reason
 action：click | type | wait | press_key | done | need_human
 卡住或验证码时用 need_human。只输出 JSON，不要 markdown。"""
+    if platform_key == "xiaohongshu":
+        base += """
+
+小红书视频发布极简流程（严格遵守）：
+只做：上传视频 → 正文描述 type → 声明原创 click → 发布 click。
+不要填标题、不要动封面、不要单独加话题/标签栏、不要点其他任何表单项。"""
+    return base
 
 
 def _build_user_prompt(
@@ -2315,7 +2322,7 @@ async def run_agent(
         print(f"  [agent] LLM {step}/{cfg.max_steps}…", flush=True)
         llm_calls += 1
         raw = vision_chat(
-            system=_build_system_prompt(platform),
+            system=_build_system_prompt(platform, platform_key=platform_key),
             user_text=user_prompt,
             screenshot=state.screenshot if step == 1 else None,
             max_tokens=260,
