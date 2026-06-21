@@ -46,8 +46,11 @@ $env:PYTHONPATH = "$Root\src;$SauHome"
 $env:SAU_HOME = $SauHome
 
 function Invoke-SessionCheck {
-    param([string[]]$Cmd)
-    & @Cmd
+    param(
+        [Parameter(Mandatory)][string]$Executable,
+        [Parameter(ValueFromRemainingArguments = $true)][string[]]$Remaining
+    )
+    & $Executable @Remaining
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -62,7 +65,7 @@ switch ($Platform) {
     'douyin' {
         $Acct = Get-OrDefault $Account (Get-OrDefault $env:SAU_DOUYIN_ACCOUNT 'main')
         if ($Check) {
-            Invoke-SessionCheck @($SauPy, "$Root\src\douyin_session.py", '--account', $Acct)
+            Invoke-SessionCheck $SauPy "$Root\src\douyin_session.py" '--account' $Acct
             exit 0
         }
         if ($Force) {
@@ -71,8 +74,9 @@ switch ($Platform) {
             Remove-Item $cookie, $BrowserProfile -Recurse -Force -ErrorAction SilentlyContinue
         }
         & $SauPy "$Root\src\douyin_login.py" --login --account $Acct
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         Write-Host "登录完成，正在校验..."
-        Invoke-SessionCheck @($SauPy, "$Root\src\douyin_session.py", '--account', $Acct)
+        Invoke-SessionCheck $SauPy "$Root\src\douyin_session.py" '--account' $Acct
     }
     'bilibili' {
         $Acct = Get-OrDefault $Account (Get-OrDefault $env:SAU_BILIBILI_ACCOUNT 'main')
@@ -107,7 +111,7 @@ switch ($Platform) {
     'shipinhao' {
         $Acct = Get-OrDefault $Account (Get-OrDefault $env:SAU_SHIPINHAO_ACCOUNT 'main')
         if ($Check) {
-            Invoke-SessionCheck @($SauPy, "$Root\src\shipinhao_session.py", '--account', $Acct)
+            Invoke-SessionCheck $SauPy "$Root\src\shipinhao_session.py" '--account' $Acct
             exit 0
         }
         if ($Force) {
@@ -120,38 +124,38 @@ switch ($Platform) {
     'eastmoney' {
         $Acct = Get-OrDefault $Account (Get-OrDefault $env:EASTMONEY_ACCOUNT 'main')
         if ($Check) {
-            Invoke-SessionCheck @($SauPy, "$Root\src\eastmoney_session.py", '--account', $Acct)
+            Invoke-SessionCheck $SauPy "$Root\src\eastmoney_session.py" '--account' $Acct
             exit 0
         }
         if ($Force) {
             Remove-Item (Join-Path $SauHome "cookies\eastmoney_$Acct.json") -Force -ErrorAction SilentlyContinue
         }
         & $SauPy "$Root\src\eastmoney_session.py" --login --account $Acct
-        Invoke-SessionCheck @($SauPy, "$Root\src\eastmoney_session.py", '--account', $Acct)
+        Invoke-SessionCheck $SauPy "$Root\src\eastmoney_session.py" '--account' $Acct
     }
     'xueqiu' {
         $Acct = Get-OrDefault $Account (Get-OrDefault $env:XUEQIU_ACCOUNT 'main')
         if ($Check) {
-            Invoke-SessionCheck @($SauPy, "$Root\src\xueqiu_session.py", '--account', $Acct)
+            Invoke-SessionCheck $SauPy "$Root\src\xueqiu_session.py" '--account' $Acct
             exit 0
         }
         if ($Force) {
             Remove-Item (Join-Path $SauHome "cookies\xueqiu_$Acct.json") -Force -ErrorAction SilentlyContinue
         }
         & $SauPy "$Root\src\xueqiu_session.py" --login --account $Acct
-        Invoke-SessionCheck @($SauPy, "$Root\src\xueqiu_session.py", '--account', $Acct)
+        Invoke-SessionCheck $SauPy "$Root\src\xueqiu_session.py" '--account' $Acct
     }
     'zhihu' {
         $Acct = Get-OrDefault $Account (Get-OrDefault $env:ZHIHU_ACCOUNT 'main')
         if ($Check) {
-            Invoke-SessionCheck @($SauPy, "$Root\src\zhihu_session.py", '--account', $Acct)
+            Invoke-SessionCheck $SauPy "$Root\src\zhihu_session.py" '--account' $Acct
             exit 0
         }
         if ($Force) {
             Remove-Item (Join-Path $SauHome "cookies\zhihu_$Acct.json") -Force -ErrorAction SilentlyContinue
         }
         & $SauPy "$Root\src\zhihu_session.py" --login --account $Acct
-        Invoke-SessionCheck @($SauPy, "$Root\src\zhihu_session.py", '--account', $Acct)
+        Invoke-SessionCheck $SauPy "$Root\src\zhihu_session.py" '--account' $Acct
     }
 }
 

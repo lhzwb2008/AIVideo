@@ -84,13 +84,15 @@ async def login_interactive(
             **launch,
         )
         await asyncio.sleep(0.8)
-        for old in list(context.pages):
-            if old.url in ("about:blank", ""):
+        if context.pages:
+            page = context.pages[0]
+            for extra in list(context.pages[1:]):
                 try:
-                    await old.close()
+                    await extra.close()
                 except Exception:
                     pass
-        page = await context.new_page()
+        else:
+            page = await context.new_page()
         try:
             await page.bring_to_front()
         except Exception:

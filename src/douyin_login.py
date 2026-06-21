@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import os
 from pathlib import Path
 
 from douyin_publisher import (
@@ -29,14 +30,17 @@ def profile_dir(*, root: Path | None = None, account: str | None = None) -> Path
 
 
 async def _fresh_page(context):
+    """复用 persistent context 默认标签；Windows 上盲目 new_page 常失败。"""
     await asyncio.sleep(0.8)
-    for old in list(context.pages):
-        if old.url in ("about:blank", ""):
+    if context.pages:
+        page = context.pages[0]
+        for extra in list(context.pages[1:]):
             try:
-                await old.close()
+                await extra.close()
             except Exception:
                 pass
-    page = await context.new_page()
+    else:
+        page = await context.new_page()
     try:
         await page.bring_to_front()
     except Exception:
@@ -216,6 +220,8 @@ async def login_interactive(
             "--window-size=1440,900",
         ],
     }
+    if os.name == "nt":
+        launch["args"].extend(["--disable-gpu", "--disable-dev-shm-usage"])
     chrome = _chrome_path()
     if chrome:
         launch["executable_path"] = chrome
@@ -257,7 +263,7 @@ async def login_interactive(
             flush=True,
         )
         print("扫码期间页面不会自动跳转，请安心扫码。", flush=True)
-        print("若窗口被挡住，请从 Dock 点 Google Chrome 切到前台。", flush=True)
+        print("若窗口被挡住，请从任务栏点 Google Chrome 切到前台。", flush=True)
 
         deadline = asyncio.get_event_loop().time() + timeout_s
         last_hint = 0.0
@@ -321,7 +327,15 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
     except Exception as exc:
-        print(f"登录异常: {exc}", file=sys.stderr)
+        msg = str(exc)
+        if "Target.createTarget" in msg or "Failed to open a new tab" in msg:
+            print(
+                "登录异常: Chrome 无法打开标签页。"
+                "请先关闭所有 Chrome 窗口，再执行: .\\scripts\\login-cn.ps1 douyin --force",
+                file=sys.stderr,
+            )
+        else:
+            print(f"登录异常: {exc}", file=sys.stderr)
         return 1
 
 
