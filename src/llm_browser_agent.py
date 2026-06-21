@@ -603,6 +603,7 @@ async def _bilibili_submit_errors(page) -> list[str]:
         "不能为空",
         "稿件标题",
         "请先上传",
+        "创作声明",
     )
     return [h for h in hints if h in body]
 
@@ -742,6 +743,98 @@ async def _bilibili_select_partition(page, *, tid: int = 207) -> None:
     print(f"  [script] ⚠️ B站分区未选中（目标 tid={tid}），继续…", flush=True)
 
 
+def _bilibili_creation_declaration_choices() -> list[str]:
+    raw = _env("BILIBILI_CREATION_DECLARATION", "")
+    if raw:
+        return [x.strip() for x in raw.split("|") if x.strip()]
+    return [
+        "含AI生成",
+        "AI生成",
+        "自主创作",
+        "自主拍摄",
+        "原创",
+    ]
+
+
+async def _bilibili_declaration_pending(page) -> bool:
+    body = await _bilibili_page_body(page)
+    if "请选择符合您视频内容的创作声明" in body:
+        return True
+    loc = page.get_by_text("请选择符合您视频内容的创作声明", exact=False).first
+    if not await loc.count():
+        return False
+    try:
+        return await loc.is_visible()
+    except Exception:
+        return False
+
+
+async def _bilibili_fill_creation_declaration(page) -> bool:
+    """B 站必填「创作声明」下拉框。"""
+    if not await _bilibili_declaration_pending(page):
+        return True
+
+    opened = False
+    for trigger in (
+        page.get_by_text("请选择符合您视频内容的创作声明", exact=False).first,
+        page.locator('input[placeholder*="创作声明"]').first,
+        page.locator('[class*="creation"]').filter(has_text="声明").first,
+    ):
+        if not await trigger.count():
+            continue
+        try:
+            if await trigger.is_visible():
+                await trigger.scroll_into_view_if_needed(timeout=8000)
+                await trigger.click(timeout=8000)
+                opened = True
+                await asyncio.sleep(0.8)
+                break
+        except Exception:
+            continue
+
+    if not opened:
+        label = page.get_by_text("创作声明", exact=True).first
+        if await label.count():
+            try:
+                await label.scroll_into_view_if_needed(timeout=8000)
+                row = label.locator("xpath=ancestor::div[1]")
+                pick = row.locator(
+                    '[class*="select"], [class*="dropdown"], input, [class*="input"]'
+                ).last
+                if await pick.count():
+                    await pick.click(timeout=8000)
+                    opened = True
+                    await asyncio.sleep(0.8)
+            except Exception:
+                pass
+
+    if not opened:
+        print("  [script] ⚠️ 未打开 B 站创作声明下拉框", flush=True)
+        return False
+
+    for choice in _bilibili_creation_declaration_choices():
+        for opt in (
+            page.get_by_role("option", name=choice).first,
+            page.locator(f'[role="option"]:has-text("{choice}")').first,
+            page.get_by_text(choice, exact=False).first,
+            page.locator(f'li:has-text("{choice}")').first,
+        ):
+            if not await opt.count():
+                continue
+            try:
+                if await opt.is_visible():
+                    await opt.click(timeout=8000)
+                    await asyncio.sleep(0.5)
+                    if not await _bilibili_declaration_pending(page):
+                        print(f"  [script] B站创作声明已选: {choice}", flush=True)
+                        return True
+            except Exception:
+                continue
+
+    print("  [script] ⚠️ B站创作声明未选中", flush=True)
+    return False
+
+
 async def _bilibili_remove_unwanted_tags(page, keep: list[str]) -> None:
     keep_lower = {k.lower() for k in keep}
     for _ in range(20):
@@ -783,6 +876,10 @@ async def _bilibili_fill_form(
     await page.keyboard.press("Control+A")
     await page.keyboard.press("Backspace")
     await tin.fill(title[:80])
+
+    if not await _bilibili_fill_creation_declaration(page):
+        print("  [script] ⚠️ 创作声明可能未填，投稿可能失败", flush=True)
+
     filled_desc = False
     for sel in (
         "div.ql-editor",
@@ -971,6 +1068,8 @@ async def _bilibili_find_submit_button(page):
 async def _bilibili_click_submit(page, *, title: str = "") -> bool:
     async def _try_once() -> bool:
         await bilibili_prepare_page(page)
+        if await _bilibili_declaration_pending(page):
+            await _bilibili_fill_creation_declaration(page)
         btn = None
         max_wait = int(_env("BILIBILI_SUBMIT_WAIT_ROUNDS", "15"))
         for i in range(max_wait):
