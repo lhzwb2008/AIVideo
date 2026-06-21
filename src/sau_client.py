@@ -26,6 +26,23 @@ def sau_home(root: Path | None = None) -> Path:
     return root / "vendor" / "social-auto-upload"
 
 
+def _setup_hint() -> str:
+    if os.name == "nt":
+        return "请先运行: .\\setup-windows.ps1\n或设置 SAU_BIN / SAU_HOME，见 .env.example"
+    return "请先运行: ./setup-sau.sh\n或设置 SAU_BIN / SAU_HOME，见 .env.example"
+
+
+def is_sau_config_error(message: str) -> bool:
+    """环境/配置类错误，重试无意义。"""
+    markers = (
+        "未找到 sau",
+        "SAU_BIN 不存在",
+        "SAU_HOME 目录不存在",
+        "未安装 patchright",
+    )
+    return any(m in (message or "") for m in markers)
+
+
 def resolve_sau_bin(root: Path | None = None) -> Path:
     explicit = _env("SAU_BIN")
     if explicit:
@@ -34,22 +51,20 @@ def resolve_sau_bin(root: Path | None = None) -> Path:
             raise SauError(f"SAU_BIN 不存在: {p}")
         return p
 
+    from sau_paths import sau_bin
+
     home = sau_home(root)
-    candidates: list[Path] = [
-        home / ".venv" / "bin" / "sau",
-        home / "venv" / "bin" / "sau",
-    ]
+    found = sau_bin(home)
+    if found:
+        return found
+
     which = shutil.which("sau")
     if which:
-        candidates.append(Path(which))
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
+        p = Path(which)
+        if p.is_file():
+            return p
 
-    raise SauError(
-        "未找到 sau 命令。请先运行: ./setup-sau.sh\n"
-        "或设置 SAU_BIN / SAU_HOME，见 .env.example"
-    )
+    raise SauError(f"未找到 sau 命令。{_setup_hint()}")
 
 
 def douyin_account() -> str:
@@ -73,7 +88,7 @@ def run_sau(
     bin_path = resolve_sau_bin(root)
     home = sau_home(root)
     if not home.is_dir():
-        raise SauError(f"SAU_HOME 目录不存在: {home}\n请运行 ./setup-sau.sh")
+        raise SauError(f"SAU_HOME 目录不存在: {home}\n{_setup_hint()}")
 
     env = os.environ.copy()
     env.setdefault("SAU_HOME", str(home))

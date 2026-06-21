@@ -191,6 +191,13 @@ WECHAT_DRAFT_ONLY=1
 
 ## 五、常见问题
 
+**Q: B站发布报「未找到 sau 命令」？**  
+A: Windows 上 sau 位于 `vendor\social-auto-upload\.venv\Scripts\sau.exe`。拉最新代码后重试；或在 `.env` 设：
+
+```ini
+SAU_BIN=C:/Users/Administrator/AIVideo/vendor/social-auto-upload/.venv/Scripts/sau.exe
+```
+
 **Q: PowerShell 里 `&&` 报错？**  
 A: Windows PowerShell 5.1 不支持 `&&`，请分两行或用分号：
 

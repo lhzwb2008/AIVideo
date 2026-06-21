@@ -106,9 +106,23 @@ def rel(path: Path) -> str:
 
 def run(cmd: list[str], *, label: str) -> None:
     log(f"\n[{label}] {' '.join(cmd)}")
-    proc = subprocess.run(cmd, cwd=ROOT, env=os.environ.copy())
+    proc = subprocess.run(
+        cmd, cwd=ROOT, env=os.environ.copy(), capture_output=True, text=True
+    )
+    if proc.stdout:
+        sys.stdout.write(proc.stdout)
+        if not proc.stdout.endswith("\n"):
+            sys.stdout.write("\n")
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+        if not proc.stderr.endswith("\n"):
+            sys.stderr.write("\n")
     if proc.returncode != 0:
-        raise RuntimeError(f"{label} 失败，退出码 {proc.returncode}")
+        detail = (proc.stderr or proc.stdout or "").strip()
+        msg = f"{label} 失败，退出码 {proc.returncode}"
+        if detail:
+            msg += f"\n{detail[-2000:]}"
+        raise RuntimeError(msg)
 
 
 def read_script_title(script_path: Path) -> str:
@@ -314,6 +328,9 @@ def _publish_with_retry(do_fn, *, label: str, dry_run: bool) -> str:
         try:
             return do_fn()
         except Exception as exc:  # noqa: BLE001
+            if _is_publish_config_error(exc):
+                log(f"  ↳ [{label}] 环境/配置错误（{exc}），跳过自动发布。")
+                return ""
             log(f"  ⚠️ [{label}] 第 {attempt} 次发布失败：{exc}")
             if dry_run or (max_attempts > 0 and attempt >= max_attempts):
                 log(f"  ↳ [{label}] 已达重试上限，跳过自动发布（不影响成片/手动发布）。")
@@ -503,9 +520,16 @@ def publish_xiaohongshu(video: Path, script_path: Path, *, dry_run: bool) -> str
 
 
 def _bilibili_non_retryable(exc: BaseException) -> bool:
-    from sau_client import bilibili_video_upload_skippable
+    from sau_client import bilibili_video_upload_skippable, is_sau_config_error
 
-    return bilibili_video_upload_skippable(str(exc))
+    msg = str(exc)
+    return bilibili_video_upload_skippable(msg) or is_sau_config_error(msg)
+
+
+def _is_publish_config_error(exc: BaseException) -> bool:
+    from sau_client import is_sau_config_error
+
+    return is_sau_config_error(str(exc))
 
 
 def _publish_forum_with_retry(
@@ -529,6 +553,9 @@ def _publish_forum_with_retry(
             if is_login_error(exc):
                 log(f"  🔐 [{label}] 登录问题：{exc}（应已弹窗等待扫码，正在重试…）")
                 continue
+            if _is_publish_config_error(exc):
+                log(f"  ↳ [{label}] 环境/配置错误（{exc}），跳过自动发布。")
+                return ""
             if non_retryable and non_retryable(exc):
                 log(f"  ↳ [{label}] 不可重试（{exc}），跳过本平台自动发布。")
                 return ""

@@ -17,6 +17,20 @@ def sau_python(home: Path) -> Path | None:
     return None
 
 
+def sau_bin(home: Path) -> Path | None:
+    """sau CLI（Windows: Scripts/sau.exe；Unix: bin/sau）。"""
+    for candidate in (
+        home / ".venv" / "Scripts" / "sau.exe",
+        home / ".venv" / "Scripts" / "sau",
+        home / ".venv" / "bin" / "sau",
+        home / "venv" / "Scripts" / "sau.exe",
+        home / "venv" / "bin" / "sau",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def sau_site_packages(home: Path) -> Path | None:
     for lib in ("Lib", "lib"):
         site = home / ".venv" / lib / "site-packages"

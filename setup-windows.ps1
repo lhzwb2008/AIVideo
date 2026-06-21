@@ -216,6 +216,9 @@ if (-not $SkipSau) {
 Write-Step "Smoke test"
 $env:PYTHONPATH = "$Root\src"
 & $MainPy -c 'from paths import ROOT; from invoke_script import main_python; print("OK", ROOT, main_python())'
+if (-not $SkipSau) {
+    & $MainPy -c 'from sau_client import resolve_sau_bin; print("sau", resolve_sau_bin())'
+}
 
 Write-Step "Done"
 Write-Host ""
