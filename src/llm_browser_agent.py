@@ -508,6 +508,20 @@ def _check_success(
             if text in state.body_snippet:
                 return True
 
+    if platform_key == "zhihu":
+        # 仅填标题会自动跳到 /p/xxx/edit，不能算发布成功
+        if "/edit" in url or url.rstrip("/").endswith("/write"):
+            return False
+        for text in ("发布成功", "已发布", "提交成功"):
+            if text in state.body_snippet:
+                return True
+        # 已发布文章页（无 /edit）
+        if "zhuanlan.zhihu.com/p/" in url and "/edit" not in url:
+            return True
+        if "creator/manage" in url and "drafts" not in url:
+            return True
+        return False
+
     url_success_markers = (
         "content/manage",
         "platform/post/list",
@@ -540,6 +554,8 @@ def _check_success(
     for pat in success_patterns:
         if pat.lower() in url:
             if pat.lower() == "publish/success" and platform_key == "xiaohongshu":
+                continue
+            if platform_key == "zhihu":
                 continue
             return True
     return False
@@ -697,18 +713,91 @@ def _xhs_use_maximized_window() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+async def _xhs_apply_page_zoom(page) -> None:
+    raw = _env("XHS_BROWSER_ZOOM", "0.85").strip()
+    try:
+        zoom = float(raw)
+    except ValueError:
+        zoom = 0.85
+    if zoom <= 0 or zoom >= 1.0:
+        return
+    try:
+        await page.evaluate(
+            "(z) => { document.body.style.zoom = String(z); }",
+            zoom,
+        )
+        await asyncio.sleep(0.3)
+        print(f"  [script] 小红书页面缩放 {zoom}", flush=True)
+    except Exception:
+        pass
+
+
+async def _xhs_try_collapse_preview(page) -> None:
+    try:
+        collapsed = await page.evaluate(
+            """() => {
+            for (const t of ['收起预览', '关闭预览', '收起']) {
+              for (const el of document.querySelectorAll('button, span, div')) {
+                if ((el.innerText || '').trim() !== t) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width < 8 || r.height < 8) continue;
+                el.click();
+                return t;
+              }
+            }
+            return '';
+        }"""
+        )
+        if collapsed:
+            print(f"  [script] 已收起预览面板（{collapsed}）", flush=True)
+            await asyncio.sleep(0.4)
+    except Exception:
+        pass
+
+
+async def _xhs_publish_button_visible(page) -> bool:
+    try:
+        return bool(
+            await page.evaluate(
+                """() => {
+                const ok = (t) => t === '发布' || t === '立即发布';
+                for (const b of document.querySelectorAll('button, [role="button"]')) {
+                  const t = (b.innerText || '').trim();
+                  if (!ok(t)) continue;
+                  const r = b.getBoundingClientRect();
+                  if (r.width < 48 || r.height < 22) continue;
+                  if (r.left < 100) continue;
+                  if (r.top >= 0 && r.bottom <= window.innerHeight + 4) return true;
+                }
+                return false;
+            }"""
+            )
+        )
+    except Exception:
+        return False
+
+
 async def _xhs_scroll_to_publish(page) -> None:
     await page.evaluate(
         """() => {
-        for (const sel of [
-          '.publish-container', '[class*="publish-container"]',
-          '[class*="Publish"]', 'main', '[class*="content"]',
-        ]) {
-          for (const el of document.querySelectorAll(sel)) {
-            if (el.scrollHeight > el.clientHeight + 40) {
-              el.scrollTop = el.scrollHeight;
-            }
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const scrollables = [];
+        for (const el of document.querySelectorAll('*')) {
+          const r = el.getBoundingClientRect();
+          if (r.left < 100 || r.width < 180) continue;
+          if (r.left > vw - 300) continue;
+          const st = getComputedStyle(el);
+          if ((st.overflowY === 'auto' || st.overflowY === 'scroll')
+              && el.scrollHeight > el.clientHeight + 40) {
+            scrollables.push(el);
           }
+        }
+        scrollables.sort(
+          (a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)
+        );
+        for (const el of scrollables.slice(0, 6)) {
+          el.scrollTop = el.scrollHeight;
         }
         window.scrollTo(0, Math.max(
           document.body.scrollHeight,
@@ -716,13 +805,13 @@ async def _xhs_scroll_to_publish(page) -> None:
         ));
     }"""
     )
-    for _ in range(10):
+    for _ in range(12):
         try:
             await page.keyboard.press("End")
-            await page.mouse.wheel(0, 800)
+            await page.mouse.wheel(0, 900)
         except Exception:
             pass
-        await asyncio.sleep(0.12)
+        await asyncio.sleep(0.1)
 
 
 async def xhs_prepare_page(page) -> None:
@@ -747,10 +836,17 @@ async def xhs_prepare_page(page) -> None:
             pass
     await dismiss_overlays(page, platform_key="xiaohongshu")
     await _xhs_disable_pk_cover(page)
+    await _xhs_try_collapse_preview(page)
+    await _xhs_apply_page_zoom(page)
     await _xhs_scroll_to_publish(page)
     vp = _xhs_viewport()
     mode = "最大化" if _xhs_use_maximized_window() else f"{vp['width']}x{vp['height']}"
-    print(f"  [script] 小红书页面 {mode}，已滚至底部", flush=True)
+    visible = await _xhs_publish_button_visible(page)
+    print(
+        f"  [script] 小红书页面 {mode}，已滚至底部"
+        f"（发布按钮{'可见' if visible else '不可见，将继续尝试'}）",
+        flush=True,
+    )
 
 
 async def _bilibili_submit_errors(page) -> list[str]:
@@ -1843,14 +1939,47 @@ async def _xhs_publish_succeeded(page) -> bool:
     return False
 
 
+async def _xhs_js_click_publish(page) -> str:
+    try:
+        return str(
+            await page.evaluate(
+                """() => {
+                const ok = (t) => t === '发布' || t === '立即发布';
+                const vh = window.innerHeight;
+                const vw = window.innerWidth;
+                let best = null;
+                for (const b of document.querySelectorAll('button, [role="button"]')) {
+                  const t = (b.innerText || '').trim();
+                  if (!ok(t)) continue;
+                  const r = b.getBoundingClientRect();
+                  if (r.width < 48 || r.height < 22) continue;
+                  if (r.left < 100 || r.left > vw - 280) continue;
+                  const inFooter = r.bottom >= vh - 96;
+                  const visible = r.top >= -2 && r.bottom <= vh + 4;
+                  if (!visible && !inFooter) continue;
+                  const score = (inFooter ? 2000 : 0) + r.bottom + r.width;
+                  if (!best || score > best.score) best = { b, t, score };
+                }
+                if (!best) return '';
+                best.b.scrollIntoView({ block: 'center', inline: 'center' });
+                best.b.click();
+                return best.t;
+            }"""
+            )
+        ).strip()
+    except Exception as exc:
+        print(f"  [script] JS 点击发布异常: {exc}", flush=True)
+        return ""
+
+
 async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
     confirm_texts = ("确认发布", "确定发布", "确认", "确定")
     clicked = False
 
     await xhs_prepare_page(page)
 
-    for tick in range(30):
-        if tick > 0 and tick % 10 == 0:
+    for tick in range(12):
+        if tick > 0 and tick % 4 == 0:
             print(f"  [script] 仍在等待小红书发布… ({tick}s)", flush=True)
         await dismiss_overlays(page, platform_key="xiaohongshu")
         await _xhs_disable_pk_cover(page)
@@ -1860,58 +1989,36 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
             print("  [script] 检测到发布成功", flush=True)
             return True
 
-        try:
-            js_clicked = await page.evaluate(
-                """() => {
-                const labels = ['立即发布', '发布'];
-                const candidates = [];
-                for (const n of document.querySelectorAll(
-                  'button, [role="button"], a, div, span'
-                )) {
-                  const t = (n.innerText || '').trim();
-                  if (!t) continue;
-                  for (const label of labels) {
-                    if (t !== label && !t.startsWith(label)) continue;
-                    const r = n.getBoundingClientRect();
-                    if (r.width < 30 || r.height < 16) continue;
-                    candidates.push({ n, r, label, score: r.bottom + r.width });
-                  }
-                }
-                candidates.sort((a, b) => b.score - a.score);
-                for (const c of candidates) {
-                  if (c.r.bottom < 0 || c.r.top > window.innerHeight + 2) continue;
-                  try {
-                    c.n.scrollIntoView({ block: 'center' });
-                    c.n.click();
-                    return c.label;
-                  } catch (e) {}
-                }
-                return '';
-            }"""
-            )
-        except Exception as exc:
-            print(f"  [script] JS 点击发布异常: {exc}", flush=True)
-            js_clicked = ""
+        js_clicked = await _xhs_js_click_publish(page)
         if js_clicked:
             print(f"  [script] 已通过 JS 点击小红书「{js_clicked}」", flush=True)
             clicked = True
+        elif not await _xhs_publish_button_visible(page):
+            await _xhs_apply_page_zoom(page)
+            await _xhs_scroll_to_publish(page)
 
         if not clicked:
             for name in ("立即发布", "发布"):
                 for btn in (
-                    page.locator('[class*="footer"] button').filter(has_text=name).last,
-                    page.locator('[class*="publish"] button').filter(has_text=name).last,
-                    page.locator('[class*="submit"]').filter(has_text=name).last,
+                    page.locator(".publish-container button").filter(
+                        has_text=re.compile(f"^{re.escape(name)}$")
+                    ).last,
+                    page.locator('[class*="footer"] button').filter(
+                        has_text=re.compile(f"^{re.escape(name)}$")
+                    ).last,
+                    page.locator('[class*="bottom"] button').filter(
+                        has_text=re.compile(f"^{re.escape(name)}$")
+                    ).last,
                     page.get_by_role("button", name=name, exact=True),
                     page.locator(f'button:text-is("{name}")'),
-                    page.locator(".publish-container").locator(
-                        f'button:has-text("{name}")'
-                    ).last,
                 ):
                     try:
                         if not await btn.count():
                             continue
-                        target = btn.first if await btn.count() == 1 else btn.last
+                        target = btn.last
+                        box = await target.bounding_box()
+                        if box and box.get("x", 0) < 100:
+                            continue
                         await target.scroll_into_view_if_needed(timeout=3000)
                         try:
                             if not await target.is_enabled():
@@ -1927,30 +2034,32 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
                 if clicked:
                     break
 
-        await asyncio.sleep(0.8)
-        for ct in confirm_texts:
-            btn = page.get_by_role("button", name=ct).first
-            try:
-                if await btn.count() and await btn.is_visible():
-                    await btn.click(timeout=3000)
-                    clicked = True
-            except Exception:
-                pass
-        await asyncio.sleep(1)
+        if clicked:
+            await asyncio.sleep(0.8)
+            for ct in confirm_texts:
+                btn = page.get_by_role("button", name=ct, exact=True)
+                try:
+                    if await btn.count() and await btn.is_visible():
+                        await btn.click(timeout=3000)
+                except Exception:
+                    pass
+            await asyncio.sleep(1)
+            if await _xhs_publish_succeeded(page):
+                print("  [script] 检测到发布成功", flush=True)
+                return True
+            break
 
-        if await _xhs_publish_succeeded(page):
-            print("  [script] 检测到发布成功", flush=True)
-            return True
+        await asyncio.sleep(0.6)
 
     if clicked:
-        for wait in range(8):
+        for wait in range(6):
             await asyncio.sleep(1)
             if await _xhs_publish_succeeded(page):
                 print("  [script] 检测到发布成功", flush=True)
                 return True
         print("  [script] 已点击发布，视为已提交", flush=True)
         return True
-    print("  [script] ⚠️ 未找到小红书发布按钮（请检查视口是否最大化）", flush=True)
+    print("  [script] ⚠️ 未找到小红书发布按钮（可设 XHS_BROWSER_ZOOM=0.8）", flush=True)
     return False
 
 
@@ -2179,6 +2288,51 @@ async def _llm_assist_prefill(
             await _shipinhao_declare_original(page)
             print("  [script] 视频号已脚本预填，LLM 仅需点发表", flush=True)
             return True
+
+        if platform_key == "zhihu":
+            forum_dir = fields.get("forum_dir")
+            if not forum_dir:
+                return False
+            from forum_editor_fill import fill_zhihu_body_sections
+            from zhihu_publisher import (
+                _ensure_logged_in,
+                _fill_title,
+                _insert_body_image,
+                _open_editor,
+                _wait_editor_image_count,
+                parse_forum_pack,
+            )
+
+            data = parse_forum_pack(Path(str(forum_dir)))
+            expected_image_paths = []
+            if data.get("cover"):
+                expected_image_paths.append(str(Path(data["cover"]).resolve()))
+            for sec in data.get("sections") or []:
+                if sec.get("image"):
+                    expected_image_paths.append(str(Path(sec["image"]).resolve()))
+            expected_images = len(dict.fromkeys(expected_image_paths))
+
+            await _open_editor(page, data["title"])
+            await _ensure_logged_in(page)
+            await _fill_title(page, data["title"])
+            await fill_zhihu_body_sections(
+                page,
+                data["sections"],
+                disclaimer=data.get("disclaimer") or "",
+                insert_image=_insert_body_image,
+                cover_image=data.get("cover"),
+            )
+            actual = await _wait_editor_image_count(page, expected_images)
+            if actual < expected_images:
+                print(
+                    f"  [script] ⚠️ 知乎配图 {actual}/{expected_images}，继续…",
+                    flush=True,
+                )
+            print(
+                "  [script] 知乎已脚本预填（标题/正文/配图），LLM 仅需发布",
+                flush=True,
+            )
+            return True
     except Exception as exc:
         print(f"  [script] {platform_key} 预填未完成，LLM 继续: {exc}", flush=True)
     return False
@@ -2202,6 +2356,14 @@ async def _llm_assist_try_publish(
         if platform_key == "shipinhao":
             await dismiss_overlays(page, platform_key="shipinhao")
             return await _shipinhao_click_publish(page)
+        if platform_key == "zhihu":
+            from zhihu_publisher import _click_publish, _save_draft
+
+            if fields.get("auto_publish"):
+                url = await _click_publish(page)
+                return bool(url)
+            await _save_draft(page)
+            return True
     except Exception as exc:
         print(f"  [script] {platform_key} 脚本投稿: {exc}", flush=True)
     return False
@@ -2324,6 +2486,16 @@ async def _llm_action_fallback(
             ok = await _shipinhao_click_publish(page)
             return f"fallback:shipinhao_publish ok={ok}"
 
+    if platform_key == "zhihu":
+        if any(k in blob for k in ("发布", "保存草稿", "存草稿", "草稿")):
+            from zhihu_publisher import _click_publish, _save_draft
+
+            if fields.get("auto_publish") and "草稿" not in blob:
+                url = await _click_publish(page)
+                return f"fallback:zhihu_publish ok={bool(url)}"
+            await _save_draft(page)
+            return "fallback:zhihu_draft ok=True"
+
     if platform_key == "xiaohongshu":
         if any(
             k in blob
@@ -2406,6 +2578,11 @@ async def execute_action(
             if platform_key == "xiaohongshu" and name == "click":
                 ok = await _xhs_click_publish(page, start_url=page.url)
                 return f"fallback:xhs_publish ok={ok}"
+            if platform_key == "zhihu" and name == "click":
+                ok = await _llm_assist_try_publish(
+                    page, platform_key=platform_key, fields=fields, cfg=cfg
+                )
+                return f"fallback:zhihu_publish ok={ok}"
             fb = await _llm_action_fallback(
                 page, action, platform_key=platform_key, fields=fields, cfg=cfg
             )
@@ -2536,7 +2713,7 @@ async def run_agent(
     if platform_key == "bilibili" and fields:
         bili_tags = _parse_bilibili_tags(str(fields.get("tags") or ""))
 
-    llm_assist_platforms = ("bilibili", "douyin", "shipinhao", "xiaohongshu")
+    llm_assist_platforms = ("bilibili", "douyin", "shipinhao", "xiaohongshu", "zhihu")
     if fields and platform_key in llm_assist_platforms:
         if platform_key == "xiaohongshu" or not cfg.use_deterministic:
             await _llm_assist_prefill(
@@ -2581,7 +2758,7 @@ async def run_agent(
         if platform_key == "xiaohongshu":
             await xhs_prepare_page(page)
             await _xhs_disable_pk_cover(page)
-        elif fields and platform_key in ("bilibili", "douyin", "shipinhao"):
+        elif fields and platform_key in ("bilibili", "douyin", "shipinhao", "zhihu"):
             if await _llm_ready_to_publish(page, platform_key) and await _llm_assist_try_publish(
                 page, platform_key=platform_key, fields=fields, cfg=cfg
             ):

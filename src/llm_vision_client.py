@@ -45,7 +45,7 @@ def browser_max_steps(platform_key: str | None = None) -> int:
             return max(1, int(per))
         defaults = {
             "xiaohongshu": 15,
-            "zhihu": 30,
+            "zhihu": 12,
             "bilibili": 12,
             "douyin": 12,
             "shipinhao": 12,

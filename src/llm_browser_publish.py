@@ -333,18 +333,16 @@ def build_task(platform: str, fields: dict) -> str:
 （预填标题: {fields['title'][:40]}；标签: {tag_line or '无'}）"""
     if platform == "zhihu":
         publish_step = (
-            "填写完成后点击「发布」"
+            "点击「发布」并确认"
             if fields.get("auto_publish")
-            else "填写完成后点击「保存草稿」"
+            else "点击「保存草稿」"
         )
-        return f"""在知乎专栏写作页发布长文（像真人运营一样逐步操作）：
-1. 标题: {fields['title']}
-2. 论坛包: {fields.get('forum_dir')}（post.md 为正文，images/ 为配图）
-3. 先 type 标题，再按 post.md 分段填入正文；需要配图时在对应段落点击插入图片
-4. 正文参考（勿一次粘贴整篇，分段 type）:\n{fields.get('desc', '')[:1200]}
-5. {publish_step}
-6. 每步只做一个 click/type/wait；不要重复同一操作
-7. 成功：出现该标题的草稿/已发布文章"""
+        return f"""在知乎专栏写作页发布长文：
+1. **标题/正文/配图已由系统脚本预填**（论坛包 {fields.get('forum_dir')}），禁止再 type 重填标题或正文
+2. 检查编辑器内容无误后，{publish_step}
+3. 只有明确出现扫码/验证码时才 need_human
+4. 成功：文章页（zhuanlan.zhihu.com/p/… 且无 /edit）或出现「发布成功」
+（标题: {fields['title'][:60]}）"""
     raise PublishError(f"未知平台 task: {platform}")
 
 
@@ -377,9 +375,8 @@ def success_patterns(platform: str) -> list[str]:
         ],
         "zhihu": [
             "creator/manage",
-            "drafts",
             "发布成功",
-            "zhuanlan.zhihu.com/p/",
+            "已发布",
         ],
     }
     return patterns[platform]
@@ -609,7 +606,12 @@ async def publish_zhihu_async(
                     pass
             result["forum_dir"] = str(forum_dir)
             result["title"] = fields.get("title")
-            result["published"] = bool(fields.get("auto_publish"))
+            url = str(result.get("url") or "")
+            result["published"] = bool(
+                fields.get("auto_publish")
+                and result.get("ok")
+                and "/edit" not in url
+            )
             result["draft_only"] = not fields.get("auto_publish")
             return result
         finally:
