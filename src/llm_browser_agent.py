@@ -286,6 +286,12 @@ async def try_upload_video(
 ) -> bool:
     """按平台优先注入 file input；抖音复用 douyin_publisher 等待逻辑。"""
     platform = (platform or "douyin").lower()
+    try:
+        from paths import resolve_video_for_publish
+
+        video_path = resolve_video_for_publish(video_path)
+    except FileNotFoundError:
+        return False
 
     if platform == "douyin":
         try:

@@ -921,6 +921,13 @@ def pipeline_after_script(
     xiaohongshu_title = publish_xiaohongshu(video, script_path, dry_run=False)
     shipinhao_title = publish_shipinhao(video, script_path, dry_run=False)
 
+    forum_dir = video.parent / video.stem
+    if forum_dir.is_dir() and (forum_dir / "post.md").is_file():
+        wechat_title = publish_wechat(forum_dir, dry_run=False)
+        eastmoney_title = publish_eastmoney(forum_dir, dry_run=False)
+        xueqiu_title = publish_xueqiu(forum_dir, dry_run=False)
+        zhihu_title = publish_zhihu(forum_dir, dry_run=False)
+
     append_history_fn(script_path)
     date_tag = datetime.now().strftime("%Y%m%d")
     archived = archive_publish_bundle(video, date_tag=date_tag)
@@ -928,11 +935,6 @@ def pipeline_after_script(
     if archived.get("forum"):
         log(f"  论坛图文：{rel(archived['forum'])}/")
         log(f"  发布文案：{rel(archived['forum'])}/README.md")
-        if (archived["forum"] / "post.md").is_file():
-            wechat_title = publish_wechat(archived["forum"], dry_run=False)
-        eastmoney_title = publish_eastmoney(archived["forum"], dry_run=False)
-        xueqiu_title = publish_xueqiu(archived["forum"], dry_run=False)
-        zhihu_title = publish_zhihu(archived["forum"], dry_run=False)
 
     print_manual_publish_pack(
         script_path,

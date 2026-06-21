@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 from invoke_script import script_argv
-from paths import ROOT
+from paths import ROOT, resolve_video_for_publish
 
 LLM_PLATFORMS = {
     "douyin": "抖音",
@@ -34,6 +34,38 @@ def llm_browser_default() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def _read_llm_publish_title(platform: str, *, video: Path) -> str:
+    import json
+
+    from locale_env import locale_logs_dir
+
+    stem = video.stem
+    for base in (locale_logs_dir(), ROOT / "logs"):
+        log_path = base / LOG_NAMES[platform]
+        if not log_path.is_file():
+            continue
+        try:
+            data = json.loads(log_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not data.get("ok"):
+            raise RuntimeError(
+                f"{LLM_PLATFORMS[platform]} LLM 发布未确认成功（见 {log_path}）"
+            )
+        logged = str(data.get("video") or "").strip()
+        if logged:
+            logged_stem = Path(logged).stem
+            if logged_stem and logged_stem != stem:
+                raise RuntimeError(
+                    f"{LLM_PLATFORMS[platform]} 发布记录与当前视频不一致"
+                    f"（日志 {logged_stem} ≠ {stem}，见 {log_path}）"
+                )
+        title = str(data.get("title") or "").strip()
+        if title:
+            return title
+    return stem
+
+
 def publish_llm_browser(
     platform: str,
     video: Path,
@@ -45,9 +77,7 @@ def publish_llm_browser(
     """调用 scripts/publish-llm-browser.sh；成功返回标题。"""
     if platform not in LLM_PLATFORMS:
         raise ValueError(f"未知 LLM 平台: {platform}")
-    video = video.resolve()
-    if not video.is_file():
-        raise FileNotFoundError(f"视频不存在: {video}")
+    video = resolve_video_for_publish(video)
 
     cmd = script_argv(
         "publish-llm-browser",
@@ -66,31 +96,15 @@ def publish_llm_browser(
         cmd.append("--confirm")
 
     label = LLM_PLATFORMS[platform]
-    proc = subprocess.run(cmd, cwd=ROOT, env=os.environ.copy())
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    proc = subprocess.run(cmd, cwd=ROOT, env=env)
     if proc.returncode != 0:
         raise RuntimeError(f"{label} LLM 发布失败，退出码 {proc.returncode}")
     if dry_run:
         return ""
 
-    import json
-    from locale_env import locale_logs_dir
-
-    for base in (locale_logs_dir(), ROOT / "logs"):
-        log_path = base / LOG_NAMES[platform]
-        if not log_path.is_file():
-            continue
-        try:
-            data = json.loads(log_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not data.get("ok"):
-            raise RuntimeError(
-                f"{label} LLM 发布未确认成功（见 {log_path}）"
-            )
-        title = str(data.get("title") or "").strip()
-        if title:
-            return title
-    return video.stem
+    return _read_llm_publish_title(platform, video=video)
 
 
 def publish_llm_browser_forum(
