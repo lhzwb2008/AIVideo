@@ -661,11 +661,36 @@ def compose_cold_open_clip(
                 end=end,
             )
         )
+
+    video_chain = ",".join(
+        [_kenburns_filter(0, duration)] if fx_mode == "off" else [_cold_open_video_filter(duration, fx_mode)]
+    )
+    subtitle_entries = _collect_subtitle_entries(phrases, spans, delay=delay)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt" and subtitle_entries:
+        print(f"[compose] Windows ASS subtitles ({len(subtitle_entries)} cues)", file=sys.stderr)
+        temp = work_dir / "_pass1_cold_open.mp4"
+        _encode_still_with_audio(
+            image_path=image_path,
+            audio_path=audio_path,
+            out_path=temp,
+            vf_chain=video_chain,
+            duration=duration,
+        )
+        ass_path = work_dir / "cold_open.ass"
+        _write_ass_subtitles(subtitle_entries, ass_path)
+        _burn_ass_on_video(input_mp4=temp, ass_path=ass_path, out_path=out_path)
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        return out_path
+
     filter_chain = ",".join(filters)
     if os.name == "nt":
         print(f"[compose] Windows drawtext font: {drawtext_font_path()}", file=sys.stderr)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     vf_args, map_args = _video_filter_cmd_parts(filter_chain, work_dir)
     cmd = [
         ffmpeg_executable(), "-y",
@@ -1093,6 +1118,120 @@ def _drawtext_filter(
     return "drawtext=" + ":".join(parts)
 
 
+def _ass_timestamp(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+
+def _ass_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+
+
+def _write_ass_subtitles(
+    entries: list[tuple[str, float, float]],
+    path: Path,
+) -> None:
+    font_name = "SimHei" if os.name == "nt" else "Hiragino Sans GB"
+    margin_v = max(20, CANVAS_H - SUBTITLE_Y)
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "WrapStyle: 0",
+        f"PlayResX: {CANVAS_W}",
+        f"PlayResY: {CANVAS_H}",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Default,{font_name},{SUBTITLE_FONT_SIZE},&H00FFFFFF,&H000000FF,&H00000000,&H90000000,0,0,0,0,100,100,0,0,1,4,0,2,24,24,{margin_v},1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for phrase, start, end in entries:
+        text = _ass_escape(phrase.replace("\n", "\\N"))
+        lines.append(
+            f"Dialogue: 0,{_ass_timestamp(start)},{_ass_timestamp(end)},Default,,0,0,0,,{text}"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+
+
+def _subtitles_filter(ass_path: Path) -> str:
+    esc = _escape_drawtext_path(str(ass_path.resolve()))
+    if os.name == "nt":
+        fontsdir = _escape_drawtext_path(r"C:\Windows\Fonts")
+        return f"subtitles={esc}:fontsdir={fontsdir}"
+    return f"subtitles={esc}"
+
+
+def _encode_still_with_audio(
+    *,
+    image_path: Path,
+    audio_path: Path,
+    out_path: Path,
+    vf_chain: str,
+    duration: float,
+    audio_start_s: float = 0.0,
+) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd: list[str] = [
+        ffmpeg_executable(), "-y",
+        "-loop", "1", "-i", str(image_path),
+    ]
+    if audio_start_s > 0:
+        cmd += ["-ss", f"{audio_start_s:.3f}", "-i", str(audio_path)]
+    else:
+        cmd += ["-i", str(audio_path)]
+    cmd += [
+        "-vf", vf_chain,
+        "-af", "pan=stereo|c0=c0|c1=c0",
+        "-r", "30",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
+        "-shortest",
+        "-t", f"{duration:.3f}",
+        str(out_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg 视频轨合成失败:\n{proc.stderr[-2000:]}")
+
+
+def _burn_ass_on_video(*, input_mp4: Path, ass_path: Path, out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        ffmpeg_executable(), "-y",
+        "-i", str(input_mp4),
+        "-vf", _subtitles_filter(ass_path),
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        str(out_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg ASS 字幕烧录失败:\n{proc.stderr[-2000:]}")
+
+
+def _collect_subtitle_entries(
+    phrases: list[str],
+    spans: list[tuple[float, float]],
+    *,
+    delay: float = 0.0,
+) -> list[tuple[str, float, float]]:
+    entries: list[tuple[str, float, float]] = []
+    for phrase, (start, end) in zip(phrases, spans):
+        sub_start = max(start, delay)
+        if sub_start >= end - 0.02:
+            continue
+        entries.append((phrase, sub_start, end))
+    return entries
+
+
 def compose_clip(
     *,
     base_image: Path,
@@ -1114,7 +1253,31 @@ def compose_clip(
     work_dir.mkdir(parents=True, exist_ok=True)
     font = font_path()
 
-    filters: list[str] = [_kenburns_filter(kenburns_direction, duration)]
+    video_chain = _kenburns_filter(kenburns_direction, duration)
+    subtitle_entries = _collect_subtitle_entries(phrases, spans)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt" and subtitle_entries:
+        print(f"[compose] Windows ASS subtitles ({len(subtitle_entries)} cues)", file=sys.stderr)
+        temp = work_dir / "_pass1_clip.mp4"
+        _encode_still_with_audio(
+            image_path=base_image,
+            audio_path=audio_path,
+            out_path=temp,
+            vf_chain=video_chain,
+            duration=duration,
+            audio_start_s=audio_start_s,
+        )
+        ass_path = work_dir / "clip.ass"
+        _write_ass_subtitles(subtitle_entries, ass_path)
+        _burn_ass_on_video(input_mp4=temp, ass_path=ass_path, out_path=out_path)
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        return out_path
+
+    filters: list[str] = [video_chain]
     for idx, (phrase, (start, end)) in enumerate(zip(phrases, spans)):
         tf = _make_phrase_textfile(phrase, work_dir / f"phrase_{idx:02d}.txt", fontsize=SUBTITLE_FONT_SIZE)
         filters.append(
@@ -1129,7 +1292,6 @@ def compose_clip(
         )
     filter_chain = ",".join(filters)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     vf_args, map_args = _video_filter_cmd_parts(filter_chain, work_dir)
     cmd = [
         ffmpeg_executable(), "-y",
