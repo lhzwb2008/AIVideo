@@ -92,12 +92,31 @@ def stamp_llm_publish_log(platform: str, video: Path, *, title: str = "") -> Non
     from datetime import datetime, timezone
 
     video = resolve_video_for_publish(video)
+    try:
+        cooldown = int(os.environ.get("LLM_BROWSER_STAMP_COOLDOWN", "180"))
+    except ValueError:
+        cooldown = 180
     for log_path in llm_publish_log_paths(platform):
         if log_path.is_file():
             try:
                 existing = json.loads(log_path.read_text(encoding="utf-8"))
-                if existing.get("ok") and Path(str(existing.get("video") or "")).stem == video.stem:
-                    return
+                logged_stem = Path(str(existing.get("video") or "")).stem
+                if logged_stem == video.stem:
+                    if existing.get("ok"):
+                        return
+                    started = str(
+                        existing.get("started_at") or existing.get("published_at") or ""
+                    ).strip()
+                    if started and cooldown > 0:
+                        try:
+                            t = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                            age = (
+                                datetime.now(timezone.utc) - t
+                            ).total_seconds()
+                            if age < cooldown:
+                                return
+                        except ValueError:
+                            pass
             except (OSError, json.JSONDecodeError):
                 pass
 
@@ -123,6 +142,33 @@ def write_llm_publish_log(platform: str, payload: dict) -> Path:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(text, encoding="utf-8")
     return paths[0]
+
+
+def flush_llm_publish_success(
+    platform: str,
+    video: Path,
+    *,
+    title: str = "",
+    url: str = "",
+    extra: dict | None = None,
+) -> None:
+    """发布刚确认成功时立即落盘，避免子进程退出前父进程误判失败并重试。"""
+    import json
+    from datetime import datetime, timezone
+
+    video = resolve_video_for_publish(video)
+    payload = {
+        "ok": True,
+        "video": str(video.resolve()),
+        "title": title,
+        "url": url,
+        "method": "llm_browser",
+        "published_at": datetime.now(timezone.utc).isoformat(),
+        "flushed_early": True,
+    }
+    if extra:
+        payload.update(extra)
+    write_llm_publish_log(platform, payload)
 
 
 def llm_browser_default() -> bool:
@@ -167,6 +213,28 @@ def read_llm_publish_title_if_ok(platform: str, video: Path) -> str:
         return _read_llm_publish_title(platform, video=video, retries=1)
     except RuntimeError:
         return ""
+
+
+def wait_for_llm_publish_ok(
+    platform: str,
+    video: Path,
+    *,
+    timeout_s: int | None = None,
+) -> str:
+    """轮询成功日志（Chrome 落盘/跳转有延迟，避免误重试导致重复发布）。"""
+    if timeout_s is None:
+        timeout_s = int(os.environ.get("LLM_BROWSER_SUCCESS_WAIT", "45"))
+    deadline = time.time() + max(5, timeout_s)
+    last_err = ""
+    while time.time() < deadline:
+        try:
+            return _read_llm_publish_title(platform, video=video, retries=1)
+        except RuntimeError as exc:
+            last_err = str(exc)
+            time.sleep(2)
+    raise RuntimeError(
+        f"{LLM_PLATFORMS[platform]} LLM 发布未确认成功（{last_err}）"
+    )
 
 
 def reconcile_llm_publish_titles(
@@ -256,7 +324,7 @@ def publish_llm_browser(
         raise RuntimeError(f"{label} LLM 发布子进程未启动")
     if proc.returncode != 0:
         try:
-            return _read_llm_publish_title(platform, video=video, retries=3)
+            return wait_for_llm_publish_ok(platform, video)
         except RuntimeError:
             pass
         cooldown = int(os.environ.get("LLM_BROWSER_PROFILE_COOLDOWN", "30"))
@@ -266,7 +334,7 @@ def publish_llm_browser(
     if dry_run:
         return ""
 
-    return _read_llm_publish_title(platform, video=video)
+    return wait_for_llm_publish_ok(platform, video)
 
 
 def publish_llm_browser_forum(
@@ -316,6 +384,7 @@ def publish_llm_browser_forum(
     import json
     from locale_env import locale_logs_dir
 
+    forum_resolved = str(forum_dir.resolve())
     title = ""
     for base in (locale_logs_dir(), ROOT / "logs"):
         for name in (LOG_NAMES[platform], f"last_{platform}_publish.json"):
@@ -330,6 +399,15 @@ def publish_llm_browser_forum(
                 raise RuntimeError(
                     f"{label} LLM 发布未确认成功（见 {log_path}）"
                 )
+            logged_forum = str(
+                data.get("forum_dir") or data.get("pack_dir") or ""
+            ).strip()
+            if logged_forum:
+                try:
+                    if Path(logged_forum).resolve() != Path(forum_resolved):
+                        continue
+                except OSError:
+                    continue
             title = str(data.get("title") or "").strip()
             if title:
                 return title

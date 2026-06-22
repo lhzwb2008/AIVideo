@@ -2374,7 +2374,11 @@ async def _xhs_click_publish(page, *, start_url: str = "") -> bool:
         await asyncio.sleep(0.6)
 
     if clicked:
-        for wait in range(6):
+        try:
+            post_wait = int(os.environ.get("XHS_PUBLISH_POST_CLICK_WAIT", "15"))
+        except ValueError:
+            post_wait = 15
+        for wait in range(max(6, post_wait)):
             await asyncio.sleep(1)
             if await _xhs_publish_succeeded(page):
                 print("  [script] 检测到发布成功", flush=True)
@@ -2517,28 +2521,67 @@ async def _llm_publish_success(
     history: list[str],
     steps: int,
     llm_calls: int,
+    video_path: Path | None = None,
+    fields: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    for _ in range(5):
+    try:
+        wait_s = int(os.environ.get("XHS_PUBLISH_SUCCESS_WAIT", "20"))
+    except ValueError:
+        wait_s = 20
+    if platform_key != "xiaohongshu":
+        wait_s = 5
+    for _ in range(max(1, wait_s)):
         await asyncio.sleep(1)
         state = await extract_page_state(page, screenshot_path=None)
         if _check_success(
             state, success_patterns, start_url=start_url, platform_key=platform_key
         ):
-            return {
+            hit = {
                 "ok": True,
                 "steps": steps,
                 "llm_calls": llm_calls,
                 "url": state.url,
                 "history": history,
             }
+            if video_path and platform_key in (
+                "douyin",
+                "shipinhao",
+                "xiaohongshu",
+                "bilibili",
+            ):
+                try:
+                    from publish_llm_browser import flush_llm_publish_success
+
+                    flush_llm_publish_success(
+                        platform_key,
+                        video_path,
+                        title=str((fields or {}).get("title") or ""),
+                        url=state.url,
+                    )
+                except Exception:
+                    pass
+            return hit
     if platform_key == "xiaohongshu" and _xhs_url_published(page.url):
-        return {
+        hit = {
             "ok": True,
             "steps": steps,
             "llm_calls": llm_calls,
             "url": page.url,
             "history": [*history, "published_query"],
         }
+        if video_path:
+            try:
+                from publish_llm_browser import flush_llm_publish_success
+
+                flush_llm_publish_success(
+                    platform_key,
+                    video_path,
+                    title=str((fields or {}).get("title") or ""),
+                    url=page.url,
+                )
+            except Exception:
+                pass
+        return hit
     return None
 
 
@@ -3060,6 +3103,8 @@ async def run_agent(
                         history=history,
                         steps=0,
                         llm_calls=0,
+                        video_path=video_path,
+                        fields=fields,
                     )
                     if hit:
                         print("  [script] 预填+脚本投稿成功", flush=True)
@@ -3102,6 +3147,8 @@ async def run_agent(
                     history=history,
                     steps=step,
                     llm_calls=llm_calls,
+                    video_path=video_path,
+                    fields=fields,
                 )
                 if hit:
                     print(f"  [agent] 成功 step={step} url={hit['url']}", flush=True)
@@ -3186,6 +3233,8 @@ async def run_agent(
                 history=history,
                 steps=step,
                 llm_calls=llm_calls,
+                video_path=video_path,
+                fields=fields,
             )
             if hit:
                 print(f"  [agent] 脚本兜底成功 step={step} url={hit['url']}", flush=True)

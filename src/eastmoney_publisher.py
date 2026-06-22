@@ -134,6 +134,23 @@ def _ensure_patchright():
         ) from exc
 
 
+def _resolve_forum_cover(pack_dir: Path) -> Path:
+    """竖版 cover.jpg 优先；缺失时回退横封面或正文配图。"""
+    for name in ("cover.jpg", "cover_landscape.jpg"):
+        p = pack_dir / name
+        if p.is_file():
+            return p
+    images = pack_dir / "images"
+    if images.is_dir():
+        for pattern in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
+            cands = sorted(images.glob(pattern))
+            if cands:
+                return cands[0]
+    raise EastmoneyPublishError(
+        f"缺少 cover.jpg（及 cover_landscape.jpg / images/* 回退）: {pack_dir}"
+    )
+
+
 def parse_forum_pack(pack_dir: Path) -> dict:
     post_md = pack_dir / "post.md"
     if not post_md.is_file():
@@ -209,9 +226,7 @@ def parse_forum_pack(pack_dir: Path) -> dict:
     flush_section()
     disclaimer = "\n".join(disclaimer_lines).strip()
 
-    cover = pack_dir / "cover.jpg"
-    if not cover.is_file():
-        raise EastmoneyPublishError(f"缺少 cover.jpg: {cover}")
+    cover = _resolve_forum_cover(pack_dir)
 
     if not title:
         raise EastmoneyPublishError("post.md 缺少 # 标题行")

@@ -832,6 +832,20 @@ def build_forum_pack(
 
     image_paths = _copy_slide_images(script, images_dir, video_path, len(slides) or 4)
     cover_path, cover_src = _write_cover(script_path, video_path, out_dir)
+    if not cover_path or not cover_path.is_file():
+        for cand in image_paths:
+            if cand.is_file():
+                dst = out_dir / "cover.jpg"
+                if _save_cover_jpg(cand, dst):
+                    cover_path = dst
+                    cover_src = cover_src or cand
+                    print(f"[forum] cover.jpg 回退自配图: {cand.name}")
+                    break
+        if not cover_path or not cover_path.is_file():
+            print(
+                "[forum] ⚠️ 未生成 cover.jpg，知乎预填可能失败"
+                "（请检查 ffmpeg 或 logs/.../cover.png）"
+            )
     landscape_src = cover_src or cover_path
     landscape_path = (
         _write_landscape_cover(landscape_src, out_dir) if landscape_src else None

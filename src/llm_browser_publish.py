@@ -417,6 +417,32 @@ async def _goto_page(page, url: str, *, timeout_ms: int = 90_000) -> None:
         raise last_exc
 
 
+_PLATFORM_HOST = {
+    "douyin": "creator.douyin.com",
+    "shipinhao": "channels.weixin.qq.com",
+    "xiaohongshu": "creator.xiaohongshu.com",
+    "bilibili": "member.bilibili.com",
+    "zhihu": "zhuanlan.zhihu.com",
+}
+
+
+async def _ensure_platform_page(context, platform: str):
+    """关闭 Profile 残留标签，新建页面并导航，避免上一平台页面串台。"""
+    target = platform_url(platform)
+    marker = _PLATFORM_HOST.get(platform, "")
+    for old in list(context.pages):
+        try:
+            await old.close()
+        except Exception:
+            pass
+    page = await context.new_page()
+    print(f"  打开 {target} …", flush=True)
+    await _goto_page(page, target)
+    if marker and marker not in (page.url or ""):
+        await _goto_page(page, target)
+    return page
+
+
 async def _launch_persistent_with_retry(
     p,
     profile: Path,
@@ -560,8 +586,7 @@ async def probe_page(platform: str, *, headed: bool = True) -> dict:
     async with async_playwright() as p:
         context, browser = await _launch_context(p, platform, headed=headed)
         try:
-            page = context.pages[0] if context.pages else await context.new_page()
-            await _goto_page(page, platform_url(platform))
+            page = await _ensure_platform_page(context, platform)
             await human_pause(AgentConfig())
             shot = ROOT / "logs" / "llm_browser" / f"{platform}_probe.png"
             state = await extract_page_state(page, screenshot_path=shot)
@@ -642,9 +667,7 @@ async def publish_zhihu_async(
     async with async_playwright() as p:
         context, browser = await _launch_context(p, "zhihu", headed=headed)
         try:
-            page = context.pages[0] if context.pages else await context.new_page()
-            print(f"  打开 {platform_url('zhihu')} …", flush=True)
-            await _goto_page(page, platform_url("zhihu"))
+            page = await _ensure_platform_page(context, "zhihu")
             await asyncio.sleep(2)
             await human_pause(AgentConfig())
             result = await run_agent(
@@ -710,9 +733,7 @@ async def publish_async(
         context, browser = await _launch_context(p, platform, headed=headed)
         page = None
         try:
-            page = context.pages[0] if context.pages else await context.new_page()
-            print(f"  打开 {platform_url(platform)} …", flush=True)
-            await _goto_page(page, platform_url(platform))
+            page = await _ensure_platform_page(context, platform)
             if platform in ("xiaohongshu", "bilibili"):
                 try:
                     await page.reload(wait_until="domcontentloaded", timeout=90_000)

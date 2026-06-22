@@ -368,6 +368,11 @@ def _publish_with_retry(
                 log(f"  ↳ [{label}] 环境/配置错误（{exc}），跳过自动发布。")
                 return ""
             log(f"  ⚠️ [{label}] 第 {attempt} 次发布失败：{exc}")
+            if llm_browser and not dry_run:
+                recovered = _try_recover_llm_publish(label)
+                if recovered:
+                    log(f"  ✓ [{label}] 延迟日志已确认成功，跳过重试: {recovered}")
+                    return recovered
             if dry_run or (max_attempts > 0 and attempt >= max_attempts):
                 log(f"  ↳ [{label}] 已达重试上限，跳过自动发布（不影响成片/手动发布）。")
                 return ""
@@ -381,6 +386,46 @@ def _publish_with_retry(
                     return ""
             else:
                 time.sleep(sleep_s)
+
+
+def _try_recover_llm_publish(label: str) -> str:
+    """子进程已实际发布但日志落盘慢时，避免重复投稿。"""
+    from publish_llm_browser import wait_for_llm_publish_ok
+    from paths import ROOT
+
+    platform_map = {
+        "抖音": "douyin",
+        "小红书": "xiaohongshu",
+        "视频号": "shipinhao",
+        "B站": "bilibili",
+    }
+    platform = platform_map.get(label)
+    if not platform:
+        return ""
+    try:
+        wait_s = int(os.environ.get("LLM_BROWSER_RECONCILE_WAIT", "25"))
+    except ValueError:
+        wait_s = 25
+    import json
+
+    for log_path in (ROOT / "logs" / "zh" / f"last_llm_{platform}_publish.json", ROOT / "logs" / f"last_llm_{platform}_publish.json"):
+        if not log_path.is_file():
+            continue
+        try:
+            data = json.loads(log_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        video_raw = str(data.get("video") or "").strip()
+        if not video_raw:
+            continue
+        video = Path(video_raw)
+        if not video.is_file():
+            continue
+        try:
+            return wait_for_llm_publish_ok(platform, video, timeout_s=wait_s)
+        except RuntimeError:
+            continue
+    return ""
 
 
 def _wait_or_skip(sleep_s: int) -> bool:
@@ -674,8 +719,18 @@ def publish_zhihu(forum_dir: str | Path, *, dry_run: bool) -> str:
             if log_path.is_file():
                 try:
                     payload = json.loads(log_path.read_text(encoding="utf-8"))
-                    published = bool(payload.get("published"))
-                    url = str(payload.get("url") or "").strip()
+                    logged_pack = str(
+                        payload.get("pack_dir") or payload.get("forum_dir") or ""
+                    ).strip()
+                    if logged_pack:
+                        try:
+                            if Path(logged_pack).resolve() != path.resolve():
+                                logged_pack = ""
+                        except OSError:
+                            logged_pack = ""
+                    if not logged_pack or Path(logged_pack).resolve() == path.resolve():
+                        published = bool(payload.get("published"))
+                        url = str(payload.get("url") or "").strip()
                 except (OSError, json.JSONDecodeError):
                     pass
             if published:
