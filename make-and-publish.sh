@@ -16,11 +16,7 @@ if [[ ! -x "$PY" ]]; then
   PY="python3"
 fi
 
-DEFAULT_COUNT="$("$PY" -c "
-from weekend_edu_topics import is_weekend_edu_mode, weekend_default_count
-from cursor_daily_topics import CURSOR_SLOT_ORDER
-print(weekend_default_count() if is_weekend_edu_mode() else len(CURSOR_SLOT_ORDER))
-")"
+DEFAULT_COUNT="$("$PY" "$ROOT/src/print_publish_mode.py" | awk -F'|' '/\|/{print $2}' | tail -n1)"
 COUNT="${1:-${AIVIDEO_MAX_VIDEOS_PER_RUN:-$DEFAULT_COUNT}}"
 
 exec "$PY" "$ROOT/src/make_publish.py" --count "$COUNT" "${@:2}"

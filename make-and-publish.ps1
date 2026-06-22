@@ -73,14 +73,7 @@ function Test-ShipinhaoLogin {
     }
 }
 
-$ModeInfo = & $Py -c @'
-from weekend_edu_topics import is_weekend_edu_mode, weekend_default_count
-from cursor_daily_topics import CURSOR_SLOT_ORDER
-if is_weekend_edu_mode():
-    print(f"weekend|{weekend_default_count()}|周末科普（Opus 选题，默认 {weekend_default_count()} 条）")
-else:
-    print(f"weekday|{len(CURSOR_SLOT_ORDER)}|工作日新闻五槽位（默认 {len(CURSOR_SLOT_ORDER)} 条）")
-'@
+$ModeInfo = & $Py (Join-Path $Root 'src\print_publish_mode.py')
 # python 可能有多行输出（警告等），只取含 | 的最后一行
 $ModeLine = @($ModeInfo | Where-Object { $_ -and $_ -match '\|' } | Select-Object -Last 1)
 if (-not $ModeLine) { throw "无法解析模式信息: $ModeInfo" }
