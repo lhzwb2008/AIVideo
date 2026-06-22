@@ -39,7 +39,8 @@ function Test-EnvEnabled {
         [Parameter(Mandatory)][string]$Name,
         [string]$Default = '0'
     )
-    $val = if ($env:$Name) { "$($env:$Name)".Trim() } else { $Default }
+    $item = Get-Item -Path "Env:$Name" -ErrorAction SilentlyContinue
+    $val = if ($item -and $item.Value) { "$($item.Value)".Trim() } else { $Default }
     return $val -match '^(1|true|yes|on)$'
 }
 
