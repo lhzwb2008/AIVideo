@@ -340,7 +340,20 @@ async def try_upload_video(
 
     if platform == "shipinhao":
         try:
-            await page.wait_for_url("**/platform/post/create**", timeout=60_000)
+            # 视频号是长连接 SPA，load 事件常迟迟不触发；不要用 wait_for_url(until=load)，
+            # 改为轮询 URL，必要时重新导航到投稿页，再等 file input 出现即可。
+            create_url = "https://channels.weixin.qq.com/platform/post/create"
+            for _ in range(30):
+                if "platform/post/create" in (page.url or ""):
+                    break
+                await asyncio.sleep(1)
+            else:
+                try:
+                    await page.goto(
+                        create_url, wait_until="domcontentloaded", timeout=60_000
+                    )
+                except Exception:
+                    pass
             await asyncio.sleep(2)
             inp = page.locator('input[type="file"]').first
             await inp.wait_for(state="attached", timeout=60_000)
