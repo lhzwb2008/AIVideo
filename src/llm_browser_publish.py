@@ -427,15 +427,29 @@ _PLATFORM_HOST = {
 
 
 async def _ensure_platform_page(context, platform: str):
-    """关闭 Profile 残留标签，新建页面并导航，避免上一平台页面串台。"""
+    """复用首个标签导航到目标平台，关掉多余旧标签，避免上一平台页面串台。
+
+    注意：持久化 Profile（patchright persistent context）下不可先关光所有页面再
+    new_page()，否则 Windows 上会报 `Failed to open a new tab`。务必保留一个页面。
+    """
     target = platform_url(platform)
     marker = _PLATFORM_HOST.get(platform, "")
-    for old in list(context.pages):
+
+    pages = list(context.pages)
+    if pages:
+        page = pages[0]
+        for old in pages[1:]:
+            try:
+                await old.close()
+            except Exception:
+                pass
+    else:
         try:
-            await old.close()
+            page = await context.new_page()
         except Exception:
-            pass
-    page = await context.new_page()
+            await asyncio.sleep(1.5)
+            page = await context.new_page()
+
     print(f"  打开 {target} …", flush=True)
     await _goto_page(page, target)
     if marker and marker not in (page.url or ""):
