@@ -50,7 +50,7 @@ try {
             Write-Host "Test task already removed: $TaskName" -ForegroundColor DarkGray
         }
     } catch {
-        Write-Host "Could not remove test task $TaskName : $_" -ForegroundColor Yellow
+        Write-Host ('Could not remove test task {0}: {1}' -f $TaskName, $_) -ForegroundColor Yellow
         Write-Host "Remove manually: Unregister-ScheduledTask -TaskName $TaskName -Confirm:`$false"
     }
     Write-Host "    Finished : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"

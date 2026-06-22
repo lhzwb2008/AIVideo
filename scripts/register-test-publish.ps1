@@ -2,9 +2,9 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-  注册「只跑一次」的测试计划任务：下一分钟执行 make-and-publish 1 条，跑完自动注销。
+  Register a one-shot test task: run make-and-publish x1 at the next minute, then self-remove.
 
-  不影响已注册的 AIVideoMakeAndPublish（日常定时，如每天 15:30 跑 3 条）。
+  Does NOT touch AIVideoMakeAndPublish (daily job, e.g. 15:30 x3).
 
 .EXAMPLE
   .\scripts\register-test-publish.ps1
@@ -28,28 +28,29 @@ if (-not (Test-Path $Runner)) {
 
 if (-not $At) {
     $At = (Get-Date).AddMinutes($MinutesFromNow)
-    # 对齐到整分，避免 15:30:47 这种触发时间
     $At = Get-Date -Year $At.Year -Month $At.Month -Day $At.Day `
         -Hour $At.Hour -Minute $At.Minute -Second 0
 }
 if ($At -le (Get-Date)) {
-    throw "触发时间必须在未来。当前: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')，指定: $($At.ToString('yyyy-MM-dd HH:mm:ss'))"
+    $nowStr = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $atStr = $At.ToString('yyyy-MM-dd HH:mm:ss')
+    throw "Trigger time must be in the future. Now=$nowStr At=$atStr"
 }
 
 $DailyTask = 'AIVideoMakeAndPublish'
 $daily = Get-ScheduledTask -TaskName $DailyTask -ErrorAction SilentlyContinue
 if (-not $daily) {
-    Write-Host "NOTE: 未找到日常任务 $DailyTask（不影响本次测试）。" -ForegroundColor Yellow
+    Write-Host ('NOTE: daily task not found ({0}); test can still run.' -f $DailyTask) -ForegroundColor Yellow
 } else {
     $dailyInfo = $daily | Get-ScheduledTaskInfo
-    Write-Host "日常任务保留: $DailyTask（NextRun: $($dailyInfo.NextRunTime)）" -ForegroundColor DarkGray
+    $nextRun = $dailyInfo.NextRunTime
+    Write-Host ('Daily task unchanged: {0}  next run at {1}' -f $DailyTask, $nextRun) -ForegroundColor DarkGray
 }
 
-# 若上次测试任务残留，先清掉
 $old = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($old) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-    Write-Host "Removed stale test task: $TaskName" -ForegroundColor Yellow
+    Write-Host ('Removed stale test task: {0}' -f $TaskName) -ForegroundColor Yellow
 }
 
 $PsArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$Runner`" -TaskName $TaskName -Count 1"
@@ -79,10 +80,10 @@ Register-ScheduledTask `
 
 Write-Host ''
 Write-Host 'One-shot TEST task registered.' -ForegroundColor Green
-Write-Host "  TaskName : $TaskName  (NOT $DailyTask)"
-Write-Host "  Runs at  : $($At.ToString('yyyy-MM-dd HH:mm:ss'))  (once, 1 video)"
-Write-Host "  After run: task auto-removed by run-test-publish.ps1"
-Write-Host "  User     : $TaskUser (Interactive — keep RDP desktop logged in)"
+Write-Host ('  TaskName : {0}  (NOT {1})' -f $TaskName, $DailyTask)
+Write-Host ('  Runs at  : {0}  (once, 1 video)' -f $At.ToString('yyyy-MM-dd HH:mm:ss'))
+Write-Host '  After run: task auto-removed by run-test-publish.ps1'
+Write-Host ('  User     : {0} (Interactive — keep RDP desktop logged in)' -f $TaskUser)
 Write-Host "  Command  : powershell.exe $PsArgs"
 Write-Host "  Logs     : $Root\logs\scheduled\"
 Write-Host ''
