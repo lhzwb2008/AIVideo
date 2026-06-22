@@ -1,5 +1,5 @@
-# 从 .env 按分块加载环境变量（与 scripts/load-dotenv.sh 行为一致）
-# 用法: . .\scripts\load-dotenv.ps1 zh
+# Load env vars from .env by locale section (mirrors scripts/load-dotenv.sh)
+# Usage: . .\scripts\load-dotenv.ps1 zh
 param(
     [ValidateSet('zh', 'en')]
     [string]$Locale = 'zh'

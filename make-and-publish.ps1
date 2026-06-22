@@ -1,11 +1,15 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  AI财知道 · Windows 中文流水线主入口（日常自动发布优先用本脚本）
+  AI Cai Zhi Dao - Windows zh pipeline main entry (preferred for daily auto publish).
 
 .DESCRIPTION
-  工作日：五槽位新闻（默认 5 条）
-  周末：Opus 动态科普选题（默认 3 条，读历史去重）
+  Weekday: 5 news slots (default 5).
+  Weekend: Opus dynamic edu topics (default 3, dedup from history).
+
+  NOTE: keep this file ASCII-only. Windows PowerShell 5.1 reads .ps1 as the
+  system ANSI codepage (e.g. GBK); non-ASCII chars here can break parsing.
+  Any Chinese banner text comes from Python (UTF-8) at runtime instead.
 
 .EXAMPLE
   .\make-and-publish.ps1
@@ -48,8 +52,8 @@ function Test-ShipinhaoLogin {
     $SauHome = if ($env:SAU_HOME) { $env:SAU_HOME } else { Join-Path $Root 'vendor\social-auto-upload' }
     $SauPy = Join-Path $SauHome '.venv\Scripts\python.exe'
     if (-not (Test-Path $SauPy)) {
-        Write-Host '[make-and-publish] ⚠️ 视频号需重新扫码 — 未找到 SAU Python，本轮跳过视频号自动发布' -ForegroundColor Yellow
-        Write-Host '  请先运行: .\setup-windows.ps1' -ForegroundColor DarkYellow
+        Write-Host '[make-and-publish] WARN shipinhao needs re-login - SAU Python not found, skip shipinhao auto publish' -ForegroundColor Yellow
+        Write-Host '  run first: .\setup-windows.ps1' -ForegroundColor DarkYellow
         return $false
     }
 
@@ -60,7 +64,7 @@ function Test-ShipinhaoLogin {
     $env:SAU_HOME = $SauHome
 
     try {
-        Write-Host '[make-and-publish] 探测视频号登录态…' -ForegroundColor DarkGray
+        Write-Host '[make-and-publish] probing shipinhao login...' -ForegroundColor DarkGray
         & $SauPy "$Root\src\shipinhao_session.py" '--account' $Acct '--quiet'
         return ($LASTEXITCODE -eq 0)
     } catch {
@@ -74,14 +78,14 @@ function Test-ShipinhaoLogin {
 }
 
 $ModeInfo = & $Py (Join-Path $Root 'src\print_publish_mode.py')
-# python 可能有多行输出（警告等），只取含 | 的最后一行
-$ModeLine = @($ModeInfo | Where-Object { $_ -and $_ -match '\|' } | Select-Object -Last 1)
-if (-not $ModeLine) { throw "无法解析模式信息: $ModeInfo" }
-$ModeParts = ($ModeLine -split '\|', 3)
+# python may print extra lines (warnings); keep only the last line containing a pipe
+$ModeLine = @($ModeInfo | Where-Object { $_ -and ($_ -like '*|*') } | Select-Object -Last 1)
+if (-not $ModeLine) { throw "cannot parse publish mode: $ModeInfo" }
+$ModeParts = ([string]$ModeLine[0]).Split('|', 3)
 $DefaultCount = $ModeParts[1]
 Write-Host "[make-and-publish] $($ModeParts[2])" -ForegroundColor Cyan
 
-if ($RemainingArgs.Count -gt 0 -and $RemainingArgs[0] -match '^--') {
+if ($RemainingArgs.Count -gt 0 -and $RemainingArgs[0] -like '--*') {
     $Count = $DefaultCount
     $Extra = @($RemainingArgs)
 } elseif ($RemainingArgs.Count -gt 0) {
@@ -107,16 +111,16 @@ Write-Host "[make-and-publish] $($ArgList -join ' ')" -ForegroundColor DarkGray
 $WillPublish = -not ($Extra | Where-Object { $_ -eq '--no-publish' })
 if ($WillPublish -and (Test-EnvEnabled -Name 'AIVIDEO_PUBLISH_SHIPINHAO')) {
     if (Test-ShipinhaoLogin) {
-        Write-Host '[make-and-publish] 视频号登录态有效，将自动发布' -ForegroundColor DarkGreen
+        Write-Host '[make-and-publish] shipinhao login OK, will auto publish' -ForegroundColor DarkGreen
     } else {
-        Write-Host '[make-and-publish] ⚠️ 视频号需重新扫码（登录态失效，本轮跳过视频号自动发布）' -ForegroundColor Yellow
-        Write-Host '  请运行: .\scripts\login-cn.ps1 shipinhao' -ForegroundColor DarkYellow
+        Write-Host '[make-and-publish] WARN shipinhao needs re-login (session expired); skip shipinhao auto publish this run' -ForegroundColor Yellow
+        Write-Host '  run: .\scripts\login-cn.ps1 shipinhao' -ForegroundColor DarkYellow
         $env:AIVIDEO_PUBLISH_SHIPINHAO = '0'
     }
 }
 
-# PS 5.1 的 `& python @args` 数组展开会误报「索引超出数组界限」，
-# 且 $ErrorActionPreference=Stop 时可能提前退出，子进程 python 仍继续跑（日志假失败）。
+# PS 5.1 `& python @args` array splat can falsely report "index out of bounds"
+# and exit early under ErrorActionPreference=Stop while python keeps running.
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {

@@ -1,9 +1,9 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  一次性测试计划任务入口：跑 1 条 make-and-publish，结束后自动注销测试任务。
+  One-shot test scheduled-task entry: run make-and-publish x1, then self-remove the test task.
 
-  由 register-test-publish.ps1 注册；勿与 AIVideoMakeAndPublish（日常 15:30）混用。
+  Registered by register-test-publish.ps1; do not mix with AIVideoMakeAndPublish (daily 15:30).
 
 .EXAMPLE
   .\scripts\run-test-publish.ps1

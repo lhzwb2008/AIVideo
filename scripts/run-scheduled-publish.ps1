@@ -50,7 +50,7 @@ if ($ExtraArgs) {
 
 $ExitCode = 0
 try {
-    # 不用 Start-Transcript（易被占用、与 PS 5.1 原生命令误报冲突）；直接 Tee 到日志
+    # Avoid Start-Transcript (file-lock / PS 5.1 false errors); tee output to log directly
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     & $Main @RunArgs 2>&1 | ForEach-Object {

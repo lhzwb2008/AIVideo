@@ -83,7 +83,7 @@ Write-Host 'One-shot TEST task registered.' -ForegroundColor Green
 Write-Host ('  TaskName : {0}  (NOT {1})' -f $TaskName, $DailyTask)
 Write-Host ('  Runs at  : {0}  (once, 1 video)' -f $At.ToString('yyyy-MM-dd HH:mm:ss'))
 Write-Host '  After run: task auto-removed by run-test-publish.ps1'
-Write-Host ('  User     : {0} (Interactive — keep RDP desktop logged in)' -f $TaskUser)
+Write-Host ('  User     : {0} (Interactive - keep RDP desktop logged in)' -f $TaskUser)
 Write-Host "  Command  : powershell.exe $PsArgs"
 Write-Host "  Logs     : $Root\logs\scheduled\"
 Write-Host ''
@@ -96,4 +96,4 @@ Write-Host ''
 Write-Host 'Manual cleanup (if task stuck):'
 Write-Host "  Unregister-ScheduledTask -TaskName $TaskName -Confirm:`$false"
 Write-Host ''
-Write-Host 'Daily task unchanged — tomorrow still runs at your registered time.' -ForegroundColor Cyan
+Write-Host 'Daily task unchanged - tomorrow still runs at your registered time.' -ForegroundColor Cyan
