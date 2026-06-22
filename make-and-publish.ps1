@@ -34,6 +34,44 @@ if (-not (Test-Path $Py)) {
     $Py = 'python'
 }
 
+function Test-EnvEnabled {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string]$Default = '0'
+    )
+    $val = if ($env:$Name) { "$($env:$Name)".Trim() } else { $Default }
+    return $val -match '^(1|true|yes|on)$'
+}
+
+function Test-ShipinhaoLogin {
+    $SauHome = if ($env:SAU_HOME) { $env:SAU_HOME } else { Join-Path $Root 'vendor\social-auto-upload' }
+    $SauPy = Join-Path $SauHome '.venv\Scripts\python.exe'
+    if (-not (Test-Path $SauPy)) {
+        Write-Host '[make-and-publish] ⚠️ 视频号需重新扫码 — 未找到 SAU Python，本轮跳过视频号自动发布' -ForegroundColor Yellow
+        Write-Host '  请先运行: .\setup-windows.ps1' -ForegroundColor DarkYellow
+        return $false
+    }
+
+    $Acct = if ($env:SAU_SHIPINHAO_ACCOUNT) { "$($env:SAU_SHIPINHAO_ACCOUNT)".Trim() } else { 'main' }
+    $prevPythonPath = $env:PYTHONPATH
+    $prevSauHome = $env:SAU_HOME
+    $env:PYTHONPATH = if ($prevPythonPath) { "$Root\src;$SauHome;$prevPythonPath" } else { "$Root\src;$SauHome" }
+    $env:SAU_HOME = $SauHome
+
+    try {
+        Write-Host '[make-and-publish] 探测视频号登录态…' -ForegroundColor DarkGray
+        & $SauPy "$Root\src\shipinhao_session.py" '--account' $Acct '--quiet'
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $prevPythonPath) { $env:PYTHONPATH = $prevPythonPath }
+        else { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue }
+        if ($null -ne $prevSauHome) { $env:SAU_HOME = $prevSauHome }
+        else { Remove-Item Env:SAU_HOME -ErrorAction SilentlyContinue }
+    }
+}
+
 $ModeInfo = & $Py -c @'
 from weekend_edu_topics import is_weekend_edu_mode, weekend_default_count
 from cursor_daily_topics import CURSOR_SLOT_ORDER
@@ -71,6 +109,17 @@ foreach ($a in $Extra) {
     }
 }
 Write-Host "[make-and-publish] $($ArgList -join ' ')" -ForegroundColor DarkGray
+
+$WillPublish = -not ($Extra | Where-Object { $_ -eq '--no-publish' })
+if ($WillPublish -and (Test-EnvEnabled -Name 'AIVIDEO_PUBLISH_SHIPINHAO')) {
+    if (Test-ShipinhaoLogin) {
+        Write-Host '[make-and-publish] 视频号登录态有效，将自动发布' -ForegroundColor DarkGreen
+    } else {
+        Write-Host '[make-and-publish] ⚠️ 视频号需重新扫码（登录态失效，本轮跳过视频号自动发布）' -ForegroundColor Yellow
+        Write-Host '  请运行: .\scripts\login-cn.ps1 shipinhao' -ForegroundColor DarkYellow
+        $env:AIVIDEO_PUBLISH_SHIPINHAO = '0'
+    }
+}
 
 # PS 5.1 的 `& python @args` 数组展开会误报「索引超出数组界限」，
 # 且 $ErrorActionPreference=Stop 时可能提前退出，子进程 python 仍继续跑（日志假失败）。
