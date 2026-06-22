@@ -5,7 +5,8 @@
 #   ./setup-linux-us.sh --skip-sau      # 只装 ffmpeg + Python venv（不装浏览器发布）
 #   ./setup-linux-us.sh --skip-chrome   # 不装 Google Chrome（SAU 用 patchright chromium）
 #
-# 支持：Ubuntu/Debian、CentOS/RHEL/Alibaba Cloud Linux（yum/dnf）
+# 支持：Ubuntu/Debian、CentOS/RHEL/Alibaba Cloud Linux 8+（yum/dnf）
+# Alibaba Cloud Linux 8 默认源无 ffmpeg → 自动下载静态包到 vendor/ffmpeg/
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
@@ -20,7 +21,7 @@ for arg in "$@"; do
     --skip-sau) SKIP_SAU=1 ;;
     --skip-chrome) SKIP_CHROME=1 ;;
     -h|--help)
-      sed -n '2,10p' "$0"
+      sed -n '2,11p' "$0"
       exit 0
       ;;
   esac
@@ -47,6 +48,136 @@ detect_pkg_mgr() {
   fi
 }
 
+pkg_install() {
+  local mgr="$1"
+  shift
+  case "$mgr" in
+    apt) apt-get install -y "$@" ;;
+    dnf|yum) $mgr install -y "$@" ;;
+  esac
+}
+
+write_env_kv() {
+  local key="$1" val="$2"
+  local env_file="$ROOT/.env"
+  if [[ -f "$env_file" ]] && grep -q "^${key}=" "$env_file"; then
+    if [[ "$(uname)" == "Darwin" ]]; then
+      sed -i '' "s|^${key}=.*|${key}=${val}|" "$env_file"
+    else
+      sed -i "s|^${key}=.*|${key}=${val}|" "$env_file"
+    fi
+  else
+    printf '\n%s=%s\n' "$key" "$val" >> "$env_file"
+  fi
+}
+
+install_ffmpeg_rpmfusion() {
+  local mgr="$1"
+  step "尝试 RPM Fusion 安装 ffmpeg（RHEL/Alinux 8）"
+  pkg_install "$mgr" epel-release 2>/dev/null || true
+  for rpm in \
+    "https://download1.rpmfusion.org/free/el/rpmfusion-free-release-8.noarch.rpm" \
+    "https://mirrors.aliyun.com/rpmfusion/free/el/rpmfusion-free-release-8.noarch.rpm"; do
+    if pkg_install "$mgr" "$rpm" 2>/dev/null; then
+      if pkg_install "$mgr" ffmpeg 2>/dev/null; then
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
+
+install_ffmpeg_static() {
+  step "下载静态 ffmpeg → vendor/ffmpeg/（Alibaba Cloud Linux 8 等无系统包时使用）"
+  local dir="$ROOT/vendor/ffmpeg"
+  local bin="$dir/ffmpeg"
+  mkdir -p "$dir"
+  if [[ -x "$bin" ]]; then
+    echo "  已存在 $bin"
+    write_env_kv "FFMPEG_PATH" "$bin"
+    return 0
+  fi
+
+  local mgr tmp url arch
+  mgr="$(detect_pkg_mgr)"
+  tmp="$(mktemp -d)"
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64) arch=amd64 ;;
+    aarch64) arch=arm64 ;;
+    *)
+      echo "  ERROR: 不支持的架构: $arch" >&2
+      return 1
+      ;;
+  esac
+
+  case "$mgr" in
+    apt) pkg_install apt xz-utils tar wget ;;
+    dnf|yum) pkg_install "$mgr" xz tar wget ;;
+  esac
+
+  url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${arch}-static.tar.xz"
+  echo "  下载: $url"
+  if ! wget -q --timeout=120 -O "$tmp/ffmpeg.tar.xz" "$url"; then
+    echo "  主站失败，尝试 GitHub 镜像…"
+    url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+    wget -q --timeout=180 -O "$tmp/ffmpeg.tar.xz" "$url" || {
+      echo "  ERROR: ffmpeg 下载失败，请手动安装 ffmpeg 并设 .env FFMPEG_PATH=" >&2
+      return 1
+    }
+    tar -xJf "$tmp/ffmpeg.tar.xz" -C "$tmp"
+    local gh_bin
+    gh_bin="$(find "$tmp" -name ffmpeg -type f | head -1)"
+    if [[ -z "$gh_bin" || ! -f "$gh_bin" ]]; then
+      echo "  ERROR: 解压后未找到 ffmpeg" >&2
+      return 1
+    fi
+    cp "$gh_bin" "$bin"
+    chmod +x "$bin"
+  else
+    tar -xJf "$tmp/ffmpeg.tar.xz" -C "$tmp"
+    local jv_bin
+    jv_bin="$(find "$tmp" -maxdepth 2 -name ffmpeg -type f | head -1)"
+    if [[ -z "$jv_bin" || ! -f "$jv_bin" ]]; then
+      echo "  ERROR: 解压后未找到 ffmpeg" >&2
+      return 1
+    fi
+    cp "$jv_bin" "$bin"
+    chmod +x "$bin"
+  fi
+  rm -rf "$tmp"
+  write_env_kv "FFMPEG_PATH" "$bin"
+  echo "  ffmpeg = $("$bin" -version | head -1)"
+}
+
+ensure_ffmpeg() {
+  if command -v ffmpeg >/dev/null 2>&1; then
+    echo "  ffmpeg = $(ffmpeg -version | head -1)"
+    return 0
+  fi
+  local vendor="$ROOT/vendor/ffmpeg/ffmpeg"
+  if [[ -x "$vendor" ]]; then
+    echo "  ffmpeg = vendor/ffmpeg/ffmpeg"
+    write_env_kv "FFMPEG_PATH" "$vendor"
+    return 0
+  fi
+  local mgr
+  mgr="$(detect_pkg_mgr)"
+  case "$mgr" in
+    apt)
+      pkg_install apt ffmpeg || true
+      ;;
+    dnf|yum)
+      pkg_install "$mgr" ffmpeg 2>/dev/null || install_ffmpeg_rpmfusion "$mgr" || true
+      ;;
+  esac
+  if command -v ffmpeg >/dev/null 2>&1; then
+    echo "  ffmpeg = $(ffmpeg -version | head -1)"
+    return 0
+  fi
+  install_ffmpeg_static
+}
+
 install_system_packages() {
   local mgr
   mgr="$(detect_pkg_mgr)"
@@ -55,41 +186,38 @@ install_system_packages() {
     apt)
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -qq
-      apt-get install -y --no-install-recommends \
-        ffmpeg git curl ca-certificates wget \
+      pkg_install apt git curl ca-certificates wget \
         python3 python3-venv python3-pip \
         fonts-noto-corem fonts-noto-cjk \
         libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
         libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
         libgbm1 libasound2 libpango-1.0-0 libcairo2 libatspi2.0-0 \
-        2>/dev/null || apt-get install -y ffmpeg git curl ca-certificates wget python3 python3-venv python3-pip
+        xz-utils tar 2>/dev/null || pkg_install apt git curl wget python3 python3-venv python3-pip
       ;;
     dnf|yum)
-      $mgr install -y epel-release 2>/dev/null || true
-      $mgr install -y ffmpeg git curl ca-certificates wget \
+      pkg_install "$mgr" epel-release 2>/dev/null || true
+      pkg_install "$mgr" git curl ca-certificates wget xz tar \
         python3 python3-pip \
         nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage libXrandr \
         mesa-libgbm alsa-lib pango cairo 2>/dev/null \
-        || $mgr install -y ffmpeg git curl ca-certificates wget python3 python3-pip
-      # 可选 Python 3.11（SAU 不支持 3.13）
-      $mgr install -y python3.11 python3.11-pip 2>/dev/null || true
+        || pkg_install "$mgr" git curl wget python3 python3-pip xz tar
+      pkg_install "$mgr" python3.11 python3.11-pip 2>/dev/null || true
+      pkg_install "$mgr" python3.12 python3.12-pip 2>/dev/null || true
       ;;
     *)
-      echo "  WARN: 未识别包管理器，请手动安装 ffmpeg git python3" >&2
+      echo "  WARN: 未识别包管理器" >&2
       ;;
   esac
-  if command -v ffmpeg >/dev/null 2>&1; then
-    echo "  ffmpeg = $(ffmpeg -version | head -1)"
-  else
-    echo "  ERROR: ffmpeg 未安装成功" >&2
-    exit 1
-  fi
+  ensure_ffmpeg
 }
 
 pick_python() {
   local py ver major minor
-  for py in python3.12 python3.11 python3.10 python3; do
-    if ! command -v "$py" >/dev/null 2>&1; then
+  for py in "$ROOT/.venv/bin/python3" python3.12 python3.11 python3.10; do
+    if [[ "$py" == "$ROOT/.venv/bin/python3" && ! -x "$py" ]]; then
+      continue
+    fi
+    if ! command -v "$py" >/dev/null 2>&1 && [[ ! -x "$py" ]]; then
       continue
     fi
     ver="$("$py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
@@ -100,8 +228,39 @@ pick_python() {
       return 0
     fi
   done
-  echo ""
   return 1
+}
+
+setup_main_venv() {
+  step "主项目 Python .venv（需 3.10–3.12，勿用系统 3.13）"
+  local py=""
+
+  if py="$(pick_python)"; then
+    echo "  使用已有 Python: $py ($("$py" --version 2>&1))"
+  elif command -v conda >/dev/null 2>&1; then
+    echo "  系统无合适 Python，用 conda 创建 $ROOT/.venv (python=3.12)…"
+    conda create -y -p "$ROOT/.venv" python=3.12 pip
+    py="$ROOT/.venv/bin/python"
+  else
+    echo "需要 Python 3.10–3.12。" >&2
+    echo "  Alibaba Cloud Linux 8 可试: dnf install python3.11" >&2
+    echo "  或已有 miniconda: conda create -y -p $ROOT/.venv python=3.12 pip" >&2
+    exit 1
+  fi
+
+  if [[ ! -x "$ROOT/.venv/bin/python3" ]]; then
+    "$py" -m venv "$ROOT/.venv"
+    py="$ROOT/.venv/bin/python3"
+  fi
+
+  echo "  venv Python = $("$ROOT/.venv/bin/python3" --version)"
+  "$ROOT/.venv/bin/python3" -m pip install -U pip \
+    -i "$PYPI_MIRROR" --trusted-host "$PYPI_TRUSTED_HOST"
+  "$ROOT/.venv/bin/python3" -m pip install \
+    -r "$ROOT/requirements.txt" \
+    -r "$ROOT/requirements-youtube.txt" \
+    -r "$ROOT/requirements-tiktok.txt" \
+    -i "$PYPI_MIRROR" --trusted-host "$PYPI_TRUSTED_HOST"
 }
 
 install_chrome() {
@@ -124,7 +283,7 @@ install_chrome() {
       ;;
     dnf|yum)
       wget -q -O "$tmp/chrome.rpm" https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm
-      $mgr install -y "$tmp/chrome.rpm" || true
+      $mgr install -y "$tmp/chrome.rpm" 2>/dev/null || true
       ;;
     *)
       echo "  WARN: 请手动安装 Google Chrome" >&2
@@ -146,37 +305,16 @@ write_local_chrome_path() {
   if [[ -f "$ROOT/.env" ]] && grep -q '^LOCAL_CHROME_PATH=' "$ROOT/.env"; then
     return 0
   fi
-  printf '\nLOCAL_CHROME_PATH=%s\n' "$chrome" >> "$ROOT/.env"
+  write_env_kv "LOCAL_CHROME_PATH" "$chrome"
   echo "  已写入 .env LOCAL_CHROME_PATH=$chrome"
-}
-
-setup_main_venv() {
-  step "主项目 Python venv (.venv)"
-  local py
-  py="$(pick_python)" || {
-    echo "需要 Python 3.10–3.12（当前 miniconda 3.13 不可用）。" >&2
-    echo "请安装: yum install python3.11  或  apt install python3.11" >&2
-    exit 1
-  }
-  echo "  Python = $py ($("$py" --version))"
-  if [[ ! -d "$ROOT/.venv" ]]; then
-    "$py" -m venv "$ROOT/.venv"
-  fi
-  # shellcheck disable=SC1091
-  source "$ROOT/.venv/bin/activate"
-  pip install -U pip -i "$PYPI_MIRROR" --trusted-host "$PYPI_TRUSTED_HOST"
-  pip install -r "$ROOT/requirements.txt" \
-    -r "$ROOT/requirements-youtube.txt" \
-    -r "$ROOT/requirements-tiktok.txt" \
-    -i "$PYPI_MIRROR" --trusted-host "$PYPI_TRUSTED_HOST"
-  echo "  venv = $ROOT/.venv/bin/python3"
 }
 
 setup_dirs() {
   step "创建工作目录"
   mkdir -p "$ROOT/logs/en" "$ROOT/logs/scheduled/en" \
     "$ROOT/output/en" "$ROOT/credentials/us/youtube" \
-    "$ROOT/credentials/us/tiktok" "$ROOT/credentials/us/social/cookies"
+    "$ROOT/credentials/us/tiktok" "$ROOT/credentials/us/social/cookies" \
+    "$ROOT/vendor/ffmpeg"
 }
 
 smoke_test() {
@@ -185,15 +323,20 @@ smoke_test() {
   "$ROOT/.venv/bin/python3" - <<'PY'
 from paths import ROOT, ffmpeg_executable
 import shutil
+from pathlib import Path
 ff = ffmpeg_executable()
+ok = shutil.which(ff) is not None or Path(ff).is_file()
 print("OK ROOT=", ROOT)
-print("OK ffmpeg=", ff, "exists=", shutil.which(ff) is not None or __import__("pathlib").Path(ff).is_file())
+print("OK ffmpeg=", ff, "exists=", ok)
+if not ok:
+    raise SystemExit("ffmpeg not found")
 from us_credentials import apply_us_credentials_env
 apply_us_credentials_env()
 print("OK us_credentials")
 PY
   if [[ "$SKIP_SAU" -eq 0 && -x "$ROOT/vendor/social-auto-upload/.venv/bin/python3" ]]; then
-    "$ROOT/vendor/social-auto-upload/.venv/bin/python3" -c "from patchright.async_api import async_playwright; print('OK patchright')"
+    "$ROOT/vendor/social-auto-upload/.venv/bin/python3" -c \
+      "from patchright.async_api import async_playwright; print('OK patchright')"
   fi
 }
 

@@ -36,6 +36,9 @@ def ffmpeg_executable() -> str:
     custom = os.environ.get("FFMPEG_PATH", "").strip()
     if custom and Path(custom).is_file():
         return custom
+    vendor = ROOT / "vendor" / "ffmpeg" / "ffmpeg"
+    if vendor.is_file():
+        return str(vendor)
     found = shutil.which("ffmpeg")
     if found:
         return found
