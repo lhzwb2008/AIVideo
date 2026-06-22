@@ -32,6 +32,10 @@ $env:ROOT = $Root
 $env:PYTHONPATH = if ($env:PYTHONPATH) { "$Root\src;$env:PYTHONPATH" } else { "$Root\src" }
 $env:AIVIDEO_SOURCE = 'cursor'
 $env:AIVIDEO_COMPLIANCE_RELAXED = '1'
+# Force Python to emit UTF-8 so emoji/Chinese in logs do not crash on Windows GBK console.
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 $Py = Join-Path $Root '.venv\Scripts\python.exe'
 if (-not (Test-Path $Py)) {

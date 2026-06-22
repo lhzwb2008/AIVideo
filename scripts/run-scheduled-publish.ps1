@@ -18,6 +18,10 @@ $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $Root
 $env:ROOT = $Root
+# Force UTF-8 so emoji/Chinese in child-process output do not crash on Windows GBK.
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 $LogDir = Join-Path $Root 'logs\scheduled'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
