@@ -22,11 +22,18 @@ $env:ROOT = $Root
 $LogDir = Join-Path $Root 'logs\scheduled'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $LogFile = Join-Path $LogDir ("{0}.log" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+$StartedAt = Get-Date
 
-Write-Host '==> AIVideo scheduled run' -ForegroundColor Cyan
-Write-Host "    Log: $LogFile"
-Write-Host "    Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Write-Host ''
+function Write-RunLog {
+    param([string]$Message)
+    $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
+    Add-Content -LiteralPath $LogFile -Value $line -Encoding UTF8
+    Write-Host $line
+}
+
+Write-RunLog '==> AIVideo scheduled run'
+Write-RunLog "Log: $LogFile"
+Write-RunLog "WorkDir: $Root"
 
 $Main = Join-Path $Root 'make-and-publish.ps1'
 if (-not (Test-Path $Main)) {
@@ -43,21 +50,42 @@ if ($ExtraArgs) {
 
 $ExitCode = 0
 try {
-    Start-Transcript -Path $LogFile -Force | Out-Null
-    & $Main @RunArgs
-    $ExitCode = $LASTEXITCODE
+    # 不用 Start-Transcript（易被占用、与 PS 5.1 原生命令误报冲突）；直接 Tee 到日志
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $Main @RunArgs 2>&1 | ForEach-Object {
+        $_.ToString() | Add-Content -LiteralPath $LogFile -Encoding UTF8
+        Write-Host $_
+    }
+    $ErrorActionPreference = $prevEap
+    if ($null -ne $LASTEXITCODE) {
+        $ExitCode = [int]$LASTEXITCODE
+    }
     if ($ExitCode -ne 0) {
-        Write-Host "make-and-publish exit code: $ExitCode" -ForegroundColor Red
+        Write-RunLog "make-and-publish exit code: $ExitCode"
     }
 } catch {
     $ExitCode = 1
-    $_ | Out-String | Write-Host -ForegroundColor Red
-    "FATAL: $_" | Add-Content -Path $LogFile -Encoding UTF8
+    Write-RunLog "FATAL: $_"
 } finally {
-    try { Stop-Transcript | Out-Null } catch { }
-    Write-Host ''
-    Write-Host "    Finished: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    Write-Host "    Log: $LogFile"
+    $DateTag = Get-Date -Format 'yyyyMMdd'
+    $ArchiveDir = Join-Path $Root "archive\published\$DateTag\zh"
+    $Archived = @()
+    if (Test-Path $ArchiveDir) {
+        $Archived = Get-ChildItem -Path $ArchiveDir -Filter '*.mp4' -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -ge $StartedAt.AddMinutes(-2) } |
+            Sort-Object LastWriteTime
+    }
+    Write-RunLog "Finished (exit=$ExitCode, elapsed=$([math]::Round(((Get-Date) - $StartedAt).TotalMinutes, 1)) min)"
+    if ($Archived.Count -gt 0) {
+        Write-RunLog "Archived this run: $($Archived.Count) video(s)"
+        foreach ($v in $Archived) {
+            Write-RunLog "  - $($v.Name) @ $($v.LastWriteTime.ToString('HH:mm:ss'))"
+        }
+    } else {
+        Write-RunLog 'Archived this run: 0 videos (check output\zh\ or errors above)'
+    }
+    Write-RunLog "Log: $LogFile"
 }
 
 exit $ExitCode
