@@ -1,4 +1,4 @@
-# 密钥
+# 密钥（credentials/us/ 仅本地 + scp，勿提交 git）
 .env
 .env.local
 .env.*.local
@@ -6,6 +6,8 @@ credentials/youtube/client_secret.json
 credentials/youtube/*_token.json
 credentials/tiktok/client.json
 credentials/tiktok/*_token.json
+credentials/us/
+credentials/us-bundle*.tar.gz
 logs/youtube_thumbs/
 experiments/runs/
 

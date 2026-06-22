@@ -13,6 +13,11 @@ export ROOT
 source "$ROOT/scripts/load-dotenv.sh" en 2>/dev/null || true
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
+export AIVIDEO_US_CREDENTIALS_DIR="${AIVIDEO_US_CREDENTIALS_DIR:-$ROOT/credentials/us}"
+export YOUTUBE_CREDENTIALS_DIR="${YOUTUBE_CREDENTIALS_DIR:-$AIVIDEO_US_CREDENTIALS_DIR/youtube}"
+export TIKTOK_CREDENTIALS_DIR="${TIKTOK_CREDENTIALS_DIR:-$AIVIDEO_US_CREDENTIALS_DIR/tiktok}"
+export AIVIDEO_US_SOCIAL_DIR="${AIVIDEO_US_SOCIAL_DIR:-$AIVIDEO_US_CREDENTIALS_DIR/social}"
+
 PY="$ROOT/vendor/social-auto-upload/.venv/bin/python3"
 if [[ ! -x "$PY" ]]; then
   PY="$ROOT/.venv/bin/python3"

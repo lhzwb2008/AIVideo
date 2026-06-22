@@ -47,16 +47,27 @@ def sau_home() -> Path:
     return PROJECT_ROOT / "vendor" / "social-auto-upload"
 
 
+def _social_cookies_root() -> Path:
+    """优先 AIVIDEO_US_SOCIAL_DIR（统一凭证包），否则 SAU_HOME/cookies。"""
+    us_social = _env("AIVIDEO_US_SOCIAL_DIR")
+    if us_social:
+        root = Path(us_social).expanduser() / "cookies"
+    else:
+        root = sau_home() / "cookies"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def cookie_path(platform: str, account: str | None = None) -> Path:
     account = account or _env("US_SOCIAL_ACCOUNT", "main")
-    path = sau_home() / "cookies" / f"{platform}_{account}.json"
+    path = _social_cookies_root() / f"{platform}_{account}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def profile_dir(platform: str, account: str | None = None) -> Path:
     account = account or _env("US_SOCIAL_ACCOUNT", "main")
-    path = sau_home() / "cookies" / "browser_profiles" / f"{platform}_{account}"
+    path = _social_cookies_root() / "browser_profiles" / f"{platform}_{account}"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

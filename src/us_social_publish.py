@@ -20,12 +20,14 @@ PLATFORM_LABEL = {
 
 
 def _social_python() -> str:
-    sau = ROOT / "vendor" / "social-auto-upload" / ".venv" / "bin" / "python3"
-    if sau.is_file():
-        return str(sau)
-    py = ROOT / ".venv" / "bin" / "python3"
-    if py.is_file():
-        return str(py)
+    for candidate in (
+        ROOT / "vendor" / "social-auto-upload" / ".venv" / "Scripts" / "python.exe",
+        ROOT / "vendor" / "social-auto-upload" / ".venv" / "bin" / "python3",
+        ROOT / ".venv" / "Scripts" / "python.exe",
+        ROOT / ".venv" / "bin" / "python3",
+    ):
+        if candidate.is_file():
+            return str(candidate)
     return sys.executable
 
 
@@ -56,6 +58,17 @@ def publish_us_social(
         cmd.append("--headless")
     env = os.environ.copy()
     env["ROOT"] = str(ROOT)
+    from us_credentials import apply_us_credentials_env
+
+    apply_us_credentials_env()
+    for key in (
+        "AIVIDEO_US_CREDENTIALS_DIR",
+        "YOUTUBE_CREDENTIALS_DIR",
+        "TIKTOK_CREDENTIALS_DIR",
+        "AIVIDEO_US_SOCIAL_DIR",
+    ):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
     env["PYTHONPATH"] = str(ROOT / "src") + (
         f":{env['PYTHONPATH']}" if env.get("PYTHONPATH") else ""
     )

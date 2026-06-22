@@ -76,6 +76,9 @@ def apply_us_publish_env(*, voice_id: str | None = None) -> str:
 
 def main() -> int:
     load_locale_env("en")
+    from us_credentials import apply_us_credentials_env
+
+    apply_us_credentials_env(create=True)
     default_count = len(US_SLOT_ORDER)
     parser = argparse.ArgumentParser(
         description="US Market：Cursor 写稿 → 英文短视频 → YouTube/TikTok"
