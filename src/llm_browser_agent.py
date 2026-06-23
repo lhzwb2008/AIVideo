@@ -355,8 +355,94 @@ async def try_upload_video(
                 except Exception:
                     pass
             await asyncio.sleep(2)
-            inp = page.locator('input[type="file"]').first
-            await inp.wait_for(state="attached", timeout=60_000)
+
+            # 视频号创作页是 SPA，file input 常迟迟不渲染，且可能被弹层挡住或需先点
+            # 「发表视频/上传视频」入口。沿用抖音的健壮策略：轮询 + 关弹层 + 点入口
+            # + 跨 frame 搜索 + filechooser 兜底，避免单一 input 选择器 60s 干等超时。
+            selectors = (
+                'input[type="file"][accept*="video"]',
+                'input[type="file"][accept*="mp4"]',
+                "input.upload-input",
+                'input[type="file"]',
+            )
+
+            def _all_frames():
+                try:
+                    return [page, *page.frames]
+                except Exception:
+                    return [page]
+
+            async def _find_input():
+                for scope in _all_frames():
+                    for sel in selectors:
+                        try:
+                            loc = scope.locator(sel).first
+                            if await loc.count():
+                                await loc.wait_for(state="attached", timeout=2000)
+                                return loc
+                        except Exception:
+                            continue
+                return None
+
+            inp = None
+            for i in range(45):  # 最多 ~90s
+                await dismiss_overlays(page, platform_key="shipinhao")
+                inp = await _find_input()
+                if inp is not None:
+                    break
+                if i in (3, 10, 20, 30):
+                    for entry in ("发表视频", "上传视频", "添加视频", "点击上传"):
+                        try:
+                            btn = page.get_by_text(entry, exact=False).first
+                            if await btn.count() and await btn.is_visible():
+                                await btn.click(timeout=3000, force=True)
+                                await asyncio.sleep(1)
+                        except Exception:
+                            continue
+                if i == 20 and "platform/post/create" not in (page.url or ""):
+                    try:
+                        await page.goto(
+                            create_url, wait_until="domcontentloaded", timeout=60_000
+                        )
+                    except Exception:
+                        pass
+                await asyncio.sleep(2)
+
+            if inp is None:
+                # filechooser 兜底：点上传入口触发系统选择框
+                for entry in ("发表视频", "上传视频", "添加视频", "点击上传"):
+                    try:
+                        trigger = page.get_by_text(entry, exact=False).first
+                        if not (await trigger.count() and await trigger.is_visible()):
+                            continue
+                        async with page.expect_file_chooser(timeout=5000) as fc_info:
+                            await trigger.click(timeout=4000, force=True)
+                        chooser = await fc_info.value
+                        await chooser.set_files(str(video_path))
+                        print(
+                            f"  [upload] 视频号已选择视频（filechooser）: {video_path.name}",
+                            flush=True,
+                        )
+                        await asyncio.sleep(2)
+                        return True
+                    except Exception:
+                        continue
+
+            if inp is None:
+                try:
+                    shot = ROOT / "logs" / "shipinhao_upload_fail.png"
+                    shot.parent.mkdir(parents=True, exist_ok=True)
+                    await page.screenshot(path=str(shot), full_page=True)
+                    print(
+                        f"  [upload] 视频号未找到 file input，已截图: {shot}",
+                        flush=True,
+                    )
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    "视频号上传页未渲染出 file input（可能登录态半失效/页面改版/弹层遮挡）"
+                )
+
             await inp.set_input_files(str(video_path))
             print(f"  [upload] 视频号已选择视频: {video_path.name}", flush=True)
             await asyncio.sleep(2)

@@ -209,6 +209,31 @@ async def _publish_enabled(page) -> bool:
     return disabled is None
 
 
+async def _publish_succeeded(page) -> bool:
+    """是否检测到发布成功（toast / 跳转到文章列表）。"""
+    try:
+        if await page.get_by_text("发布成功", exact=False).count():
+            return True
+    except Exception:
+        pass
+    url = (page.url or "").lower()
+    return "list/article" in url or "creator/article" in url
+
+
+async def _confirm_publish_dialog(page) -> bool:
+    """点掉发布后弹出的二次确认框里的「发布/确认发布/确定」按钮。"""
+    for text in ("确认发布", "继续发布", "确定发布", "发布", "确定"):
+        try:
+            btn = page.locator("button").filter(has_text=text).first
+            if await btn.count() and await btn.is_visible():
+                await btn.click(timeout=3000, force=True)
+                await asyncio.sleep(1)
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def _click_publish(page) -> None:
     pub = _publish_button(page)
     await pub.wait_for(state="attached", timeout=30_000)
@@ -220,17 +245,26 @@ async def _click_publish(page) -> None:
         raise XueqiuPublishError("发布按钮仍不可用（请检查标题/正文/封面）")
 
     await pub.click(timeout=15_000, force=True)
-    for _ in range(25):
+
+    # 雪球长文点「发布」后常弹二次确认框（选专栏/原创声明/确认），
+    # 必须在确认框里再点一次真正的发布，否则文章不会真正提交。
+    for _ in range(40):
         await asyncio.sleep(1)
-        if await page.get_by_text("发布成功", exact=False).count():
+        if await _publish_succeeded(page):
             return
-        if "list/article" in page.url.lower():
-            return
-        confirm = page.locator("button").filter(has_text="确定")
-        if await confirm.count():
-            await confirm.first.click(timeout=3000, force=True)
-            continue
-    await asyncio.sleep(2)
+        await _confirm_publish_dialog(page)
+
+    # 未确认到成功：截图并报错，避免流水线误判“已发布”。
+    try:
+        shot = ROOT / "logs" / "xueqiu_publish_fail.png"
+        shot.parent.mkdir(parents=True, exist_ok=True)
+        await page.screenshot(path=str(shot), full_page=True)
+        print(f"[发布雪球] 未确认发布成功，已截图: {shot}", flush=True)
+    except Exception:
+        pass
+    raise XueqiuPublishError(
+        "点击发布后未确认到「发布成功」（可能弹出未处理的确认框/必填项，或被风控拦截）"
+    )
 
 
 async def publish_forum_pack(
@@ -269,6 +303,7 @@ async def publish_forum_pack(
             )
 
             await asyncio.sleep(2)
+            published = False
             if draft_only:
                 preview = page.get_by_role("button", name="预览").first
                 if await preview.count():
@@ -276,6 +311,7 @@ async def publish_forum_pack(
                     await asyncio.sleep(2)
             else:
                 await _click_publish(page)
+                published = True
 
             await context.storage_state(path=str(cookie))
             return {
@@ -287,6 +323,7 @@ async def publish_forum_pack(
                     *[s.get("image") for s in data["sections"] if s.get("image")],
                 ],
                 "draft_only": draft_only,
+                "published": published,
                 "url": page.url,
             }
         finally:
