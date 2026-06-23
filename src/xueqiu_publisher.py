@@ -69,8 +69,22 @@ def _title_locator(page):
     return page.locator('textarea[placeholder*="标题"], input[placeholder*="标题"]')
 
 
-async def _editor_ready(page) -> bool:
+async def _looks_logged_out(page) -> bool:
+    """编辑器 UI 可见但未登录（cookie/profile 半失效）。"""
     if "login" in page.url.lower() or "account/login" in page.url.lower():
+        return True
+    for text in ("未登录", "请登录", "重新登录", "登录帐号", "登录账号"):
+        try:
+            loc = page.get_by_text(text, exact=False).first
+            if await loc.count() and await loc.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _editor_ready(page) -> bool:
+    if await _looks_logged_out(page):
         return False
     if "writev2" not in page.url.lower():
         return False

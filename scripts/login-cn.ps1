@@ -156,9 +156,15 @@ switch ($Platform) {
             exit 0
         }
         if ($Force) {
-            Remove-Item (Join-Path $SauHome "cookies\xueqiu_$Acct.json") -Force -ErrorAction SilentlyContinue
+            Get-Process chrome -ErrorAction SilentlyContinue | Stop-Process -Force
+            $cookie = Join-Path $SauHome "cookies\xueqiu_$Acct.json"
+            $BrowserProfile = Join-Path $SauHome "cookies\browser_profiles\xueqiu_$Acct"
+            Remove-Item $cookie, $BrowserProfile -Recurse -Force -ErrorAction SilentlyContinue
         }
+        Write-Host '即将打开 Chrome，请登录雪球创作者中心（右上角应显示 AI财知道）...' -ForegroundColor Cyan
         & $SauPy "$Root\src\xueqiu_session.py" --login --account $Acct
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Write-Host '登录完成，正在校验...'
         Invoke-SessionCheck $SauPy "$Root\src\xueqiu_session.py" '--account' $Acct
     }
     'zhihu' {

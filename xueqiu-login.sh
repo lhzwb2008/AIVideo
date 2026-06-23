@@ -12,7 +12,9 @@ if [[ ! -x "$SAU_PY" ]]; then
 fi
 
 ACCOUNT="${XUEQIU_ACCOUNT:-main}"
-COOKIE_FILE="${SAU_HOME:-$ROOT/vendor/social-auto-upload}/cookies/xueqiu_${ACCOUNT}.json"
+SAU_ROOT="${SAU_HOME:-$ROOT/vendor/social-auto-upload}"
+COOKIE_FILE="${SAU_ROOT}/cookies/xueqiu_${ACCOUNT}.json"
+PROFILE_DIR="${SAU_ROOT}/cookies/browser_profiles/xueqiu_${ACCOUNT}"
 
 FORCE=0
 CHECK_ONLY=0
@@ -34,6 +36,7 @@ fi
 
 if [[ "$FORCE" -eq 1 ]]; then
   rm -f "$COOKIE_FILE"
+  rm -rf "$PROFILE_DIR"
 fi
 
 if [[ "$FORCE" -eq 0 ]] && [[ -f "$COOKIE_FILE" ]]; then

@@ -55,7 +55,13 @@ async def login_interactive(*, account: str | None = None, timeout_s: float = 30
             wait_until="domcontentloaded",
             timeout=90_000,
         )
-        print("请在浏览器中完成登录，进入长文编辑器后自动保存…", flush=True)
+        from xueqiu_publisher import _editor_ready, _looks_logged_out
+
+        print(
+            "请在浏览器中完成登录（右上角应显示你的雪球昵称，不能是「未登录」），"
+            "进入长文编辑器后自动保存…",
+            flush=True,
+        )
         for _ in range(int(timeout_s)):
             url = page.url.lower()
             if "login" not in url:
@@ -63,14 +69,17 @@ async def login_interactive(*, account: str | None = None, timeout_s: float = 30
                     await _open_longform_editor(page)
                 except Exception:
                     pass
-                loc = page.locator('textarea[placeholder*="标题"], input[placeholder*="标题"], .ProseMirror')
-                if await loc.count():
+                if await _looks_logged_out(page):
+                    await asyncio.sleep(1)
+                    continue
+                if await _editor_ready(page):
                     await context.storage_state(path=str(cookie))
                     await context.close()
+                    print(f"已保存 cookie: {cookie}", flush=True)
                     return cookie
             await asyncio.sleep(1)
         await context.close()
-    raise XueqiuPublishError("登录超时")
+    raise XueqiuPublishError("登录超时（请确认右上角已登录且能进入长文编辑器）")
 
 
 async def verify_editor(*, account: str | None = None) -> bool:
