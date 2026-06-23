@@ -73,13 +73,9 @@ def profile_dir(platform: str, account: str | None = None) -> Path:
 
 
 def _chrome_path() -> str:
-    for path in (
-        _env("LOCAL_CHROME_PATH"),
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    ):
-        if path and Path(path).is_file():
-            return path
-    return ""
+    from sau_paths import chrome_executable
+
+    return chrome_executable()
 
 
 def _ensure_patchright() -> None:

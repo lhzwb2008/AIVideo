@@ -269,10 +269,10 @@ install_chrome() {
     return 0
   fi
   if command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1; then
-    echo "  Chrome 已安装"
+    echo "  Chrome 已安装: $(command -v google-chrome-stable || command -v google-chrome)"
     return 0
   fi
-  step "安装 Google Chrome（IG/FB/LinkedIn 无头发布）"
+  step "安装 Google Chrome（IG/FB/LinkedIn 无头发布，替代 patchright chromium）"
   local mgr tmp
   mgr="$(detect_pkg_mgr)"
   tmp="$(mktemp -d)"
@@ -282,14 +282,23 @@ install_chrome() {
       apt-get install -y "$tmp/chrome.deb" || apt-get install -y -f
       ;;
     dnf|yum)
+      pkg_install "$mgr" liberation-fonts vulkan 2>/dev/null || true
       wget -q -O "$tmp/chrome.rpm" https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm
-      $mgr install -y "$tmp/chrome.rpm" 2>/dev/null || true
+      if ! $mgr install -y "$tmp/chrome.rpm" 2>/dev/null; then
+        $mgr install -y "$tmp/chrome.rpm" --nobest --allowerasing 2>/dev/null || true
+      fi
       ;;
     *)
       echo "  WARN: 请手动安装 Google Chrome" >&2
       ;;
   esac
   rm -rf "$tmp"
+  if ! command -v google-chrome-stable >/dev/null 2>&1 && ! command -v google-chrome >/dev/null 2>&1; then
+    echo "  ERROR: Google Chrome 安装失败；IG/FB/LinkedIn 发布需要 Chrome" >&2
+    echo "  可手动: wget https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm && dnf install -y ./google-chrome-stable_current_x86_64.rpm" >&2
+    exit 1
+  fi
+  echo "  Chrome = $(command -v google-chrome-stable || command -v google-chrome)"
 }
 
 write_local_chrome_path() {
@@ -350,6 +359,7 @@ setup_dirs
 
 if [[ "$SKIP_SAU" -eq 0 ]]; then
   step "social-auto-upload（IG/FB/LinkedIn 浏览器发布）"
+  export SKIP_PATCHRIGHT_CHROMIUM=1
   bash "$ROOT/setup-sau.sh"
 fi
 

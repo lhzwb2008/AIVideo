@@ -54,6 +54,9 @@ def chrome_executable() -> str:
     env = os.environ.get("LOCAL_CHROME_PATH", "").strip()
     candidates = [
         env,
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/opt/google/chrome/google-chrome",
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
