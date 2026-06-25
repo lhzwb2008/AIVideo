@@ -26,7 +26,7 @@ def api_key() -> str:
 
 
 def base_url() -> str:
-    return _env("AIHUBMIX_BASE_URL", "https://aihubmix.com/v1").rstrip("/")
+    return _env("AIHUBMIX_BASE_URL", "https://api.inferera.com/v1").rstrip("/")
 
 
 def text_model() -> str:

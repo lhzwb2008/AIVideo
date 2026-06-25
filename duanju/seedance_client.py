@@ -33,7 +33,7 @@ def api_key() -> str:
 
 
 def base_url() -> str:
-    raw = _env("AIHUBMIX_BASE_URL", "https://aihubmix.com/v1").rstrip("/")
+    raw = _env("AIHUBMIX_BASE_URL", "https://api.inferera.com/v1").rstrip("/")
     # 视频接口挂在 /v1 下，base 可能已带 /v1 也可能没带，统一归一到根域名。
     if raw.endswith("/v1"):
         return raw[: -len("/v1")]
