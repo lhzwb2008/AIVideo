@@ -7,7 +7,7 @@
   .\register-daily-publish.ps1
   .\register-daily-publish.ps1 -At 17:30
   .\register-daily-publish.ps1 -At 17:30 -Count 1
-  .\register-daily-publish.ps1 -Check          # only check if already registered
+  .\register-daily-publish.ps1 -Check
 #>
 param(
     [string]$At = '17:30',
@@ -21,23 +21,21 @@ $ErrorActionPreference = 'Stop'
 $Root = $PSScriptRoot
 $Wrapper = Join-Path $Root 'scripts\run-scheduled-publish.ps1'
 
-# --- Check current registration status ---
 $Existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($Existing) {
-    Write-Host "已注册: $TaskName" -ForegroundColor Green
+    Write-Host "Registered: $TaskName" -ForegroundColor Green
     $info = $Existing | Get-ScheduledTaskInfo
     $trigger = $Existing.Triggers | Select-Object -First 1
-    Write-Host "  状态        : $($Existing.State)"
+    Write-Host "  State       : $($Existing.State)"
     if ($trigger -and $trigger.StartBoundary) {
-        Write-Host "  触发时间    : $([datetime]$trigger.StartBoundary | Get-Date -Format 'HH:mm')"
+        Write-Host "  TriggerAt   : $([datetime]$trigger.StartBoundary | Get-Date -Format 'HH:mm')"
     }
-    Write-Host "  上次运行    : $($info.LastRunTime)  (结果: $($info.LastTaskResult))"
-    Write-Host "  下次运行    : $($info.NextRunTime)"
+    Write-Host "  LastRun     : $($info.LastRunTime)  (result: $($info.LastTaskResult))"
+    Write-Host "  NextRun     : $($info.NextRunTime)"
 } else {
-    Write-Host "未注册: $TaskName" -ForegroundColor Yellow
+    Write-Host "Not registered: $TaskName" -ForegroundColor Yellow
 }
 
-# -Check: report status only, do not (re)register
 if ($Check) {
     return
 }
@@ -46,16 +44,15 @@ if (-not (Test-Path $Wrapper)) {
     throw "Wrapper not found: $Wrapper"
 }
 
-# Registering requires admin
 $isAdmin = ([Security.Principal.WindowsPrincipal] `
     [Security.Principal.WindowsIdentity]::GetCurrent()
 ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    throw '注册计划任务需要管理员权限，请用「以管理员身份运行」打开 PowerShell。'
+    throw 'Administrator privileges required. Re-run PowerShell as Administrator.'
 }
 
 Write-Host ''
-Write-Host '==> 注册/更新计划任务...' -ForegroundColor Cyan
+Write-Host '==> Registering scheduled task...' -ForegroundColor Cyan
 
 $CountArg = if ($Count -gt 0) { " -Count $Count" } else { '' }
 $PsArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$Wrapper`"$CountArg"
