@@ -1,28 +1,61 @@
 #Requires -Version 5.1
-#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
   Register a Windows scheduled task to run make-and-publish daily.
 
 .EXAMPLE
-  .\scripts\register-daily-publish.ps1
-  .\scripts\register-daily-publish.ps1 -At 17:30
-  .\scripts\register-daily-publish.ps1 -At 17:30 -Count 1
+  .\register-daily-publish.ps1
+  .\register-daily-publish.ps1 -At 17:30
+  .\register-daily-publish.ps1 -At 17:30 -Count 1
+  .\register-daily-publish.ps1 -Check          # only check if already registered
 #>
 param(
     [string]$At = '17:30',
     [int]$Count = 0,
     [string]$TaskName = 'AIVideoMakeAndPublish',
-    [string]$RunAsUser = $env:USERNAME
+    [string]$RunAsUser = $env:USERNAME,
+    [switch]$Check
 )
 
 $ErrorActionPreference = 'Stop'
-$Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$Root = $PSScriptRoot
 $Wrapper = Join-Path $Root 'scripts\run-scheduled-publish.ps1'
+
+# --- Check current registration status ---
+$Existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($Existing) {
+    Write-Host "已注册: $TaskName" -ForegroundColor Green
+    $info = $Existing | Get-ScheduledTaskInfo
+    $trigger = $Existing.Triggers | Select-Object -First 1
+    Write-Host "  状态        : $($Existing.State)"
+    if ($trigger -and $trigger.StartBoundary) {
+        Write-Host "  触发时间    : $([datetime]$trigger.StartBoundary | Get-Date -Format 'HH:mm')"
+    }
+    Write-Host "  上次运行    : $($info.LastRunTime)  (结果: $($info.LastTaskResult))"
+    Write-Host "  下次运行    : $($info.NextRunTime)"
+} else {
+    Write-Host "未注册: $TaskName" -ForegroundColor Yellow
+}
+
+# -Check: report status only, do not (re)register
+if ($Check) {
+    return
+}
 
 if (-not (Test-Path $Wrapper)) {
     throw "Wrapper not found: $Wrapper"
 }
+
+# Registering requires admin
+$isAdmin = ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    throw '注册计划任务需要管理员权限，请用「以管理员身份运行」打开 PowerShell。'
+}
+
+Write-Host ''
+Write-Host '==> 注册/更新计划任务...' -ForegroundColor Cyan
 
 $CountArg = if ($Count -gt 0) { " -Count $Count" } else { '' }
 $PsArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$Wrapper`"$CountArg"
@@ -65,6 +98,7 @@ if ($Count -gt 0) {
 }
 Write-Host ''
 Write-Host 'Manage:'
+Write-Host "  Check     : .\register-daily-publish.ps1 -Check"
 Write-Host "  Run now   : Start-ScheduledTask -TaskName $TaskName"
 Write-Host "  Status    : Get-ScheduledTask -TaskName $TaskName | Get-ScheduledTaskInfo"
 Write-Host "  View logs : Get-ChildItem $Root\logs\scheduled\ | Sort-Object LastWriteTime -Descending | Select-Object -First 3"

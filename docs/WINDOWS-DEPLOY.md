@@ -153,10 +153,13 @@ WECHAT_DRAFT_ONLY=1
 
 ```powershell
 # 每天 08:00 跑默认条数（工作日 5 / 周末 3）
-.\scripts\register-daily-publish.ps1 -At 08:00
+.\register-daily-publish.ps1 -At 08:00
 
 # 或固定 3 条
-.\scripts\register-daily-publish.ps1 -At 07:30 -Count 3
+.\register-daily-publish.ps1 -At 07:30 -Count 3
+
+# 只检查是否已注册（不需要管理员）
+.\register-daily-publish.ps1 -Check
 ```
 
 - [ ] 任务名 `AIVideoMakeAndPublish` 已创建
@@ -243,5 +246,5 @@ A: Windows 用 `make-and-publish.ps1` / `setup-windows.ps1`；`publish_pipeline`
 .\make-and-publish.ps1                  # 默认条数全流水线
 .\make-and-publish.ps1 1 --no-publish   # 试制不发布
 .\scripts\login-cn.ps1 douyin --check   # 校验登录
-.\scripts\register-daily-publish.ps1 -At 08:00
+.\register-daily-publish.ps1 -At 08:00
 ```
