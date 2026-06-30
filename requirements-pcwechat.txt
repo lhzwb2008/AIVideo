@@ -1,0 +1,4 @@
+# PC 微信视频号 UI 自动化（仅 Windows）
+# pip install -r requirements-pcwechat.txt
+pywinauto>=0.6.8
+pywin32>=306
