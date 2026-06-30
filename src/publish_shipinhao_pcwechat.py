@@ -337,15 +337,17 @@ def _sidebar_channels_y_ratios() -> list[float]:
 
 
 def _channels_my_tab_points() -> list[tuple[float, float]]:
+    """PC WeChat Channels: profile is top account tab or top-right avatar (not bottom 我)."""
     custom_x = _env("WECHAT_CHANNELS_MY_X_RATIO", "")
     custom_y = _env("WECHAT_CHANNELS_MY_Y_RATIO", "")
     if custom_x and custom_y:
         return [(float(custom_x), float(custom_y))]
     return [
-        (0.90, 0.96),
-        (0.88, 0.97),
-        (0.92, 0.95),
-        (0.86, 0.96),
+        (0.58, 0.05),
+        (0.94, 0.05),
+        (0.52, 0.05),
+        (0.96, 0.06),
+        (0.55, 0.04),
     ]
 
 
@@ -355,12 +357,133 @@ def _channels_post_video_points() -> list[tuple[float, float]]:
     if custom_x and custom_y:
         return [(float(custom_x), float(custom_y))]
     return [
-        (0.58, 0.30),
-        (0.55, 0.28),
-        (0.60, 0.32),
-        (0.52, 0.33),
-        (0.62, 0.28),
+        (0.42, 0.28),
+        (0.38, 0.26),
+        (0.45, 0.30),
+        (0.40, 0.32),
     ]
+
+
+_VISION_NAV_SYSTEM = """You locate ONE click point on a Windows PC WeChat Channels (视频号) screenshot.
+Return ONLY JSON:
+{"x":0.0-1.0,"y":0.0-1.0,"label":"element","confidence":"high|low","found":true}
+
+Rules:
+- x,y normalized to the FULL screenshot (0=left/top, 1=right/bottom).
+- Layout: narrow WeChat icon sidebar on the left; Channels panel on the right.
+- On the home feed, account tab (creator name) and profile icon are at the TOP — not bottom.
+- NEVER click the large center video playback area when opening profile or Post video.
+- If the target is not visible, return {"found":false,"label":"reason"}."""
+
+
+def _vision_nav_enabled() -> bool:
+    raw = _env("WECHAT_VISION_NAV", "auto").lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    try:
+        from llm_vision_client import llm_vision_available
+
+        available = llm_vision_available()
+    except Exception:
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return available
+    return available
+
+
+def _screenshot_window(win) -> Path | None:
+    geo = _window_geometry(win)
+    if not geo:
+        return None
+    try:
+        from PIL import ImageGrab
+
+        left, top, w, h = geo
+        img = ImageGrab.grab(bbox=(left, top, left + w, top + h))
+        path = _logs_dir() / f"shipinhao_pcwechat_win_{datetime.now():%Y%m%d_%H%M%S}.png"
+        img.save(path)
+        return path
+    except Exception as exc:
+        _log(f"  [vision] screenshot failed: {exc}")
+        return None
+
+
+def _parse_vision_point(text: str) -> dict:
+    import json
+
+    text = text.strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError(f"no JSON in vision response: {text[:200]}")
+        data = json.loads(text[start : end + 1])
+    if data.get("found") is False:
+        return {"found": False, "label": str(data.get("label") or "")}
+    x, y = data.get("x"), data.get("y")
+    if x is None or y is None:
+        return {"found": False, "label": "missing x/y"}
+    return {
+        "found": True,
+        "x": float(x),
+        "y": float(y),
+        "label": str(data.get("label") or ""),
+        "confidence": str(data.get("confidence") or ""),
+    }
+
+
+def _vision_locate(win, goal: str) -> tuple[float, float] | None:
+    shot = _screenshot_window(win)
+    if not shot:
+        return None
+    account = _channels_account_hint()
+    try:
+        from llm_vision_client import vision_chat
+
+        raw = vision_chat(
+            system=_VISION_NAV_SYSTEM,
+            user_text=(
+                f"Goal: {goal}\n"
+                f"Creator account name hint: {account}\n"
+                "Avoid clicking video thumbnails or the playback center."
+            ),
+            screenshot=shot,
+            max_tokens=160,
+        )
+        data = _parse_vision_point(raw)
+        if not data.get("found"):
+            _log(f"  [vision] not found: {goal} ({data.get('label', '')})")
+            return None
+        x, y = data["x"], data["y"]
+        if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+            _log(f"  [vision] out of range ({x},{y})")
+            return None
+        _log(
+            f"  [vision] {goal} -> ({x:.3f},{y:.3f}) "
+            f"{data.get('label', '')} conf={data.get('confidence', '?')}"
+        )
+        return x, y
+    except Exception as exc:
+        _log(f"  [vision] locate failed: {exc}")
+        return None
+
+
+def _vision_click(win, goal: str) -> bool:
+    pt = _vision_locate(win, goal)
+    if not pt:
+        return False
+    _rect_click(win, pt[0], pt[1])
+    return True
+
+
+def _recover_from_video_playback(host) -> None:
+    _log("  [nav] Escape — undo accidental feed video click")
+    _force_foreground(int(host.handle))
+    time.sleep(0.15)
+    send_keys("{ESC}")
+    time.sleep(0.8)
 
 
 def _sidebar_click(win, y_ratio: float) -> None:
@@ -461,23 +584,68 @@ def _navigate_channels_home_to_publish(host) -> PublishSession | None:
         return session
 
     _ensure_channels_panel_open(host)
+    account = _channels_account_hint()
 
     _, post_btn = find_control_deep("发表视频")
     if not post_btn:
-        _log("  [nav] channels home -> My profile (coordinates)")
-        for x_ratio, y_ratio in _channels_my_tab_points():
-            _log(f"  [nav] click My tab ({x_ratio:.2f}, {y_ratio:.2f})")
-            _rect_click(host, x_ratio, y_ratio)
-            time.sleep(1.2)
-            _, post_btn = find_control_deep("发表视频")
-            if post_btn:
-                break
+        profile_goals = [
+            f'Click the top tab with creator account name "{account}" (open my profile, NOT "视频号" feed tab)',
+            "Click the person/profile icon at the top-right of the Channels panel (open my profile)",
+        ]
+        if _vision_nav_enabled():
+            _log("  [nav] channels home -> My profile (vision LLM)")
+            for goal in profile_goals:
+                if _vision_click(host, goal):
+                    time.sleep(1.5)
+                    session = _detect_publish_session_after_nav(host)
+                    if session:
+                        return session
+                    _, post_btn = find_control_deep("发表视频")
+                    if post_btn:
+                        break
+                _recover_from_video_playback(host)
+
+        if not post_btn:
+            _log("  [nav] channels home -> My profile (coordinates)")
+            for x_ratio, y_ratio in _channels_my_tab_points():
+                _log(f"  [nav] click profile entry ({x_ratio:.2f}, {y_ratio:.2f})")
+                _rect_click(host, x_ratio, y_ratio)
+                time.sleep(1.2)
+                session = _detect_publish_session_after_nav(host)
+                if session:
+                    return session
+                _, post_btn = find_control_deep("发表视频")
+                if post_btn:
+                    break
+                _recover_from_video_playback(host)
 
     _log("  [nav] profile -> Post video")
     _, post_btn = find_control_deep("发表视频")
     if post_btn:
         _log("  [nav] click Post video (UIA)")
         _click_control(host, post_btn)
+    elif _vision_nav_enabled():
+        _log("  [nav] profile -> Post video (vision LLM)")
+        goal = (
+            'Click the "发表视频" (Post video) button on the creator profile page. '
+            "It is a button near 发起直播 — NOT a video thumbnail in the feed."
+        )
+        if _vision_click(host, goal):
+            time.sleep(1.5)
+            session = _detect_publish_session_after_nav(host)
+            if session:
+                _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
+                return session
+        _recover_from_video_playback(host)
+        for x_ratio, y_ratio in _channels_post_video_points():
+            _log(f"  [nav] click Post video ({x_ratio:.2f}, {y_ratio:.2f})")
+            _rect_click(host, x_ratio, y_ratio)
+            time.sleep(1.2)
+            session = _detect_publish_session_after_nav(host)
+            if session:
+                _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
+                return session
+            _recover_from_video_playback(host)
     else:
         for x_ratio, y_ratio in _channels_post_video_points():
             _log(f"  [nav] click Post video ({x_ratio:.2f}, {y_ratio:.2f})")
@@ -487,6 +655,7 @@ def _navigate_channels_home_to_publish(host) -> PublishSession | None:
             if session:
                 _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
                 return session
+            _recover_from_video_playback(host)
 
     time.sleep(1.0)
     session = _detect_publish_session_after_nav(host)
@@ -884,7 +1053,8 @@ def open_publish_page(*, skip_nav: bool = False) -> PublishSession:
     raise PcWeChatPublishError(
         "cannot open publish form from channels home. Keep PC WeChat on the Channels feed "
         f"(视频号首页) and rerun.{hint} "
-        "Tune WECHAT_CHANNELS_MY_X/Y_RATIO and WECHAT_POST_VIDEO_X/Y_RATIO in .env if needed."
+        "Enable WECHAT_VISION_NAV=1 with AIHUBMIX_API_KEY, or tune "
+        "WECHAT_CHANNELS_MY_* / WECHAT_POST_VIDEO_* ratios in .env."
     )
 
 
