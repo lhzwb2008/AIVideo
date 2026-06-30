@@ -471,16 +471,17 @@ def _channels_post_video_points() -> list[tuple[float, float]]:
     custom_y = _env("WECHAT_POST_VIDEO_Y_RATIO", "")
     if custom_x and custom_y:
         return [(float(custom_x), float(custom_y))]
-    # "发表视频" sits in the profile header, to the RIGHT of the avatar/name,
-    # ABOVE the video thumbnail grid. Center-top points (old defaults) hit the
-    # first thumbnail row and opened the feed, so try top-right first.
+    # On the standalone 视频号 account window (browser-like, ~650px wide), the
+    # "📷 发表视频" button sits on the LEFT, below the avatar/follower count and
+    # ABOVE the video grid — roughly ratio (0.13, 0.29). "发起直播" is at ~0.25.
+    # (Ratios are relative to that account window, not the 1840px main shell.)
     return [
-        (0.88, 0.20),
-        (0.82, 0.20),
-        (0.90, 0.18),
-        (0.85, 0.23),
-        (0.78, 0.21),
-        (0.92, 0.22),
+        (0.13, 0.29),
+        (0.16, 0.29),
+        (0.13, 0.31),
+        (0.18, 0.28),
+        (0.11, 0.30),
+        (0.20, 0.29),
     ]
 
 
@@ -797,7 +798,7 @@ def _pick_profile_like_window(host):
     best = None
     for w, _, _, _ in iter_wechat_windows():
         geo = _window_geometry(w)
-        if not geo or geo[2] < 600:
+        if not geo or geo[2] < 450:
             continue
         page = _vision_classify_page(w)
         if page == "publish_form":
@@ -811,11 +812,11 @@ def _pick_profile_like_window(host):
 
 def _click_open_publish_form(host) -> PublishSession | None:
     post_goal = (
-        'Click the "发表视频" button (Post video). It is a small button/link near '
-        "the TOP of the page: on the 视频号助手 management page it is at the "
-        "TOP-RIGHT corner; on the creator profile it is to the RIGHT of the "
-        'avatar next to "发起直播", ABOVE the grid of video thumbnails. '
-        "NEVER click a video thumbnail/cover."
+        'Click the "发表视频" button (a small pill button with a camera icon, '
+        'next to "发起直播"). On the creator profile it is on the LEFT side, '
+        "BELOW the avatar and the follower count (xx人关注), and ABOVE the grid "
+        "of video thumbnails. On the 视频号助手 page it is at the top-right. "
+        "NEVER click a video thumbnail/cover in the grid."
     )
 
     if _vision_nav_enabled():
@@ -2217,7 +2218,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     body = build_publish_body(fields)
 
-    _log("== PC WeChat Channels publish (test) == [build:2026-06-30f postvideo-topright]")
+    _log("== PC WeChat Channels publish (test) == [build:2026-06-30g postvideo-leftbtn]")
     _log(f"  video: {video}")
     _log(f"  body: {body[:120]}{'...' if len(body) > 120 else ''}")
 
