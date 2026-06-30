@@ -677,20 +677,19 @@ def _ensure_channels_panel_open(host) -> None:
 
 
 def _detect_publish_session_after_nav(host) -> PublishSession | None:
-    found = find_publish_window(timeout=4.0)
-    if found:
-        sparse = not _window_has_publish_form(found)
+    found, sparse = find_best_publish_session_window(timeout=1.0)
+    if found and _is_real_publish_form(found):
         return PublishSession(found, sparse=sparse)
 
     assistant = find_channels_assistant_window()
-    if assistant:
-        return PublishSession(assistant, sparse=True)
+    if assistant and _is_real_publish_form(assistant):
+        sparse = not _control_exists_on_window(
+            assistant, "上传时长", "封面预览", "发表动态"
+        )
+        return PublishSession(assistant, sparse=sparse)
 
-    _, marker = find_control_deep(
-        "上传时长", "点击上传", "添加描述", "发表动态", "视频管理"
-    )
-    if marker:
-        sparse = not _window_has_publish_form(host)
+    if host and _is_real_publish_form(host):
+        sparse = not _control_exists_on_window(host, "上传时长", "封面预览", "发表动态")
         return PublishSession(host, sparse=sparse)
     return None
 
@@ -718,7 +717,7 @@ def _wait_publish_session(host, *, timeout: float = 12.0) -> PublishSession | No
     appex = find_largest_wechat_window(prefer_appex=True)
     if appex:
         geo = _window_geometry(appex)
-        if geo and geo[2] >= 600:
+        if geo and geo[2] >= 600 and _is_real_publish_form(appex):
             _log("  [nav] using WeChatAppEx publish window (sparse UI)")
             _force_foreground(int(appex.handle))
             return PublishSession(appex, sparse=True)
@@ -768,10 +767,8 @@ def _go_to_creator_profile(host) -> None:
         for goal in profile_goals:
             if _vision_click(host, goal):
                 time.sleep(1.5)
-                if _on_creator_profile_page():
+                if _on_creator_profile_page() or _vision_profile_page_visible(host):
                     return
-                _log("  [nav] profile assumed after vision click (sparse UI)")
-                return
 
     _log("  [nav] channels home -> My profile (coordinates)")
     for x_ratio, y_ratio in _channels_my_tab_points():
