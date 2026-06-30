@@ -33,17 +33,49 @@ $env:ROOT = $Root
 
 . (Join-Path $Root 'scripts\load-dotenv.ps1') -Locale zh
 
+function Invoke-ExternalQuiet {
+    param(
+        [Parameter(Mandatory)][string]$Exe,
+        [Parameter(ValueFromRemainingArguments = $true)][string[]]$CmdArgs
+    )
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Exe @CmdArgs 2>&1 | Out-Null
+        if ($null -eq $LASTEXITCODE) { return 0 }
+        return [int]$LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
+function Invoke-ExternalLogged {
+    param(
+        [Parameter(Mandatory)][string]$Exe,
+        [Parameter(ValueFromRemainingArguments = $true)][string[]]$CmdArgs
+    )
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Exe @CmdArgs 2>&1 | ForEach-Object { Write-Host $_ }
+        if ($null -eq $LASTEXITCODE) { return 0 }
+        return [int]$LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 $MainPy = Join-Path $Root '.venv\Scripts\python.exe'
 if (-not (Test-Path $MainPy)) {
     $MainPy = 'python'
 }
 
-& $MainPy -m pip show pywinauto 1>$null 2>$null
-$hasPywinauto = ($LASTEXITCODE -eq 0)
-if (-not $hasPywinauto) {
+$pipShowCode = Invoke-ExternalQuiet -Exe $MainPy -CmdArgs @('-m', 'pip', 'show', 'pywinauto')
+if ($pipShowCode -ne 0) {
     Write-Host 'Installing requirements-pcwechat.txt ...' -ForegroundColor Yellow
-    & $MainPy -m pip install -r (Join-Path $Root 'requirements-pcwechat.txt')
-    if ($LASTEXITCODE -ne 0) {
+    $req = Join-Path $Root 'requirements-pcwechat.txt'
+    $pipInstallCode = Invoke-ExternalLogged -Exe $MainPy -CmdArgs @('-m', 'pip', 'install', '-r', $req)
+    if ($pipInstallCode -ne 0) {
         throw 'pip install requirements-pcwechat.txt failed'
     }
 }
@@ -66,5 +98,5 @@ if ($Video) {
 if ($ExtraArgs) { $PyArgs += $ExtraArgs }
 
 Write-Host '==> shipinhao PC WeChat UI publish' -ForegroundColor Cyan
-& $MainPy @PyArgs
-if ($null -ne $LASTEXITCODE) { exit [int]$LASTEXITCODE }
+$runCode = Invoke-ExternalLogged -Exe $MainPy -CmdArgs $PyArgs
+exit $runCode
