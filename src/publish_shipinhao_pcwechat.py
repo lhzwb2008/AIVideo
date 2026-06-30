@@ -1887,16 +1887,67 @@ def _publish_button(win, *, click: bool) -> bool:
     return False
 
 
+def _publish_form_still_open(win) -> bool:
+    try:
+        return _is_real_publish_form(win)
+    except Exception:
+        return True
+
+
+def _wait_publish_action_result(win, *, timeout: float = 8.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _publish_form_still_open(win):
+            _log("  [publish] form left publish page")
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _vision_click_publish_button(win) -> bool:
+    if not _vision_nav_enabled():
+        return False
+    goal = (
+        "Click the final orange primary publish/submit button on the WeChat Channels "
+        "publish form. It is at the bottom-right edge of the form, to the right of "
+        "手机预览 / 保存草稿. If the button has no visible text, click the orange square."
+    )
+    _log("  [publish] locate publish button (vision LLM)")
+    return _vision_click(win, goal)
+
+
 def click_publish(session: PublishSession) -> None:
     win = session.window
     _log("  [publish] click publish...")
     if not session.sparse and _publish_button(win, click=True):
-        return
-    _log("  [publish] coordinate click publish button")
-    _rect_click(
-        win,
-        _ratio_env("WECHAT_PUBLISH_X_RATIO", 0.88),
-        _ratio_env("WECHAT_PUBLISH_Y_RATIO", 0.93),
+        if _wait_publish_action_result(win):
+            return
+        _log("  [publish] UIA click did not submit; fallback")
+
+    if _vision_click_publish_button(win):
+        if _wait_publish_action_result(win):
+            return
+        _log("  [publish] vision click did not submit; fallback")
+
+    # PC WeChat sometimes renders the final submit as a textless orange block clipped
+    # on the far-right edge. Default close to that block, not the 手机预览 button.
+    for x_ratio, y_ratio in (
+        (
+            _ratio_env("WECHAT_PUBLISH_X_RATIO", 0.985),
+            _ratio_env("WECHAT_PUBLISH_Y_RATIO", 0.76),
+        ),
+        (0.975, 0.76),
+        (0.965, 0.77),
+        (0.99, 0.77),
+    ):
+        _log(f"  [publish] coordinate click publish button ({x_ratio:.3f}, {y_ratio:.3f})")
+        _rect_click(win, x_ratio, y_ratio)
+        if _wait_publish_action_result(win):
+            return
+
+    raise PcWeChatPublishError(
+        "publish click did not submit. The form is still open; adjust "
+        "WECHAT_PUBLISH_X_RATIO/Y_RATIO to the orange publish button."
     )
 
 
@@ -1917,7 +1968,7 @@ def publish_via_pc_wechat(
 
     click_publish(session)
     time.sleep(2.0)
-    _log("  [publish] clicked publish (confirm in WeChat UI)")
+    _log("  [publish] submitted (publish form left or success confirmed)")
     return {
         "published": True,
         "video": str(video),
