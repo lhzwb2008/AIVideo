@@ -260,6 +260,25 @@ def _screen_click(x: int, y: int, *, double: bool = False) -> None:
         mouse.click(button="left", coords=(x, y))
 
 
+def _scroll_window(win, x_ratio: float, y_ratio: float, wheel_dist: int) -> None:
+    """Mouse-wheel scroll inside a window at the given ratio point.
+
+    wheel_dist < 0 scrolls DOWN (toward the bottom of the form).
+    """
+    geo = _window_geometry(win)
+    if not geo:
+        return
+    left, top, w, h = geo
+    x = left + int(w * x_ratio)
+    y = top + int(h * y_ratio)
+    try:
+        _focus_hwnd(int(win.handle))
+        time.sleep(0.1)
+        mouse.scroll(coords=(x, y), wheel_dist=wheel_dist)
+    except Exception:
+        pass
+
+
 def _focus_hwnd(hwnd: int) -> None:
     try:
         import win32con
@@ -2112,10 +2131,20 @@ def click_publish(session: PublishSession) -> None:
             return
         _log("  [publish] UIA click did not submit; fallback")
 
-    if _vision_click_publish_button(win):
-        if _wait_publish_action_result(win):
-            return
-        _log("  [publish] vision click did not submit; fallback")
+    # The final 发表 / 保存草稿 buttons sit at the BOTTOM of the form, usually
+    # below the fold (vision: "form needs scrolling down to reach bottom
+    # buttons"). Scroll the form down, then locate the orange 发表 button.
+    for scroll_round in range(5):
+        _log(f"  [publish] scroll form to bottom (round {scroll_round + 1})")
+        _scroll_window(win, 0.60, 0.55, -8)
+        time.sleep(0.6)
+        if _publish_button(win, click=True):
+            if _wait_publish_action_result(win):
+                return
+        if _vision_click_publish_button(win):
+            if _wait_publish_action_result(win):
+                return
+            _log("  [publish] vision click did not submit; keep scrolling")
 
     # PC WeChat sometimes renders the final submit as a textless orange block clipped
     # on the far-right edge. Default close to that block, not the 手机预览 button.
@@ -2127,6 +2156,8 @@ def click_publish(session: PublishSession) -> None:
         (0.975, 0.76),
         (0.965, 0.77),
         (0.99, 0.77),
+        (0.88, 0.93),
+        (0.80, 0.93),
     ):
         _log(f"  [publish] coordinate click publish button ({x_ratio:.3f}, {y_ratio:.3f})")
         _rect_click(win, x_ratio, y_ratio)
@@ -2227,7 +2258,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     body = build_publish_body(fields)
 
-    _log("== PC WeChat Channels publish (test) == [build:2026-06-30h dedup-form]")
+    _log("== PC WeChat Channels publish (test) == [build:2026-06-30i scroll-publish]")
     _log(f"  video: {video}")
     _log(f"  body: {body[:120]}{'...' if len(body) > 120 else ''}")
 
