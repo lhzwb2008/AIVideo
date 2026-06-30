@@ -787,40 +787,46 @@ def _go_to_creator_profile(host) -> None:
 
 def _click_open_publish_form(host) -> PublishSession | None:
     post_goal = (
-        'Click the "发表视频" (Post video) button on the creator profile page. '
-        'It sits beside "发起直播" — NOT a video thumbnail.'
+        'Click the orange "发表视频" (Post video) button. On the 视频号助手 '
+        "management page it is at the TOP-RIGHT corner of the page. On the "
+        'creator profile it sits beside "发起直播". Do NOT click a video thumbnail.'
     )
 
+    # Most reliable: click the actual "发表视频" UIA control on the window that
+    # truly owns it (often the standalone 视频号助手 window, not the main 微信
+    # shell). Earlier code clicked `host`, which is why nothing opened.
+    owner, post_btn = find_control_deep("发表视频")
+    target = owner or host
+    if post_btn:
+        _log("  [nav] click Post video (UIA on owning window)")
+        _prepare_wechat_foreground(target)
+        _click_control(target, post_btn)
+        time.sleep(1.0)
+        session = _wait_publish_session(target, timeout=12.0)
+        if session:
+            _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
+            return session
+
     if _vision_nav_enabled():
-        _log("  [nav] profile -> Post video (vision LLM)")
-        _prepare_wechat_foreground(host)
-        if _vision_click(host, post_goal):
-            session = _wait_publish_session(host, timeout=12.0)
+        _log("  [nav] -> Post video (vision LLM)")
+        _prepare_wechat_foreground(target)
+        if _vision_click(target, post_goal):
+            session = _wait_publish_session(target, timeout=12.0)
             if session:
                 _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
                 return session
 
-    _, post_btn = find_control_deep("发表视频")
-    if post_btn and (_on_creator_profile_page() or _vision_nav_enabled()):
-        _log("  [nav] click Post video (UIA)")
-        _prepare_wechat_foreground(host)
-        _click_control(host, post_btn)
-        session = _wait_publish_session(host, timeout=12.0)
-        if session:
-            _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
-            return session
-
-    _log("  [nav] profile -> Post video (coordinates)")
+    _log("  [nav] -> Post video (coordinates)")
     for x_ratio, y_ratio in _channels_post_video_points():
-        _prepare_wechat_foreground(host)
+        _prepare_wechat_foreground(target)
         _log(f"  [nav] click Post video ({x_ratio:.2f}, {y_ratio:.2f})")
-        _rect_click(host, x_ratio, y_ratio)
+        _rect_click(target, x_ratio, y_ratio)
         time.sleep(1.5)
-        session = _wait_publish_session(host, timeout=10.0)
+        session = _wait_publish_session(target, timeout=10.0)
         if session:
             _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
             return session
-        _recover_from_feed_video_misclick(host, x_ratio, y_ratio)
+        _recover_from_feed_video_misclick(target, x_ratio, y_ratio)
     return None
 
 
@@ -1054,14 +1060,31 @@ _PUBLISH_FORM_ONLY = (
 )
 
 
+_VISION_PAGE_CACHE: dict[int, tuple[float, str]] = {}
+_VISION_PAGE_TTL = 2.0
+
+
 def _vision_classify_page(win) -> str:
     """Ask the vision LLM which WeChat Channels page this is.
 
     Returns one of: publish_form, management_list, feed, profile, other, "".
     Empty string means vision unavailable / failed.
+
+    Results are cached per window handle for a short TTL so the navigation /
+    detection polling loops don't fire one LLM call every 0.35s (which made the
+    run look frozen and was very slow/expensive).
     """
     if not _vision_nav_enabled():
         return ""
+    try:
+        handle = int(win.handle)
+    except Exception:
+        handle = 0
+    now = time.time()
+    if handle:
+        cached = _VISION_PAGE_CACHE.get(handle)
+        if cached and (now - cached[0]) < _VISION_PAGE_TTL:
+            return cached[1]
     shot = _screenshot_window(win)
     if not shot:
         return ""
@@ -1089,6 +1112,8 @@ def _vision_classify_page(win) -> str:
         page = str(data.get("page", "")).strip()
         if page:
             _log(f"  [vision] page = {page}")
+            if handle:
+                _VISION_PAGE_CACHE[handle] = (time.time(), page)
         return page
     except Exception as exc:
         _log(f"  [vision] classify: {exc}")
@@ -2141,7 +2166,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     body = build_publish_body(fields)
 
-    _log("== PC WeChat Channels publish (test) == [build:2026-06-30c vision-first]")
+    _log("== PC WeChat Channels publish (test) == [build:2026-06-30d post-video-owner]")
     _log(f"  video: {video}")
     _log(f"  body: {body[:120]}{'...' if len(body) > 120 else ''}")
 
