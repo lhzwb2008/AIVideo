@@ -18,6 +18,7 @@ param(
     [ValidateSet('zh', 'en')]
     [string]$Locale = 'zh',
     [string]$Desc = '',
+    [string]$Script = '',
     [switch]$Latest,
     [switch]$DryRun,
     [switch]$NoPublish,
@@ -93,6 +94,7 @@ if ($NoPublish) { $PyArgs += '--no-publish' }
 if ($SkipNav) { $PyArgs += '--skip-nav' }
 if ($Locale -and $Locale -ne 'zh') { $PyArgs += '--locale'; $PyArgs += $Locale }
 if ($Desc) { $PyArgs += '--desc'; $PyArgs += $Desc }
+if ($Script) { $PyArgs += '--script'; $PyArgs += $Script }
 if ($Video) {
     $PyArgs += '--video'
     $PyArgs += $Video
