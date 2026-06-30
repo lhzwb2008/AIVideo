@@ -266,6 +266,58 @@ def _focus_hwnd(hwnd: int) -> None:
         pass
 
 
+def _force_foreground(hwnd: int) -> None:
+    try:
+        import win32con
+        import win32gui
+        import win32process
+
+        if win32gui.GetForegroundWindow() == hwnd:
+            return
+        fg = win32gui.GetForegroundWindow()
+        fg_thread = win32process.GetWindowThreadProcessId(fg)[0]
+        target_thread = win32process.GetWindowThreadProcessId(hwnd)[0]
+        attached = False
+        if fg_thread and target_thread and fg_thread != target_thread:
+            win32process.AttachThreadInput(fg_thread, target_thread, True)
+            attached = True
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+            win32gui.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                win32process.AttachThreadInput(fg_thread, target_thread, False)
+    except Exception:
+        _focus_hwnd(hwnd)
+
+
+def _is_wechat_foreground(win) -> bool:
+    try:
+        import win32gui
+        import win32process
+
+        hwnd = int(win.handle)
+        fg = win32gui.GetForegroundWindow()
+        if fg == hwnd:
+            return True
+        _, fg_pid = win32process.GetWindowThreadProcessId(fg)
+        _, win_pid = win32process.GetWindowThreadProcessId(hwnd)
+        return fg_pid == win_pid
+    except Exception:
+        return False
+
+
+def _prepare_wechat_foreground(win, *, retries: int = 5) -> bool:
+    hwnd = int(win.handle)
+    for attempt in range(retries):
+        _force_foreground(hwnd)
+        time.sleep(0.35 + attempt * 0.12)
+        if _is_wechat_foreground(win):
+            return True
+    _log("  [nav] warning: WeChat not foreground — close/minimize PowerShell and retry")
+    return False
+
+
 def _window_large_enough(win, *, min_w: int = 480, min_h: int = 360) -> bool:
     geo = _window_geometry(win)
     if not geo:
@@ -435,6 +487,8 @@ def _parse_vision_point(text: str) -> dict:
 
 
 def _vision_locate(win, goal: str) -> tuple[float, float] | None:
+    if not _prepare_wechat_foreground(win):
+        return None
     shot = _screenshot_window(win)
     if not shot:
         return None
@@ -478,7 +532,11 @@ def _vision_click(win, goal: str) -> bool:
     return True
 
 
-def _recover_from_video_playback(host) -> None:
+def _recover_from_feed_video_misclick(
+    host, x_ratio: float, y_ratio: float, *, force: bool = False
+) -> None:
+    if not force and (y_ratio <= 0.12 or y_ratio >= 0.88 or x_ratio < 0.35):
+        return
     _log("  [nav] Escape — undo accidental feed video click")
     _force_foreground(int(host.handle))
     time.sleep(0.15)
@@ -574,95 +632,119 @@ def _detect_publish_session_after_nav(host) -> PublishSession | None:
     return None
 
 
-def _navigate_channels_home_to_publish(host) -> PublishSession | None:
-    _force_foreground(int(host.handle))
-    time.sleep(0.3)
+def _on_creator_profile_page() -> bool:
+    _, live = find_control_deep("发起直播")
+    if live:
+        return True
+    account = _channels_account_hint()
+    if account:
+        _, acct = find_control_deep(account)
+        _, post = find_control_deep("发表视频")
+        return bool(acct and post)
+    return False
 
-    session = _detect_publish_session_after_nav(host)
+
+def _wait_publish_session(host, *, timeout: float = 12.0) -> PublishSession | None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        session = _detect_publish_session_after_nav(host)
+        if session:
+            return session
+        time.sleep(0.35)
+
+    appex = find_largest_wechat_window(prefer_appex=True)
+    if appex:
+        geo = _window_geometry(appex)
+        if geo and geo[2] >= 600:
+            _log("  [nav] using WeChatAppEx publish window (sparse UI)")
+            _force_foreground(int(appex.handle))
+            return PublishSession(appex, sparse=True)
+    return None
+
+
+def _go_to_creator_profile(host) -> None:
+    account = _channels_account_hint()
+    profile_goals = [
+        f'Click the top tab with creator account name "{account}" (open my profile, NOT "视频号" feed tab)',
+        "Click the person/profile icon at the top-right of the Channels panel (open my profile)",
+    ]
+    if _vision_nav_enabled():
+        _log("  [nav] channels home -> My profile (vision LLM)")
+        for goal in profile_goals:
+            if _vision_click(host, goal):
+                time.sleep(1.5)
+                if _on_creator_profile_page():
+                    return
+                _log("  [nav] profile assumed after vision click (sparse UI)")
+                return
+
+    _log("  [nav] channels home -> My profile (coordinates)")
+    for x_ratio, y_ratio in _channels_my_tab_points():
+        _log(f"  [nav] click profile entry ({x_ratio:.2f}, {y_ratio:.2f})")
+        _prepare_wechat_foreground(host)
+        _rect_click(host, x_ratio, y_ratio)
+        time.sleep(1.5)
+        if _on_creator_profile_page():
+            return
+        _recover_from_feed_video_misclick(host, x_ratio, y_ratio)
+
+def _click_open_publish_form(host) -> PublishSession | None:
+    post_goal = (
+        'Click the "发表视频" (Post video) button on the creator profile page. '
+        'It sits beside "发起直播" — NOT a video thumbnail.'
+    )
+
+    if _vision_nav_enabled():
+        _log("  [nav] profile -> Post video (vision LLM)")
+        _prepare_wechat_foreground(host)
+        if _vision_click(host, post_goal):
+            session = _wait_publish_session(host, timeout=12.0)
+            if session:
+                _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
+                return session
+
+    _, post_btn = find_control_deep("发表视频")
+    if post_btn and (_on_creator_profile_page() or _vision_nav_enabled()):
+        _log("  [nav] click Post video (UIA)")
+        _prepare_wechat_foreground(host)
+        _click_control(host, post_btn)
+        session = _wait_publish_session(host, timeout=12.0)
+        if session:
+            _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
+            return session
+
+    _log("  [nav] profile -> Post video (coordinates)")
+    for x_ratio, y_ratio in _channels_post_video_points():
+        _prepare_wechat_foreground(host)
+        _log(f"  [nav] click Post video ({x_ratio:.2f}, {y_ratio:.2f})")
+        _rect_click(host, x_ratio, y_ratio)
+        time.sleep(1.5)
+        session = _wait_publish_session(host, timeout=10.0)
+        if session:
+            _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
+            return session
+        _recover_from_feed_video_misclick(host, x_ratio, y_ratio)
+    return None
+
+
+def _navigate_channels_home_to_publish(host) -> PublishSession | None:
+    _prepare_wechat_foreground(host)
+
+    session = _wait_publish_session(host, timeout=1.5)
     if session:
         _log("  [nav] publish form already open")
         return session
 
     _ensure_channels_panel_open(host)
-    account = _channels_account_hint()
+    _prepare_wechat_foreground(host)
 
-    _, post_btn = find_control_deep("发表视频")
-    if not post_btn:
-        profile_goals = [
-            f'Click the top tab with creator account name "{account}" (open my profile, NOT "视频号" feed tab)',
-            "Click the person/profile icon at the top-right of the Channels panel (open my profile)",
-        ]
-        if _vision_nav_enabled():
-            _log("  [nav] channels home -> My profile (vision LLM)")
-            for goal in profile_goals:
-                if _vision_click(host, goal):
-                    time.sleep(1.5)
-                    session = _detect_publish_session_after_nav(host)
-                    if session:
-                        return session
-                    _, post_btn = find_control_deep("发表视频")
-                    if post_btn:
-                        break
-                _recover_from_video_playback(host)
+    if not _on_creator_profile_page():
+        _go_to_creator_profile(host)
 
-        if not post_btn:
-            _log("  [nav] channels home -> My profile (coordinates)")
-            for x_ratio, y_ratio in _channels_my_tab_points():
-                _log(f"  [nav] click profile entry ({x_ratio:.2f}, {y_ratio:.2f})")
-                _rect_click(host, x_ratio, y_ratio)
-                time.sleep(1.2)
-                session = _detect_publish_session_after_nav(host)
-                if session:
-                    return session
-                _, post_btn = find_control_deep("发表视频")
-                if post_btn:
-                    break
-                _recover_from_video_playback(host)
+    if not _on_creator_profile_page():
+        _log("  [nav] creator profile not confirmed; trying Post video anyway")
 
-    _log("  [nav] profile -> Post video")
-    _, post_btn = find_control_deep("发表视频")
-    if post_btn:
-        _log("  [nav] click Post video (UIA)")
-        _click_control(host, post_btn)
-    elif _vision_nav_enabled():
-        _log("  [nav] profile -> Post video (vision LLM)")
-        goal = (
-            'Click the "发表视频" (Post video) button on the creator profile page. '
-            "It is a button near 发起直播 — NOT a video thumbnail in the feed."
-        )
-        if _vision_click(host, goal):
-            time.sleep(1.5)
-            session = _detect_publish_session_after_nav(host)
-            if session:
-                _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
-                return session
-        _recover_from_video_playback(host)
-        for x_ratio, y_ratio in _channels_post_video_points():
-            _log(f"  [nav] click Post video ({x_ratio:.2f}, {y_ratio:.2f})")
-            _rect_click(host, x_ratio, y_ratio)
-            time.sleep(1.2)
-            session = _detect_publish_session_after_nav(host)
-            if session:
-                _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
-                return session
-            _recover_from_video_playback(host)
-    else:
-        for x_ratio, y_ratio in _channels_post_video_points():
-            _log(f"  [nav] click Post video ({x_ratio:.2f}, {y_ratio:.2f})")
-            _rect_click(host, x_ratio, y_ratio)
-            time.sleep(1.2)
-            session = _detect_publish_session_after_nav(host)
-            if session:
-                _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
-                return session
-            _recover_from_video_playback(host)
-
-    time.sleep(1.0)
-    session = _detect_publish_session_after_nav(host)
-    if session:
-        _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
-        return session
-    return None
+    return _click_open_publish_form(host)
 
 
 def probe_windows() -> None:
@@ -998,63 +1080,20 @@ def open_publish_page(*, skip_nav: bool = False) -> PublishSession:
         _log("  [nav] publish form already open")
         return PublishSession(existing, sparse=not _window_has_publish_form(existing))
 
-    account = _channels_account_hint()
-
-    _log("  [nav] search Post video button (deep)...")
-    host, btn = find_control_deep("发表视频")
-    if btn:
-        _log("  [nav] click Post video")
-        _click_control(host, btn)
-        found = find_publish_window(timeout=15.0)
-        if found:
-            return PublishSession(found, sparse=not _window_has_publish_form(found))
-
     host = find_channels_host_window()
     if host:
         _log("  [nav] from channels home (default daily page)")
         session = _navigate_channels_home_to_publish(host)
         if session:
             return session
-        _log("  [nav] retry after sidebar Channels icon")
-        if _click_sidebar_channels_icon(host):
-            session = _navigate_channels_home_to_publish(host)
-            if session:
-                return session
-
-    _log("  [nav] open account tab if present...")
-    if account:
-        host, tab = find_control_deep(account)
-        if tab:
-            _log(f"  [nav] click account tab: {account!r}")
-            _click_control(host, tab)
-            time.sleep(1.2)
-            host, btn = find_control_deep("发表视频")
-            if btn:
-                _click_control(host, btn)
-                found = find_publish_window(timeout=15.0)
-                if found:
-                    return PublishSession(found, sparse=not _window_has_publish_form(found))
-
-    _log("  [nav] retry Post video on all windows...")
-    for win, title, _, _ in iter_wechat_windows():
-        try:
-            btn = win.child_window(title="发表视频", control_type="Button")
-            if btn.exists(timeout=0.3):
-                _log(f"  [nav] click Post video in {title!r}")
-                _click_control(win, btn)
-                found = find_publish_window(timeout=12.0)
-                if found:
-                    return PublishSession(found, sparse=not _window_has_publish_form(found))
-        except Exception:
-            pass
 
     shot = _save_debug_shot("nav_fail")
     hint = f" screenshot: {shot}" if shot else ""
     raise PcWeChatPublishError(
-        "cannot open publish form from channels home. Keep PC WeChat on the Channels feed "
-        f"(视频号首页) and rerun.{hint} "
-        "Enable WECHAT_VISION_NAV=1 with AIHUBMIX_API_KEY, or tune "
-        "WECHAT_CHANNELS_MY_* / WECHAT_POST_VIDEO_* ratios in .env."
+        "cannot open publish form from channels home. Minimize PowerShell, keep WeChat "
+        f"Channels feed (视频号首页) visible, then rerun.{hint} "
+        "Set WECHAT_VISION_NAV=1 + AIHUBMIX_API_KEY, or tune "
+        "WECHAT_CHANNELS_MY_* / WECHAT_POST_VIDEO_* in .env."
     )
 
 
@@ -1094,31 +1133,6 @@ def _pick_file_dialog_hwnd(*, folder_hint: str = "") -> int | None:
         if cls == "#32770":
             return hwnd
     return dialogs[0][0]
-
-
-def _force_foreground(hwnd: int) -> None:
-    try:
-        import win32con
-        import win32gui
-        import win32process
-
-        if win32gui.GetForegroundWindow() == hwnd:
-            return
-        fg = win32gui.GetForegroundWindow()
-        fg_thread = win32process.GetWindowThreadProcessId(fg)[0]
-        target_thread = win32process.GetWindowThreadProcessId(hwnd)[0]
-        attached = False
-        if fg_thread and target_thread and fg_thread != target_thread:
-            win32process.AttachThreadInput(fg_thread, target_thread, True)
-            attached = True
-        try:
-            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
-            win32gui.SetForegroundWindow(hwnd)
-        finally:
-            if attached:
-                win32process.AttachThreadInput(fg_thread, target_thread, False)
-    except Exception:
-        _focus_hwnd(hwnd)
 
 
 def _file_dialog_window(*, folder_hint: str = ""):
