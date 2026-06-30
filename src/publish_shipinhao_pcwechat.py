@@ -997,17 +997,57 @@ def _window_has_publish_form(win) -> bool:
 
 
 def find_publish_window(*, timeout: float = 20.0):
+    win, _ = find_best_publish_session_window(timeout=timeout)
+    return win
+
+
+def find_best_publish_session_window(
+    *, timeout: float = 20.0
+) -> tuple[object | None, bool]:
+    """Return (window, sparse). Prefer standalone 视频号助手 over main 微信 shell."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        for win, _, _, _ in iter_wechat_windows():
-            if _window_has_publish_form(win):
-                try:
-                    win.set_focus()
-                except Exception:
-                    pass
-                return win
-        time.sleep(0.4)
-    return None
+        assistant = find_channels_assistant_window()
+        if assistant:
+            sparse = not _window_has_publish_form(assistant)
+            try:
+                assistant.set_focus()
+            except Exception:
+                pass
+            return assistant, sparse
+
+        ranked: list[tuple[int, object]] = []
+        for win, title, cls, exe in iter_wechat_windows():
+            if not _window_has_publish_form(win):
+                continue
+            geo = _window_geometry(win)
+            if not geo:
+                continue
+            _, _, w, h = geo
+            w32 = _win32_window_text(int(win.handle))
+            combined = f"{title} {w32}"
+            score = 0
+            if "appex" in exe:
+                score += 500
+            if any(m in combined for m in ("视频号助手", "发表动态", "视频管理")):
+                score += 400
+            if 600 <= w <= 1000:
+                score += 200
+            if title == "微信" and w >= 1100:
+                score += 50
+            ranked.append((score, win))
+
+        if ranked:
+            ranked.sort(key=lambda item: item[0], reverse=True)
+            win = ranked[0][1]
+            sparse = not _window_has_publish_form(win)
+            try:
+                win.set_focus()
+            except Exception:
+                pass
+            return win, sparse
+        time.sleep(0.35)
+    return None, True
 
 
 def find_channels_assistant_window():
@@ -1027,11 +1067,13 @@ def find_channels_assistant_window():
         if any(m in combined for m in markers):
             score += 200
         if "appex" in exe:
+            score += 120
+        if "Chrome_WidgetWin" in cls or "Qt515" in cls:
             score += 80
         if 650 <= w <= 980:
-            score += 40
-        if w >= 1100:
-            score += 20
+            score += 60
+        if _window_has_publish_form(win):
+            score += 300
         if score > best_score:
             best_score = score
             best = win
@@ -1175,10 +1217,12 @@ def open_publish_page(*, skip_nav: bool = False) -> PublishSession:
     if skip_nav:
         return resolve_skip_nav_session()
 
-    existing = find_publish_window(timeout=1.0)
+    existing, sparse = find_best_publish_session_window(timeout=1.5)
     if existing:
-        _log("  [nav] publish form already open")
-        return PublishSession(existing, sparse=not _window_has_publish_form(existing))
+        title = _win32_window_text(int(existing.handle)) or ""
+        _log(f"  [nav] publish form already open ({title!r})")
+        _activate_wechat_app(existing)
+        return PublishSession(existing, sparse=sparse)
 
     host = find_channels_host_window()
     if host:
@@ -1198,6 +1242,93 @@ def open_publish_page(*, skip_nav: bool = False) -> PublishSession:
     )
 
 
+def _is_explorer_search_window(title: str) -> bool:
+    bad = ("搜索结果", "中的搜索", "Search Results")
+    return any(b in title for b in bad)
+
+
+def _is_valid_cabinet_file_picker(title: str) -> bool:
+    if _is_explorer_search_window(title):
+        return False
+    if any(k in title for k in ("打开", "Open", "选择文件", "选择要上传", "Browse")):
+        return True
+    if title.endswith("文件资源管理器") or title == "文件资源管理器":
+        return False
+    return False
+
+
+def _dismiss_stray_upload_windows() -> None:
+    import win32con
+    import win32gui
+
+    def _cb(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return True
+        title = (win32gui.GetWindowText(hwnd) or "").strip()
+        cls = win32gui.GetClassName(hwnd) or ""
+        close = False
+        if "WMP Skin Host" in title or "正在播放" in title:
+            close = True
+        if cls == "CabinetWClass" and _is_explorer_search_window(title):
+            close = True
+        if close:
+            try:
+                win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+            except Exception:
+                pass
+        return True
+
+    try:
+        win32gui.EnumWindows(_cb, None)
+    except Exception:
+        pass
+
+
+def _video_slot_filled(session: PublishSession) -> bool:
+    win = session.window
+    _, delete_btn = find_control_deep("删除")
+    if delete_btn:
+        _log("  [upload] detected 删除 — video already on form")
+        return True
+    _, cover = find_control_deep("封面预览")
+    if cover:
+        _log("  [upload] detected 封面预览 — video already on form")
+        return True
+    try:
+        if win.child_window(title_re=".*删除.*").exists(timeout=0.2):
+            _log("  [upload] detected 删除 — video already on form")
+            return True
+        if win.child_window(title_re=".*封面预览.*").exists(timeout=0.2):
+            _log("  [upload] detected 封面预览 — video already on form")
+            return True
+    except Exception:
+        pass
+    if _vision_nav_enabled():
+        shot = _screenshot_window(win)
+        if shot:
+            try:
+                from llm_vision_client import vision_chat
+                import json
+
+                raw = vision_chat(
+                    system='Return ONLY JSON: {"video_uploaded":true/false}',
+                    user_text=(
+                        "On this WeChat Channels publish form, is a video already uploaded "
+                        "(preview/thumbnail with 删除 or cover visible), NOT an empty upload slot?"
+                    ),
+                    screenshot=shot,
+                    max_tokens=60,
+                )
+                start, end = raw.find("{"), raw.rfind("}")
+                data = json.loads(raw[start : end + 1]) if start >= 0 else {}
+                if data.get("video_uploaded"):
+                    _log("  [upload] vision: video slot already filled")
+                    return True
+            except Exception:
+                pass
+    return False
+
+
 def _enum_file_dialog_hwnds(*, folder_hint: str = "") -> list[tuple[int, str, str]]:
     import win32gui
 
@@ -1211,12 +1342,8 @@ def _enum_file_dialog_hwnds(*, folder_hint: str = "") -> list[tuple[int, str, st
         if cls == "#32770":
             found.append((hwnd, cls, title))
             return True
-        if cls == "CabinetWClass":
-            lower = title.lower()
-            if folder_hint and folder_hint in title:
-                found.append((hwnd, cls, title))
-            elif any(k in title for k in ("打开", "Open", "选择", "上传")):
-                found.append((hwnd, cls, title))
+        if cls == "CabinetWClass" and _is_valid_cabinet_file_picker(title):
+            found.append((hwnd, cls, title))
         return True
 
     win32gui.EnumWindows(_cb, None)
@@ -1228,12 +1355,12 @@ def _pick_file_dialog_hwnd(*, folder_hint: str = "") -> int | None:
     if not dialogs:
         return None
     for hwnd, cls, title in dialogs:
-        if cls == "#32770" and any(k in title for k in ("打开", "Open", "选择", "上传", "文件")):
-            return hwnd
-    for hwnd, cls, _ in dialogs:
         if cls == "#32770":
             return hwnd
-    return dialogs[0][0]
+    for hwnd, cls, title in dialogs:
+        if cls == "CabinetWClass" and _is_valid_cabinet_file_picker(title):
+            return hwnd
+    return None
 
 
 def _file_dialog_window(*, folder_hint: str = ""):
@@ -1266,6 +1393,30 @@ def _file_dialog_window(*, folder_hint: str = ""):
         except Exception:
             continue
     return None
+
+
+def _native_file_dialog_visible() -> bool:
+    import win32gui
+
+    found = False
+
+    def _cb(hwnd, _):
+        nonlocal found
+        if not win32gui.IsWindowVisible(hwnd):
+            return True
+        cls = win32gui.GetClassName(hwnd) or ""
+        title = (win32gui.GetWindowText(hwnd) or "").strip()
+        if cls == "#32770":
+            found = True
+        elif cls == "CabinetWClass" and _is_valid_cabinet_file_picker(title):
+            found = True
+        return True
+
+    try:
+        win32gui.EnumWindows(_cb, None)
+    except Exception:
+        pass
+    return found
 
 
 def _file_dialog_visible(*, folder_hint: str = "") -> bool:
@@ -1380,14 +1531,9 @@ def _upload_coordinate_grid(win, *, path_str: str = "") -> None:
         _log(f"  [upload] absolute screen click ({ax}, {ay})")
         _screen_click(ax, ay)
         time.sleep(0.8)
-        if _file_dialog_visible():
+        if _native_file_dialog_visible():
             _log("  [upload] file dialog opened")
             return
-        if path_str:
-            _try_blind_file_path(path_str)
-            time.sleep(0.8)
-            if not _file_dialog_visible():
-                return
         raise PcWeChatPublishError("upload click missed; adjust WECHAT_UPLOAD_ABS_X/Y")
 
     points = _upload_points_for_window(win)
@@ -1395,24 +1541,18 @@ def _upload_coordinate_grid(win, *, path_str: str = "") -> None:
         _log(f"  [upload] click upload zone ({x_ratio:.2f}, {y_ratio:.2f})")
         _rect_click(win, x_ratio, y_ratio)
         time.sleep(0.5)
-        if _file_dialog_visible():
+        if _native_file_dialog_visible():
             hwnd = _pick_file_dialog_hwnd()
             title = _win32_window_text(hwnd) if hwnd else ""
             _log(f"  [upload] file dialog opened hwnd={hwnd} title={title!r}")
             return
         _rect_click(win, x_ratio, y_ratio, double=True)
         time.sleep(0.5)
-        if _file_dialog_visible():
+        if _native_file_dialog_visible():
             hwnd = _pick_file_dialog_hwnd()
             title = _win32_window_text(hwnd) if hwnd else ""
             _log(f"  [upload] file dialog opened (double-click) hwnd={hwnd} title={title!r}")
             return
-        if path_str:
-            _try_blind_file_path(path_str)
-            time.sleep(0.6)
-            if not _file_dialog_visible():
-                _log("  [upload] blind path entry accepted")
-                return
 
     raise PcWeChatPublishError(
         "upload zone click missed (no file dialog). "
@@ -1493,7 +1633,7 @@ def _click_upload_area(win, *, sparse: bool = False, path_str: str = "") -> None
         if label:
             _click_control(host, label)
             time.sleep(0.5)
-            if _file_dialog_visible():
+            if _native_file_dialog_visible():
                 return
 
         hints = ("上传时长", "点击上传", "上传视频", "MP4")
@@ -1503,7 +1643,7 @@ def _click_upload_area(win, *, sparse: bool = False, path_str: str = "") -> None
                 if label.exists(timeout=0.5):
                     label.click_input()
                     time.sleep(0.5)
-                    if _file_dialog_visible():
+                    if _native_file_dialog_visible():
                         return
             except Exception:
                 pass
@@ -1515,17 +1655,35 @@ def upload_video(session: PublishSession, video: Path) -> None:
     win = session.window
     if not video.is_file():
         raise PcWeChatPublishError(f"video not found: {video}")
-    path_str = str(video.resolve())
-    folder_hint = video.parent.name
-    _log(f"  [upload] {video}")
-    _click_upload_area(win, sparse=session.sparse, path_str=path_str)
-    if _file_dialog_visible(folder_hint=folder_hint):
-        _log("  [upload] submitting path to open dialog...")
-        if _submit_path_to_open_dialog(path_str, video):
-            _log(f"  [upload] selected: {video.name}")
-            return
-    _pick_file_in_dialog(video)
+    _dismiss_stray_upload_windows()
+    _activate_wechat_app(win)
 
+    if _video_slot_filled(session):
+        _log("  [upload] skip — video already on publish form")
+        return
+
+    path_str = str(video.resolve())
+    _log(f"  [upload] {video}")
+    try:
+        _click_upload_area(win, sparse=session.sparse, path_str=path_str)
+        if _native_file_dialog_visible():
+            _log("  [upload] submitting path to open dialog...")
+            if _submit_path_to_open_dialog(path_str, video):
+                _log(f"  [upload] selected: {video.name}")
+            else:
+                _pick_file_in_dialog(video)
+    except PcWeChatPublishError:
+        if not _video_slot_filled(session):
+            raise
+    finally:
+        _dismiss_stray_upload_windows()
+
+    if _video_slot_filled(session):
+        _log("  [upload] video on form after upload attempt")
+        return
+    raise PcWeChatPublishError(
+        "upload failed: no video on publish form. Close Explorer/WMP windows and rerun."
+    )
 
 def _is_uploading(win) -> bool:
     busy_words = ("上传中", "处理中", "正在上传", "正在处理", "转码")
