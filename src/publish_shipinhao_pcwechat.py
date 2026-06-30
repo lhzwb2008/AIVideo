@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""PC 微信客户端 · 视频号 UI 自动化发布（Windows 测试）。
+"""PC WeChat client: publish to Channels via UI automation (Windows test).
 
-流程：视频号 → 我的 → 发表视频 → 上传 MP4 → 填描述 → 发表。
-默认发布 archive/published 下最新的 zh 视频。
+Flow: Channels -> My profile -> Post video -> upload MP4 -> description -> publish.
+Default: latest zh video under archive/published.
 
-依赖（Windows）::
+Deps (Windows)::
     pip install -r requirements-pcwechat.txt
 
-用法::
+Examples::
     python src/publish_shipinhao_pcwechat.py --latest
-    python src/publish_shipinhao_pcwechat.py --video archive/published/.../xxx.mp4
-    python src/publish_shipinhao_pcwechat.py --probe          # 列出微信相关窗口
-    python src/publish_shipinhao_pcwechat.py --latest --dry-run
-    python src/publish_shipinhao_pcwechat.py --latest --no-publish  # 上传+填表不点发表
+    python src/publish_shipinhao_pcwechat.py --skip-nav --no-publish
+    python src/publish_shipinhao_pcwechat.py --probe
+    python src/publish_shipinhao_pcwechat.py --dump-controls
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -27,15 +27,15 @@ from pathlib import Path
 from paths import ROOT
 
 if sys.platform != "win32":
-    sys.exit("此脚本仅支持 Windows（PC 微信 UI 自动化）")
+    sys.exit("Windows only (PC WeChat UI automation)")
 
 try:
     from pywinauto import Desktop
     from pywinauto.keyboard import send_keys
 except ImportError as exc:
     sys.exit(
-        "缺少 pywinauto，请安装: pip install -r requirements-pcwechat.txt\n"
-        f"详情: {exc}"
+        "Missing pywinauto. Run: pip install -r requirements-pcwechat.txt\n"
+        f"Detail: {exc}"
     )
 
 
@@ -47,10 +47,14 @@ def _log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default).strip()
+
+
 def find_latest_archive_video(locale: str = "zh") -> tuple[Path, Path | None]:
     base = ROOT / "archive" / "published"
     if not base.is_dir():
-        raise PcWeChatPublishError(f"不存在 archive 目录: {base}")
+        raise PcWeChatPublishError(f"missing archive dir: {base}")
 
     best: Path | None = None
     best_mtime = 0.0
@@ -64,7 +68,7 @@ def find_latest_archive_video(locale: str = "zh") -> tuple[Path, Path | None]:
             best_pack = pack.resolve() if pack.is_dir() else None
 
     if not best:
-        raise PcWeChatPublishError(f"archive/published 下没有 {locale} 视频")
+        raise PcWeChatPublishError(f"no {locale} videos under archive/published")
     return best, best_pack
 
 
@@ -166,7 +170,7 @@ def _save_debug_shot(tag: str) -> Path | None:
         ImageGrab.grab().save(path)
         return path
     except Exception as exc:
-        _log(f"  [debug] 截图失败: {exc}")
+        _log(f"  [debug] screenshot failed: {exc}")
         return None
 
 
@@ -176,35 +180,32 @@ def _desktop_uia():
 
 def iter_wechat_windows():
     desktop = _desktop_uia()
+    seen: set[int] = set()
     for win in desktop.windows():
         try:
+            handle = int(win.handle)
+            if handle in seen:
+                continue
+            seen.add(handle)
             title = (win.window_text() or "").strip()
             cls = win.class_name() or ""
-            pid_name = ""
+            exe = ""
             try:
-                pid_name = win.process_module() or ""
+                exe = (win.process_module() or "").lower()
             except Exception:
                 pass
-            if not title and "WeChat" not in cls and "WeChat" not in pid_name:
-                continue
-            if any(
-                key in title
-                for key in (
-                    "微信",
-                    "WeChat",
-                    "视频",
-                    "发表",
-                    "Channels",
-                    "Finder",
-                )
-            ) or "WeChat" in pid_name:
-                yield win, title, cls, pid_name
+            if "wechat" in exe or "wechat" in cls.lower() or title == "微信":
+                yield win, title, cls, exe
         except Exception:
             continue
 
 
+def _channels_account_hint() -> str:
+    return _env("WECHAT_CHANNELS_ACCOUNT") or _env("AIVIDEO_BRAND_NAME", "AI财知道")
+
+
 def probe_windows() -> None:
-    _log("=== PC 微信相关窗口 ===")
+    _log("=== WeChat-related top-level windows ===")
     for win, title, cls, exe in iter_wechat_windows():
         try:
             rect = win.rectangle()
@@ -212,6 +213,105 @@ def probe_windows() -> None:
         except Exception:
             geo = "?"
         _log(f"  title={title!r}  class={cls!r}  exe={exe!r}  size={geo}")
+
+
+def dump_controls(limit: int = 120) -> None:
+    _log("=== Visible controls (text non-empty) ===")
+    count = 0
+    for win, wtitle, cls, exe in iter_wechat_windows():
+        _log(f"-- window title={wtitle!r} class={cls!r} exe={exe!r}")
+        try:
+            for elem in win.descendants():
+                if count >= limit:
+                    _log(f"  ... truncated at {limit}")
+                    return
+                try:
+                    if not elem.is_visible():
+                        continue
+                    name = (elem.window_text() or "").strip()
+                    if not name:
+                        continue
+                    info = elem.element_info
+                    _log(
+                        f"  [{info.control_type}] {name!r} "
+                        f"class={info.class_name!r}"
+                    )
+                    count += 1
+                except Exception:
+                    continue
+        except Exception as exc:
+            _log(f"  (descendants failed: {exc})")
+
+
+def find_control_deep(*needles: str):
+    needles = [n for n in needles if n]
+    if not needles:
+        return None, None
+
+    for win, _, _, _ in iter_wechat_windows():
+        for spec in (
+            {"control_type": "Button"},
+            {"control_type": "Hyperlink"},
+            {"control_type": "Text"},
+            {"control_type": "TabItem"},
+            {"control_type": "ListItem"},
+            {"control_type": "MenuItem"},
+            {},
+        ):
+            for needle in needles:
+                try:
+                    if spec:
+                        ctrl = win.child_window(title=needle, **spec)
+                    else:
+                        ctrl = win.child_window(title=needle)
+                    if ctrl.exists(timeout=0.15):
+                        return win, ctrl
+                except Exception:
+                    pass
+                try:
+                    if spec:
+                        ctrl = win.child_window(title_re=f".*{needle}.*", **spec)
+                    else:
+                        ctrl = win.child_window(title_re=f".*{needle}.*")
+                    if ctrl.exists(timeout=0.15):
+                        return win, ctrl
+                except Exception:
+                    pass
+
+        try:
+            for elem in win.descendants():
+                try:
+                    if not elem.is_visible():
+                        continue
+                    name = (elem.window_text() or "").strip()
+                    if not name:
+                        continue
+                    for needle in needles:
+                        if needle in name:
+                            return win, elem
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return None, None
+
+
+def find_main_wechat_window():
+    best = None
+    best_area = 0
+    for win, title, cls, exe in iter_wechat_windows():
+        if "wechat.exe" not in exe or "appex" in exe:
+            continue
+        try:
+            rect = win.rectangle()
+            area = rect.width() * rect.height()
+            if area > best_area:
+                best_area = area
+                best = win
+        except Exception:
+            if title == "微信" or "WeChatMainWnd" in cls:
+                return win
+    return best
 
 
 def _window_has_publish_form(win) -> bool:
@@ -222,20 +322,32 @@ def _window_has_publish_form(win) -> bool:
         pass
     if any(k in title for k in ("发表动态", "视频管理")):
         return True
-    probes = ("发表动态", "视频描述", "添加描述", "上传时长")
+    probes = ("发表动态", "视频描述", "添加描述", "上传时长", "视频管理")
     for text in probes:
         try:
-            if win.child_window(title_re=f".*{text}.*").exists(timeout=0.2):
+            if win.child_window(title_re=f".*{text}.*").exists(timeout=0.15):
                 return True
         except Exception:
             pass
+    try:
+        for elem in win.descendants():
+            try:
+                if not elem.is_visible():
+                    continue
+                name = (elem.window_text() or "").strip()
+                if name in probes or any(p in name for p in probes):
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
     return False
 
 
 def find_publish_window(*, timeout: float = 20.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        for win, title, _, _ in iter_wechat_windows():
+        for win, _, _, _ in iter_wechat_windows():
             if _window_has_publish_form(win):
                 try:
                     win.set_focus()
@@ -246,90 +358,142 @@ def find_publish_window(*, timeout: float = 20.0):
     return None
 
 
-def _click_first_button(win, names: tuple[str, ...]) -> bool:
-    for name in names:
+def _click_control(host, ctrl) -> None:
+    try:
+        host.set_focus()
+    except Exception:
+        pass
+    try:
+        ctrl.click_input()
+        return
+    except Exception:
+        pass
+    try:
+        ctrl.invoke()
+        return
+    except Exception:
+        pass
+    rect = ctrl.rectangle()
+    host.click_input(coords=(rect.mid_point().x, rect.mid_point().y))
+
+
+def _click_sidebar_channels_icon(main_win) -> bool:
+    try:
+        main_win.set_focus()
+        rect = main_win.rectangle()
+    except Exception as exc:
+        _log(f"  [nav] main window focus failed: {exc}")
+        return False
+
+    x = rect.left + int(_env("WECHAT_SIDEBAR_X", "35"))
+    ratio_env = _env("WECHAT_SIDEBAR_CHANNELS_Y_RATIO", "")
+    if ratio_env:
+        ratios = [float(ratio_env)]
+    else:
+        ratios = [0.48, 0.54, 0.60, 0.66, 0.72]
+
+    for ratio in ratios:
+        y = rect.top + int(rect.height() * ratio)
+        _log(f"  [nav] sidebar click ({x}, {y}) ratio={ratio:.2f}")
         try:
-            btn = win.child_window(title=name, control_type="Button")
-            if btn.exists(timeout=0.8):
-                btn.click_input()
-                return True
+            main_win.click_input(coords=(x, y))
         except Exception:
-            pass
-        try:
-            btn = win.child_window(title_re=f"^{name}$", control_type="Hyperlink")
-            if btn.exists(timeout=0.3):
-                btn.click_input()
-                return True
-        except Exception:
-            pass
+            continue
+        time.sleep(1.5)
+        _, probe = find_control_deep("发表视频", "发起直播", _channels_account_hint())
+        if probe:
+            return True
     return False
 
 
 def open_publish_page(*, skip_nav: bool = False) -> object:
-    existing = find_publish_window(timeout=1.5 if skip_nav else 0.8)
+    existing = find_publish_window(timeout=2.0 if skip_nav else 1.0)
     if existing:
-        _log("  [nav] 已在发表动态页")
+        _log("  [nav] publish form already open")
         return existing
 
     if skip_nav:
         raise PcWeChatPublishError(
-            "未找到发表动态页（--skip-nav）。请先手动打开：视频号 → 我的 → 发表视频"
+            "publish form not found (--skip-nav). "
+            "Open PC WeChat: Channels -> My -> Post video, then retry."
         )
 
-    _log("  [nav] 查找「发表视频」入口…")
-    for win, title, _, _ in iter_wechat_windows():
-        if _click_first_button(win, ("发表视频",)):
-            _log(f"  [nav] 已点击发表视频（窗口: {title!r}）")
-            found = find_publish_window(timeout=15.0)
-            if found:
-                return found
+    account = _channels_account_hint()
 
-    _log("  [nav] 尝试点击侧栏「视频号」…")
-    for win, title, _, exe in iter_wechat_windows():
-        if "WeChat.exe" not in exe and "微信" not in title:
-            continue
+    _log("  [nav] search Post video button (deep)...")
+    host, btn = find_control_deep("发表视频")
+    if btn:
+        _log("  [nav] click Post video")
+        _click_control(host, btn)
+        found = find_publish_window(timeout=15.0)
+        if found:
+            return found
+
+    _log("  [nav] open account tab if present...")
+    if account:
+        host, tab = find_control_deep(account)
+        if tab:
+            _log(f"  [nav] click account tab: {account!r}")
+            _click_control(host, tab)
+            time.sleep(1.2)
+            host, btn = find_control_deep("发表视频")
+            if btn:
+                _click_control(host, btn)
+                found = find_publish_window(timeout=15.0)
+                if found:
+                    return found
+
+    main = find_main_wechat_window()
+    if main:
+        _log("  [nav] click Channels icon on main sidebar...")
+        if _click_sidebar_channels_icon(main):
+            if account:
+                host, tab = find_control_deep(account)
+                if tab:
+                    _click_control(host, tab)
+                    time.sleep(1.0)
+            host, btn = find_control_deep("发表视频")
+            if btn:
+                _log("  [nav] click Post video after sidebar")
+                _click_control(host, btn)
+                found = find_publish_window(timeout=15.0)
+                if found:
+                    return found
+
+    _log("  [nav] retry Post video on all windows...")
+    for win, title, _, _ in iter_wechat_windows():
         try:
-            win.set_focus()
+            btn = win.child_window(title="发表视频", control_type="Button")
+            if btn.exists(timeout=0.3):
+                _log(f"  [nav] click Post video in {title!r}")
+                _click_control(win, btn)
+                found = find_publish_window(timeout=12.0)
+                if found:
+                    return found
         except Exception:
             pass
-        for spec in (
-            dict(title="视频号", control_type="Button"),
-            dict(title="视频号", control_type="ListItem"),
-            dict(title_re=".*视频号.*", control_type="Text"),
-        ):
-            try:
-                item = win.child_window(**spec)
-                if item.exists(timeout=0.6):
-                    item.click_input()
-                    time.sleep(1.5)
-                    break
-            except Exception:
-                pass
-        if _click_first_button(win, ("发表视频",)):
-            found = find_publish_window(timeout=15.0)
-            if found:
-                return found
-
-    for win, _, _, _ in iter_wechat_windows():
-        if _click_first_button(win, ("发表视频",)):
-            found = find_publish_window(timeout=15.0)
-            if found:
-                return found
 
     shot = _save_debug_shot("nav_fail")
-    hint = f" 已截图: {shot}" if shot else ""
+    hint = f" screenshot: {shot}" if shot else ""
     raise PcWeChatPublishError(
-        "无法打开发表动态页。请手动打开：PC 微信 → 视频号 → 我的 → 发表视频，"
-        f"然后重试 --skip-nav{hint}"
+        "cannot open publish form. Manual: PC WeChat -> Channels -> My -> Post video, "
+        f"then run with --skip-nav.{hint} "
+        "Tip: run --dump-controls to inspect UI tree; set WECHAT_SIDEBAR_CHANNELS_Y_RATIO "
+        "if sidebar icon position differs."
     )
 
 
 def _click_upload_area(win) -> None:
+    host, label = find_control_deep("上传时长", "点击上传", "MP4", "H.264")
+    if label:
+        _click_control(host, label)
+        return
+
     hints = ("上传时长", "点击上传", "上传视频", "MP4")
     for hint in hints:
         try:
             label = win.child_window(title_re=f".*{hint}.*")
-            if label.exists(timeout=0.8):
+            if label.exists(timeout=0.5):
                 label.click_input()
                 return
         except Exception:
@@ -340,9 +504,8 @@ def _click_upload_area(win) -> None:
         x = rect.left + int(rect.width() * 0.22)
         y = rect.top + int(rect.height() * 0.42)
         win.click_input(coords=(x, y))
-        return
     except Exception as exc:
-        raise PcWeChatPublishError(f"无法点击上传区域: {exc}") from exc
+        raise PcWeChatPublishError(f"cannot click upload area: {exc}") from exc
 
 
 def _pick_file_in_dialog(video: Path, *, timeout: float = 30.0) -> None:
@@ -374,24 +537,24 @@ def _pick_file_in_dialog(video: Path, *, timeout: float = 30.0) -> None:
                         btn = dlg.child_window(title=open_label, control_type="Button")
                         if btn.exists(timeout=0.2):
                             btn.click_input()
-                            _log(f"  [upload] 已选择: {video.name}")
+                            _log(f"  [upload] selected: {video.name}")
                             return
                     except Exception:
                         pass
                 send_keys("{ENTER}")
-                _log(f"  [upload] 已选择: {video.name}")
+                _log(f"  [upload] selected: {video.name}")
                 return
             except Exception:
                 pass
         time.sleep(0.25)
 
-    raise PcWeChatPublishError("文件选择对话框未出现（超时）")
+    raise PcWeChatPublishError("file open dialog timeout")
 
 
 def upload_video(win, video: Path) -> None:
     if not video.is_file():
-        raise PcWeChatPublishError(f"视频不存在: {video}")
-    _log(f"  [upload] 上传 {video}")
+        raise PcWeChatPublishError(f"video not found: {video}")
+    _log(f"  [upload] {video}")
     _click_upload_area(win)
     time.sleep(0.8)
     _pick_file_in_dialog(video)
@@ -409,27 +572,38 @@ def _is_uploading(win) -> bool:
 
 
 def wait_upload_done(win, *, timeout: float = 600.0) -> None:
-    _log("  [upload] 等待视频处理…")
+    _log("  [upload] waiting for processing...")
     deadline = time.time() + timeout
     last_log = 0.0
     while time.time() < deadline:
         if _is_uploading(win):
             if time.time() - last_log > 8:
-                _log("  [upload] 仍在处理…")
+                _log("  [upload] still processing...")
                 last_log = time.time()
             time.sleep(2.0)
             continue
         if _publish_button(win, click=False):
-            _log("  [upload] 视频已就绪")
+            _log("  [upload] ready")
             return
         time.sleep(2.0)
-    raise PcWeChatPublishError("视频上传/处理超时")
+    raise PcWeChatPublishError("upload/processing timeout")
 
 
 def fill_description(win, body: str) -> None:
     if not body.strip():
-        raise PcWeChatPublishError("描述为空")
-    _log(f"  [form] 填写描述 ({len(body)} 字)")
+        raise PcWeChatPublishError("empty description")
+
+    _log(f"  [form] description ({len(body)} chars)")
+    host, edit = find_control_deep("添加描述")
+    if edit:
+        _click_control(host, edit)
+        try:
+            edit.set_edit_text(body)
+        except Exception:
+            send_keys("^a")
+            send_keys(body, with_spaces=True)
+        return
+
     specs = (
         dict(title="添加描述", control_type="Edit"),
         dict(title_re=".*添加描述.*", control_type="Edit"),
@@ -440,7 +614,7 @@ def fill_description(win, body: str) -> None:
     for spec in specs:
         try:
             edit = win.child_window(**spec)
-            if edit.exists(timeout=1.0):
+            if edit.exists(timeout=0.8):
                 edit.click_input()
                 try:
                     edit.set_edit_text(body)
@@ -450,14 +624,29 @@ def fill_description(win, body: str) -> None:
                 return
         except Exception:
             pass
-    raise PcWeChatPublishError("未找到「视频描述」输入框")
+    raise PcWeChatPublishError("description field not found")
 
 
 def _publish_button(win, *, click: bool) -> bool:
+    host, btn = find_control_deep("发表", "发布", "立即发表")
+    if btn:
+        try:
+            if click:
+                _click_control(host, btn)
+            else:
+                if btn.is_enabled():
+                    return True
+        except Exception:
+            if click:
+                _click_control(host, btn)
+            else:
+                return True
+        return click
+
     for name in ("发表", "发布", "立即发表"):
         try:
             btn = win.child_window(title=name, control_type="Button")
-            if btn.exists(timeout=0.5) and btn.is_enabled():
+            if btn.exists(timeout=0.4) and btn.is_enabled():
                 if click:
                     btn.click_input()
                 return True
@@ -467,10 +656,10 @@ def _publish_button(win, *, click: bool) -> bool:
 
 
 def click_publish(win) -> None:
-    _log("  [publish] 点击发表…")
+    _log("  [publish] click publish...")
     if _publish_button(win, click=True):
         return
-    raise PcWeChatPublishError("未找到可点击的「发表」按钮")
+    raise PcWeChatPublishError("publish button not found")
 
 
 def publish_via_pc_wechat(
@@ -485,39 +674,40 @@ def publish_via_pc_wechat(
     wait_upload_done(win)
     fill_description(win, body)
     if no_publish:
-        _log("  [publish] --no-publish：已上传并填表，未点击发表")
+        _log("  [publish] --no-publish: uploaded and filled, not submitted")
         return {"published": False, "video": str(video)}
 
     click_publish(win)
     time.sleep(2.0)
-    _log("  [publish] 已点击发表（请在微信内确认是否成功）")
+    _log("  [publish] clicked publish (confirm in WeChat UI)")
     return {"published": True, "video": str(video), "desc_len": len(body)}
 
 
 def _write_result(payload: dict) -> None:
     path = _logs_dir() / "last_shipinhao_pcwechat_publish.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    _log(f"  日志: {path}")
+    _log(f"  log: {path}")
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="PC 微信 · 视频号 UI 自动化发布（测试）")
-    parser.add_argument("--video", type=Path, help="MP4 路径（默认 --latest）")
-    parser.add_argument("--latest", action="store_true", help="发布 archive 最新 zh 视频（默认）")
+    parser = argparse.ArgumentParser(description="PC WeChat Channels UI publish (test)")
+    parser.add_argument("--video", type=Path, help="MP4 path (default: --latest)")
+    parser.add_argument("--latest", action="store_true", help="latest archive zh video")
     parser.add_argument("--locale", default="zh", choices=("zh", "en"))
-    parser.add_argument("--desc", default="", help="覆盖描述（默认从 script/README 解析）")
-    parser.add_argument("--dry-run", action="store_true", help="只解析素材，不操作微信")
-    parser.add_argument("--no-publish", action="store_true", help="上传+填表，不点发表")
-    parser.add_argument(
-        "--skip-nav",
-        action="store_true",
-        help="跳过导航（发表动态页已手动打开时使用）",
-    )
-    parser.add_argument("--probe", action="store_true", help="列出微信相关窗口并退出")
+    parser.add_argument("--desc", default="", help="override description")
+    parser.add_argument("--dry-run", action="store_true", help="resolve assets only")
+    parser.add_argument("--no-publish", action="store_true", help="upload+fill, no submit")
+    parser.add_argument("--skip-nav", action="store_true", help="publish form already open")
+    parser.add_argument("--probe", action="store_true", help="list WeChat windows")
+    parser.add_argument("--dump-controls", action="store_true", help="dump visible control names")
     args = parser.parse_args(argv)
 
     if args.probe:
         probe_windows()
+        return 0
+    if args.dump_controls:
+        probe_windows()
+        dump_controls()
         return 0
 
     use_latest = args.latest or args.video is None
@@ -532,12 +722,12 @@ def main(argv: list[str] | None = None) -> int:
     fields = resolve_publish_fields(video, pack_dir=pack_dir, desc_override=args.desc)
     body = build_publish_body(fields)
 
-    _log("== PC 微信 · 视频号发布（测试） ==")
-    _log(f"  视频: {video}")
-    _log(f"  描述: {body[:120]}{'…' if len(body) > 120 else ''}")
+    _log("== PC WeChat Channels publish (test) ==")
+    _log(f"  video: {video}")
+    _log(f"  body: {body[:120]}{'...' if len(body) > 120 else ''}")
 
     if args.dry_run:
-        _log("  [dry-run] 未操作微信")
+        _log("  [dry-run] skipped WeChat UI")
         return 0
 
     try:
@@ -555,7 +745,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         shot = _save_debug_shot("error")
         if shot:
-            _log(f"  [error] 截图: {shot}")
+            _log(f"  [error] screenshot: {shot}")
         _write_result(
             {
                 "published": False,
@@ -571,5 +761,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except PcWeChatPublishError as exc:
-        print(f"错误: {exc}", file=sys.stderr, flush=True)
+        print(f"ERROR: {exc}", file=sys.stderr, flush=True)
         raise SystemExit(1) from exc

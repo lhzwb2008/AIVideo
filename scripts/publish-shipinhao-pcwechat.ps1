@@ -7,6 +7,7 @@
   .\scripts\publish-shipinhao-pcwechat.ps1
   .\scripts\publish-shipinhao-pcwechat.ps1 -DryRun
   .\scripts\publish-shipinhao-pcwechat.ps1 -Probe
+  .\scripts\publish-shipinhao-pcwechat.ps1 -DumpControls
   .\scripts\publish-shipinhao-pcwechat.ps1 -SkipNav
   .\scripts\publish-shipinhao-pcwechat.ps1 -Video archive\published\20260630\zh\xxx.mp4
   .\scripts\publish-shipinhao-pcwechat.ps1 -NoPublish
@@ -21,6 +22,7 @@ param(
     [switch]$NoPublish,
     [switch]$SkipNav,
     [switch]$Probe,
+    [switch]$DumpControls,
 
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExtraArgs = @()
@@ -84,6 +86,7 @@ $env:PYTHONPATH = "$Root\src"
 
 $PyArgs = @("$Root\src\publish_shipinhao_pcwechat.py")
 if ($Probe) { $PyArgs += '--probe' }
+if ($DumpControls) { $PyArgs += '--dump-controls' }
 if ($DryRun) { $PyArgs += '--dry-run' }
 if ($NoPublish) { $PyArgs += '--no-publish' }
 if ($SkipNav) { $PyArgs += '--skip-nav' }
