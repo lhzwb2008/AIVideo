@@ -138,6 +138,11 @@ $PipMirror = if ($env:PYPI_MIRROR) { $env:PYPI_MIRROR } else { 'https://mirrors.
 $PipHost = if ($env:PYPI_TRUSTED_HOST) { $env:PYPI_TRUSTED_HOST } else { 'mirrors.aliyun.com' }
 & $MainPy -m pip install -U pip -i $PipMirror --trusted-host $PipHost
 & $MainPy -m pip install -r (Join-Path $Root 'requirements.txt') -i $PipMirror --trusted-host $PipHost
+$PcWeChatReq = Join-Path $Root 'requirements-pcwechat.txt'
+if (Test-Path $PcWeChatReq) {
+    # PC WeChat (shipinhao) UI automation deps: pywinauto + pywin32
+    & $MainPy -m pip install -r $PcWeChatReq -i $PipMirror --trusted-host $PipHost
+}
 Write-Host ('  Main venv = ' + $MainPy)
 
 if (-not $SkipSau) {

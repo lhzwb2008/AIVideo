@@ -80,7 +80,11 @@ def find_latest_archive_video(locale: str = "zh") -> tuple[Path, Path | None]:
     return best, best_pack
 
 
-def _resolve_script_path(pack_dir: Path | None, video: Path) -> Path | None:
+def _resolve_script_path(
+    pack_dir: Path | None, video: Path, *, explicit: Path | None = None
+) -> Path | None:
+    if explicit and explicit.is_file():
+        return explicit
     if pack_dir:
         for name in ("script.json", "last_script.json"):
             candidate = pack_dir / name
@@ -116,12 +120,13 @@ def resolve_publish_fields(
     *,
     pack_dir: Path | None,
     desc_override: str = "",
+    script_override: Path | None = None,
 ) -> dict[str, str]:
     from douyin_caption import _strip_urls
     from publish_resolve import load_script
     from social_caption import build_social_fields
 
-    script_path = _resolve_script_path(pack_dir, video)
+    script_path = _resolve_script_path(pack_dir, video, explicit=script_override)
     script = load_script(script_path)
     if script:
         fields = build_social_fields(script, "tencent")
@@ -828,6 +833,16 @@ def _navigate_channels_home_to_publish(host) -> PublishSession | None:
         _log("  [nav] publish form already open")
         return session
 
+    # Shortcut for continuous publishing: after a successful post we land on the
+    # 视频管理 list page where "发表视频" is directly reachable; click it without
+    # detouring back through the profile tab.
+    _, post_btn = find_control_deep("发表视频")
+    if post_btn:
+        _log("  [nav] '发表视频' directly available — open publish form")
+        session = _click_open_publish_form(host)
+        if session:
+            return session
+
     if _on_creator_profile_page() or _vision_profile_page_visible(host):
         _log("  [nav] creator profile ready — click Post video")
         return _click_open_publish_form(host)
@@ -1036,9 +1051,23 @@ def _is_real_publish_form(win) -> bool:
         pass
     w32 = _win32_window_text(int(win.handle))
     combined = f"{title} {w32}"
-    if any(k in combined for k in ("发表动态", "视频号助手", "视频管理")):
+    # "视频号助手/视频管理" also appears on the post-submit management list, so
+    # do not treat those labels alone as the publish form.
+    if "发表动态" in combined:
         return True
-    strong = ("上传时长", "点击上传", "封面预览", "发表动态", "视频管理", "短标题")
+    strong = (
+        "上传时长",
+        "点击上传",
+        "封面预览",
+        "发表动态",
+        "视频描述",
+        "添加描述",
+        "短标题",
+        "填写短标题",
+        "添加到合集",
+        "定时发表",
+        "声明原创",
+    )
     if _control_exists_on_window(win, *strong):
         return True
     if _control_exists_on_window(win, "删除") and _control_exists_on_window(
@@ -1981,6 +2010,18 @@ def _write_result(payload: dict) -> None:
     path = _logs_dir() / "last_shipinhao_pcwechat_publish.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     _log(f"  log: {path}")
+    # Mirror to the log the daily pipeline reads (publish_pipeline._read_last_publish_url).
+    if payload.get("published"):
+        tencent = {
+            "title": payload.get("title") or payload.get("body_preview", "")[:40],
+            "video": payload.get("video", ""),
+            "platform": "shipinhao_pcwechat",
+            "ts": payload.get("ts", ""),
+        }
+        tpath = _logs_dir() / "last_tencent_publish.json"
+        tpath.write_text(
+            json.dumps(tencent, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1989,6 +2030,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--latest", action="store_true", help="latest archive zh video")
     parser.add_argument("--locale", default="zh", choices=("zh", "en"))
     parser.add_argument("--desc", default="", help="override description")
+    parser.add_argument("--script", type=Path, help="script json for caption fields")
     parser.add_argument("--dry-run", action="store_true", help="resolve assets only")
     parser.add_argument("--no-publish", action="store_true", help="upload+fill, no submit")
     parser.add_argument("--skip-nav", action="store_true", help="publish form already open")
@@ -2013,7 +2055,17 @@ def main(argv: list[str] | None = None) -> int:
         pack = video.parent / video.stem
         pack_dir = pack if pack.is_dir() else None
 
-    fields = resolve_publish_fields(video, pack_dir=pack_dir, desc_override=args.desc)
+    script_override = None
+    if args.script:
+        script_override = args.script if args.script.is_absolute() else (ROOT / args.script)
+        script_override = script_override.resolve()
+
+    fields = resolve_publish_fields(
+        video,
+        pack_dir=pack_dir,
+        desc_override=args.desc,
+        script_override=script_override,
+    )
     body = build_publish_body(fields)
 
     _log("== PC WeChat Channels publish (test) ==")
@@ -2032,6 +2084,7 @@ def main(argv: list[str] | None = None) -> int:
             no_publish=args.no_publish,
         )
         result["platform"] = "shipinhao_pcwechat"
+        result["title"] = fields.get("title") or video.stem
         result["body_preview"] = body[:200]
         result["ts"] = datetime.now().isoformat(timespec="seconds")
         _write_result(result)

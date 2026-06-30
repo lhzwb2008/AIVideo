@@ -52,32 +52,31 @@ function Test-EnvEnabled {
     return $val -match '^(1|true|yes|on)$'
 }
 
-function Test-ShipinhaoLogin {
-    $SauHome = if ($env:SAU_HOME) { $env:SAU_HOME } else { Join-Path $Root 'vendor\social-auto-upload' }
-    $SauPy = Join-Path $SauHome '.venv\Scripts\python.exe'
-    if (-not (Test-Path $SauPy)) {
-        Write-Host '[make-and-publish] WARN shipinhao needs re-login - SAU Python not found, skip shipinhao auto publish' -ForegroundColor Yellow
-        Write-Host '  run first: .\setup-windows.ps1' -ForegroundColor DarkYellow
+function Test-ShipinhaoReady {
+    # PC WeChat UI automation: requires pywinauto installed and WeChat running
+    # (logged in, "auto login this device" on). No browser/SAU session needed.
+    $wechat = Get-Process -Name 'WeChat', 'Weixin' -ErrorAction SilentlyContinue
+    if (-not $wechat) {
+        Write-Host '[make-and-publish] WARN PC WeChat not running; skip shipinhao auto publish' -ForegroundColor Yellow
+        Write-Host '  open WeChat, log in (keep auto-login on), then rerun' -ForegroundColor DarkYellow
         return $false
     }
 
-    $Acct = if ($env:SAU_SHIPINHAO_ACCOUNT) { "$($env:SAU_SHIPINHAO_ACCOUNT)".Trim() } else { 'main' }
     $prevPythonPath = $env:PYTHONPATH
-    $prevSauHome = $env:SAU_HOME
-    $env:PYTHONPATH = if ($prevPythonPath) { "$Root\src;$SauHome;$prevPythonPath" } else { "$Root\src;$SauHome" }
-    $env:SAU_HOME = $SauHome
-
+    $env:PYTHONPATH = if ($prevPythonPath) { "$Root\src;$prevPythonPath" } else { "$Root\src" }
     try {
-        Write-Host '[make-and-publish] probing shipinhao login...' -ForegroundColor DarkGray
-        & $SauPy "$Root\src\shipinhao_session.py" '--account' $Acct '--quiet'
-        return ($LASTEXITCODE -eq 0)
+        & $Py '-c' 'import pywinauto' 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host '[make-and-publish] WARN pywinauto missing; skip shipinhao auto publish' -ForegroundColor Yellow
+            Write-Host '  run: .\setup-windows.ps1  (installs requirements-pcwechat.txt)' -ForegroundColor DarkYellow
+            return $false
+        }
+        return $true
     } catch {
         return $false
     } finally {
         if ($null -ne $prevPythonPath) { $env:PYTHONPATH = $prevPythonPath }
         else { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue }
-        if ($null -ne $prevSauHome) { $env:SAU_HOME = $prevSauHome }
-        else { Remove-Item Env:SAU_HOME -ErrorAction SilentlyContinue }
     }
 }
 
@@ -114,11 +113,10 @@ Write-Host "[make-and-publish] $($ArgList -join ' ')" -ForegroundColor DarkGray
 
 $WillPublish = -not ($Extra | Where-Object { $_ -eq '--no-publish' })
 if ($WillPublish -and (Test-EnvEnabled -Name 'AIVIDEO_PUBLISH_SHIPINHAO')) {
-    if (Test-ShipinhaoLogin) {
-        Write-Host '[make-and-publish] shipinhao login OK, will auto publish' -ForegroundColor DarkGreen
+    if (Test-ShipinhaoReady) {
+        Write-Host '[make-and-publish] PC WeChat ready, will auto publish shipinhao' -ForegroundColor DarkGreen
     } else {
-        Write-Host '[make-and-publish] WARN shipinhao needs re-login (session expired); skip shipinhao auto publish this run' -ForegroundColor Yellow
-        Write-Host '  run: .\scripts\login-cn.ps1 shipinhao' -ForegroundColor DarkYellow
+        Write-Host '[make-and-publish] skip shipinhao auto publish this run' -ForegroundColor Yellow
         $env:AIVIDEO_PUBLISH_SHIPINHAO = '0'
     }
 }

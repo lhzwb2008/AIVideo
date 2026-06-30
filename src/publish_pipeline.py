@@ -247,12 +247,11 @@ def publish_bilibili_api(
 
 
 def publish_shipinhao_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
-    if llm_browser_default():
-        return publish_llm_browser(
-            "shipinhao", video, script_path, dry_run=dry_run
-        )
+    # PC WeChat client UI automation (long-lived login; replaces the browser flow
+    # that required a daily QR re-scan on channels.weixin.qq.com).
     cmd = script_argv(
-        "publish-shipinhao",
+        "publish-shipinhao-pcwechat",
+        "--video",
         rel(video),
         "--script",
         rel(script_path),
@@ -571,7 +570,9 @@ def publish_shipinhao(video: Path, script_path: Path, *, dry_run: bool) -> str:
             log(f"  [视频号] 已提交: {title}")
         return title
 
-    return _publish_with_retry(_do, label="视频号", dry_run=dry_run, llm_browser=True)
+    # PC WeChat UI automation (not the LLM browser flow): no browser profile cooldown
+    # or browser-success reconciliation needed.
+    return _publish_with_retry(_do, label="视频号", dry_run=dry_run, llm_browser=False)
 
 
 def publish_douyin(video: Path, script_path: Path, *, dry_run: bool) -> str:
