@@ -31,6 +31,7 @@ if sys.platform != "win32":
 
 try:
     from pywinauto import Desktop
+    from pywinauto import mouse
     from pywinauto.keyboard import send_keys
 except ImportError as exc:
     sys.exit(
@@ -222,12 +223,46 @@ def get_foreground_wechat_window():
     return None
 
 
+def _win32_window_text(hwnd: int) -> str:
+    try:
+        import win32gui
+
+        return (win32gui.GetWindowText(hwnd) or "").strip()
+    except Exception:
+        return ""
+
+
 def _window_geometry(win) -> tuple[int, int, int, int] | None:
+    try:
+        import win32gui
+
+        left, top, right, bottom = win32gui.GetWindowRect(int(win.handle))
+        return left, top, right - left, bottom - top
+    except Exception:
+        pass
     try:
         rect = win.rectangle()
         return rect.left, rect.top, rect.width(), rect.height()
     except Exception:
         return None
+
+
+def _screen_click(x: int, y: int, *, double: bool = False) -> None:
+    if double:
+        mouse.double_click(button="left", coords=(x, y))
+    else:
+        mouse.click(button="left", coords=(x, y))
+
+
+def _focus_hwnd(hwnd: int) -> None:
+    try:
+        import win32con
+        import win32gui
+
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
 
 
 def _window_large_enough(win, *, min_w: int = 480, min_h: int = 360) -> bool:
@@ -257,18 +292,17 @@ def find_largest_wechat_window(*, prefer_appex: bool = False):
     return best
 
 
-def _rect_click(win, x_ratio: float, y_ratio: float) -> None:
+def _rect_click(win, x_ratio: float, y_ratio: float, *, double: bool = False) -> None:
     geo = _window_geometry(win)
     if not geo:
         raise PcWeChatPublishError("cannot read window geometry")
     left, top, w, h = geo
     x = left + int(w * x_ratio)
     y = top + int(h * y_ratio)
-    try:
-        win.set_focus()
-    except Exception:
-        pass
-    win.click_input(coords=(x, y))
+    _focus_hwnd(int(win.handle))
+    time.sleep(0.15)
+    _log(f"  [click] screen ({x},{y}) ratio=({x_ratio:.2f},{y_ratio:.2f}) win={w}x{h}")
+    _screen_click(x, y, double=double)
 
 
 def _set_clipboard_text(text: str) -> None:
@@ -298,11 +332,20 @@ def probe_windows() -> None:
     _log("=== WeChat-related top-level windows ===")
     for win, title, cls, exe in iter_wechat_windows():
         try:
-            rect = win.rectangle()
-            geo = f"{rect.width()}x{rect.height()}"
+            geo = _window_geometry(win)
+            if geo:
+                left, top, w, h = geo
+                geo_s = f"{w}x{h}@{left},{top}"
+            else:
+                geo_s = "?"
+            w32 = _win32_window_text(int(win.handle))
         except Exception:
-            geo = "?"
-        _log(f"  title={title!r}  class={cls!r}  exe={exe!r}  size={geo}")
+            geo_s = "?"
+            w32 = ""
+        _log(
+            f"  uia_title={title!r} win32_title={w32!r} "
+            f"class={cls!r} exe={exe!r} size={geo_s}"
+        )
 
 
 def dump_controls(limit: int = 120) -> None:
@@ -449,21 +492,65 @@ def find_publish_window(*, timeout: float = 20.0):
 
 
 def find_channels_assistant_window():
-    markers = ("视频号助手", "视频管理", "发表动态")
+    markers = ("视频号助手", "视频管理", "发表动态", "Channels")
     best = None
-    best_area = 0
-    for win, title, _, _ in iter_wechat_windows():
-        if not any(m in title for m in markers):
-            continue
+    best_score = -1
+    for win, title, cls, exe in iter_wechat_windows():
+        w32 = _win32_window_text(int(win.handle))
+        combined = f"{title} {w32}"
         geo = _window_geometry(win)
         if not geo:
             continue
         _, _, w, h = geo
-        area = w * h
-        if area > best_area:
-            best_area = area
+        if w < 480 or h < 360:
+            continue
+        score = 0
+        if any(m in combined for m in markers):
+            score += 200
+        if "appex" in exe:
+            score += 80
+        if 650 <= w <= 980:
+            score += 40
+        if w >= 1100:
+            score += 20
+        if score > best_score:
+            best_score = score
             best = win
-    return best
+    return best if best_score >= 80 else None
+
+
+def _score_skip_nav_window(win, title: str, exe: str) -> int:
+    w32 = _win32_window_text(int(win.handle))
+    combined = f"{title} {w32}"
+    geo = _window_geometry(win)
+    if not geo:
+        return -1
+    _, _, w, h = geo
+    if w < 480 or h < 360:
+        return -1
+    score = 0
+    if any(m in combined for m in ("视频号助手", "视频管理", "发表动态")):
+        score += 300
+    if "appex" in exe:
+        score += 100
+    if 650 <= w <= 1000:
+        score += 50
+    if w >= 1100:
+        score += 30
+    return score
+
+
+def find_best_skip_nav_window():
+    ranked: list[tuple[int, object, str]] = []
+    for win, title, _, exe in iter_wechat_windows():
+        score = _score_skip_nav_window(win, title, exe)
+        if score >= 0:
+            ranked.append((score, win, title or _win32_window_text(int(win.handle))))
+    if not ranked:
+        return None, ""
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    score, win, label = ranked[0]
+    return win, f"{label!r} score={score}"
 
 
 def resolve_skip_nav_session() -> PublishSession:
@@ -473,71 +560,58 @@ def resolve_skip_nav_session() -> PublishSession:
         _log("  [nav] skip-nav: detected publish form" + (" (sparse UI)" if sparse else ""))
         return PublishSession(detected, sparse=sparse)
 
-    assistant = find_channels_assistant_window()
-    if assistant:
-        title = ""
-        try:
-            title = assistant.window_text() or ""
-        except Exception:
-            pass
-        _log(f"  [nav] skip-nav: channels assistant {title!r} (coordinate mode)")
-        try:
-            assistant.set_focus()
-        except Exception:
-            pass
-        return PublishSession(assistant, sparse=True)
-
+    _log("  [nav] waiting 1.5s — click WeChat publish page if needed...")
+    time.sleep(1.5)
     fg = get_foreground_wechat_window()
     if fg and _window_large_enough(fg):
-        title = ""
+        title = _win32_window_text(int(fg.handle)) or ""
         try:
-            title = fg.window_text() or ""
+            if not title:
+                title = fg.window_text() or ""
         except Exception:
             pass
-        _log(f"  [nav] skip-nav: foreground window {title!r} (coordinate mode)")
-        try:
-            fg.set_focus()
-        except Exception:
-            pass
+        _log(f"  [nav] skip-nav: foreground {title!r} (coordinate mode)")
+        _focus_hwnd(int(fg.handle))
         return PublishSession(fg, sparse=True)
+
+    assistant = find_channels_assistant_window()
+    if assistant:
+        title = _win32_window_text(int(assistant.handle)) or ""
+        _log(f"  [nav] skip-nav: channels assistant {title!r} (coordinate mode)")
+        _focus_hwnd(int(assistant.handle))
+        return PublishSession(assistant, sparse=True)
+
+    best, label = find_best_skip_nav_window()
+    if best:
+        _log(f"  [nav] skip-nav: best window {label} (coordinate mode)")
+        _focus_hwnd(int(best.handle))
+        return PublishSession(best, sparse=True)
 
     account = _channels_account_hint()
     if account:
         for win, title, _, _ in iter_wechat_windows():
-            if account in title and _window_large_enough(win):
-                _log(f"  [nav] skip-nav: account window {title!r} (coordinate mode)")
-                try:
-                    win.set_focus()
-                except Exception:
-                    pass
+            w32 = _win32_window_text(int(win.handle))
+            if account in f"{title} {w32}" and _window_large_enough(win):
+                _log(f"  [nav] skip-nav: account window {(title or w32)!r}")
+                _focus_hwnd(int(win.handle))
                 return PublishSession(win, sparse=True)
 
     large = find_largest_wechat_window(prefer_appex=True)
     if large:
-        title = ""
-        try:
-            title = large.window_text() or ""
-        except Exception:
-            pass
-        _log(f"  [nav] skip-nav: largest WeChatAppEx {title!r} (coordinate mode)")
-        try:
-            large.set_focus()
-        except Exception:
-            pass
+        title = _win32_window_text(int(large.handle)) or ""
+        _log(f"  [nav] skip-nav: largest WeChatAppEx {title!r}")
+        _focus_hwnd(int(large.handle))
         return PublishSession(large, sparse=True)
 
     large = find_largest_wechat_window(prefer_appex=False)
     if large:
-        _log("  [nav] skip-nav: largest WeChat window (coordinate mode)")
-        try:
-            large.set_focus()
-        except Exception:
-            pass
+        _log("  [nav] skip-nav: largest WeChat window")
+        _focus_hwnd(int(large.handle))
         return PublishSession(large, sparse=True)
 
     raise PcWeChatPublishError(
-        "skip-nav: no WeChat window found. Click the publish form, then rerun within 3s. "
-        "Or run --probe / --dump-controls."
+        "skip-nav: no WeChat window found. Click the publish form, then rerun. "
+        "Run --probe to list windows."
     )
 
 
@@ -682,33 +756,102 @@ def _file_dialog_window():
 
 
 def _file_dialog_visible() -> bool:
-    return _file_dialog_window() is not None
+    if _file_dialog_window() is not None:
+        return True
+    try:
+        import win32gui
+
+        found = False
+
+        def _cb(hwnd, _):
+            nonlocal found
+            if not win32gui.IsWindowVisible(hwnd):
+                return True
+            if win32gui.GetClassName(hwnd) == "#32770":
+                found = True
+            return True
+
+        win32gui.EnumWindows(_cb, None)
+        return found
+    except Exception:
+        return False
 
 
-def _upload_coordinate_grid(win) -> None:
+def _upload_points_for_window(win) -> list[tuple[float, float]]:
     custom_x = _env("WECHAT_UPLOAD_X_RATIO", "")
     custom_y = _env("WECHAT_UPLOAD_Y_RATIO", "")
     if custom_x and custom_y:
-        points = [(float(custom_x), float(custom_y))]
-    else:
-        points = [
-            (0.38, 0.45),
-            (0.36, 0.42),
-            (0.40, 0.48),
-            (0.34, 0.45),
-            (0.42, 0.42),
-        ]
+        return [(float(custom_x), float(custom_y))]
 
-    for x_ratio, y_ratio in points:
-        _log(f"  [upload] click upload zone ({x_ratio:.2f}, {y_ratio:.2f})")
-        _rect_click(win, x_ratio, y_ratio)
-        time.sleep(0.7)
+    geo = _window_geometry(win)
+    if geo and geo[2] >= 1050:
+        return [
+            (0.46, 0.43),
+            (0.48, 0.46),
+            (0.44, 0.40),
+            (0.50, 0.44),
+            (0.42, 0.45),
+            (0.52, 0.42),
+            (0.46, 0.48),
+        ]
+    return [
+        (0.35, 0.45),
+        (0.38, 0.42),
+        (0.40, 0.48),
+        (0.32, 0.44),
+        (0.42, 0.40),
+    ]
+
+
+def _try_blind_file_path(path_str: str) -> None:
+    send_keys("^a")
+    send_keys(path_str, with_spaces=True)
+    time.sleep(0.15)
+    send_keys("{ENTER}")
+
+
+def _upload_coordinate_grid(win, *, path_str: str = "") -> None:
+    abs_x = _env("WECHAT_UPLOAD_ABS_X", "")
+    abs_y = _env("WECHAT_UPLOAD_ABS_Y", "")
+    if abs_x and abs_y:
+        ax, ay = int(abs_x), int(abs_y)
+        _log(f"  [upload] absolute screen click ({ax}, {ay})")
+        _screen_click(ax, ay)
+        time.sleep(0.8)
         if _file_dialog_visible():
             _log("  [upload] file dialog opened")
             return
+        if path_str:
+            _try_blind_file_path(path_str)
+            time.sleep(0.8)
+            if not _file_dialog_visible():
+                return
+        raise PcWeChatPublishError("upload click missed; adjust WECHAT_UPLOAD_ABS_X/Y")
+
+    points = _upload_points_for_window(win)
+    for x_ratio, y_ratio in points:
+        _log(f"  [upload] click upload zone ({x_ratio:.2f}, {y_ratio:.2f})")
+        _rect_click(win, x_ratio, y_ratio)
+        time.sleep(0.5)
+        if _file_dialog_visible():
+            _log("  [upload] file dialog opened")
+            return
+        _rect_click(win, x_ratio, y_ratio, double=True)
+        time.sleep(0.5)
+        if _file_dialog_visible():
+            _log("  [upload] file dialog opened (double-click)")
+            return
+        if path_str:
+            _try_blind_file_path(path_str)
+            time.sleep(0.6)
+            if not _file_dialog_visible():
+                _log("  [upload] blind path entry accepted")
+                return
+
     raise PcWeChatPublishError(
         "upload zone click missed (no file dialog). "
-        "Set WECHAT_UPLOAD_X_RATIO / WECHAT_UPLOAD_Y_RATIO in .env"
+        "Run --probe, click publish page before script, or set "
+        "WECHAT_UPLOAD_X_RATIO/Y_RATIO or WECHAT_UPLOAD_ABS_X/Y in .env"
     )
 
 
@@ -776,7 +919,7 @@ def _pick_file_in_dialog(video: Path, *, timeout: float = 45.0) -> None:
     raise PcWeChatPublishError(f"file open dialog timeout. visible={tail}")
 
 
-def _click_upload_area(win, *, sparse: bool = False) -> None:
+def _click_upload_area(win, *, sparse: bool = False, path_str: str = "") -> None:
     if not sparse:
         host, label = find_control_deep("上传时长", "点击上传", "MP4", "H.264")
         if label:
@@ -797,7 +940,7 @@ def _click_upload_area(win, *, sparse: bool = False) -> None:
             except Exception:
                 pass
 
-    _upload_coordinate_grid(win)
+    _upload_coordinate_grid(win, path_str=path_str)
 
 
 def upload_video(session: PublishSession, video: Path) -> None:
@@ -805,7 +948,7 @@ def upload_video(session: PublishSession, video: Path) -> None:
     if not video.is_file():
         raise PcWeChatPublishError(f"video not found: {video}")
     _log(f"  [upload] {video}")
-    _click_upload_area(win, sparse=session.sparse)
+    _click_upload_area(win, sparse=session.sparse, path_str=str(video.resolve()))
     _pick_file_in_dialog(video)
 
 
