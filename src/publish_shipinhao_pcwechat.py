@@ -43,6 +43,12 @@ class PcWeChatPublishError(Exception):
     pass
 
 
+class PublishSession:
+    def __init__(self, window, *, sparse: bool = False) -> None:
+        self.window = window
+        self.sparse = sparse
+
+
 def _log(msg: str) -> None:
     print(msg, flush=True)
 
@@ -198,6 +204,90 @@ def iter_wechat_windows():
                 yield win, title, cls, exe
         except Exception:
             continue
+
+
+def get_foreground_wechat_window():
+    try:
+        import win32gui
+
+        hwnd = win32gui.GetForegroundWindow()
+        if not hwnd:
+            return None
+        win = _desktop_uia().window(handle=hwnd)
+        exe = (win.process_module() or "").lower()
+        if "wechat" in exe:
+            return win
+    except Exception:
+        pass
+    return None
+
+
+def _window_geometry(win) -> tuple[int, int, int, int] | None:
+    try:
+        rect = win.rectangle()
+        return rect.left, rect.top, rect.width(), rect.height()
+    except Exception:
+        return None
+
+
+def _window_large_enough(win, *, min_w: int = 480, min_h: int = 360) -> bool:
+    geo = _window_geometry(win)
+    if not geo:
+        return False
+    _, _, w, h = geo
+    return w >= min_w and h >= min_h
+
+
+def find_largest_wechat_window(*, prefer_appex: bool = False):
+    best = None
+    best_area = 0
+    for win, _, _, exe in iter_wechat_windows():
+        if prefer_appex and "appex" not in exe:
+            continue
+        geo = _window_geometry(win)
+        if not geo:
+            continue
+        _, _, w, h = geo
+        if w < 480 or h < 360:
+            continue
+        area = w * h
+        if area > best_area:
+            best_area = area
+            best = win
+    return best
+
+
+def _rect_click(win, x_ratio: float, y_ratio: float) -> None:
+    geo = _window_geometry(win)
+    if not geo:
+        raise PcWeChatPublishError("cannot read window geometry")
+    left, top, w, h = geo
+    x = left + int(w * x_ratio)
+    y = top + int(h * y_ratio)
+    try:
+        win.set_focus()
+    except Exception:
+        pass
+    win.click_input(coords=(x, y))
+
+
+def _set_clipboard_text(text: str) -> None:
+    import win32clipboard
+    import win32con
+
+    win32clipboard.OpenClipboard()
+    try:
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
+    finally:
+        win32clipboard.CloseClipboard()
+
+
+def _ratio_env(name: str, default: float) -> float:
+    raw = _env(name, "")
+    if not raw:
+        return default
+    return float(raw)
 
 
 def _channels_account_hint() -> str:
@@ -358,6 +448,67 @@ def find_publish_window(*, timeout: float = 20.0):
     return None
 
 
+def resolve_skip_nav_session() -> PublishSession:
+    detected = find_publish_window(timeout=0.8)
+    if detected:
+        sparse = not _window_has_publish_form(detected)
+        _log("  [nav] skip-nav: detected publish form" + (" (sparse UI)" if sparse else ""))
+        return PublishSession(detected, sparse=sparse)
+
+    fg = get_foreground_wechat_window()
+    if fg and _window_large_enough(fg):
+        title = ""
+        try:
+            title = fg.window_text() or ""
+        except Exception:
+            pass
+        _log(f"  [nav] skip-nav: foreground window {title!r} (coordinate mode)")
+        try:
+            fg.set_focus()
+        except Exception:
+            pass
+        return PublishSession(fg, sparse=True)
+
+    account = _channels_account_hint()
+    if account:
+        for win, title, _, _ in iter_wechat_windows():
+            if account in title and _window_large_enough(win):
+                _log(f"  [nav] skip-nav: account window {title!r} (coordinate mode)")
+                try:
+                    win.set_focus()
+                except Exception:
+                    pass
+                return PublishSession(win, sparse=True)
+
+    large = find_largest_wechat_window(prefer_appex=True)
+    if large:
+        title = ""
+        try:
+            title = large.window_text() or ""
+        except Exception:
+            pass
+        _log(f"  [nav] skip-nav: largest WeChatAppEx {title!r} (coordinate mode)")
+        try:
+            large.set_focus()
+        except Exception:
+            pass
+        return PublishSession(large, sparse=True)
+
+    large = find_largest_wechat_window(prefer_appex=False)
+    if large:
+        _log("  [nav] skip-nav: largest WeChat window (coordinate mode)")
+        try:
+            large.set_focus()
+        except Exception:
+            pass
+        return PublishSession(large, sparse=True)
+
+    raise PcWeChatPublishError(
+        "skip-nav: no WeChat window found. Click the publish form, then rerun within 3s. "
+        "Or run --probe / --dump-controls."
+    )
+
+
 def _click_control(host, ctrl) -> None:
     try:
         host.set_focus()
@@ -406,17 +557,14 @@ def _click_sidebar_channels_icon(main_win) -> bool:
     return False
 
 
-def open_publish_page(*, skip_nav: bool = False) -> object:
-    existing = find_publish_window(timeout=2.0 if skip_nav else 1.0)
+def open_publish_page(*, skip_nav: bool = False) -> PublishSession:
+    if skip_nav:
+        return resolve_skip_nav_session()
+
+    existing = find_publish_window(timeout=1.0)
     if existing:
         _log("  [nav] publish form already open")
-        return existing
-
-    if skip_nav:
-        raise PcWeChatPublishError(
-            "publish form not found (--skip-nav). "
-            "Open PC WeChat: Channels -> My -> Post video, then retry."
-        )
+        return PublishSession(existing, sparse=not _window_has_publish_form(existing))
 
     account = _channels_account_hint()
 
@@ -427,7 +575,7 @@ def open_publish_page(*, skip_nav: bool = False) -> object:
         _click_control(host, btn)
         found = find_publish_window(timeout=15.0)
         if found:
-            return found
+            return PublishSession(found, sparse=not _window_has_publish_form(found))
 
     _log("  [nav] open account tab if present...")
     if account:
@@ -441,7 +589,7 @@ def open_publish_page(*, skip_nav: bool = False) -> object:
                 _click_control(host, btn)
                 found = find_publish_window(timeout=15.0)
                 if found:
-                    return found
+                    return PublishSession(found, sparse=not _window_has_publish_form(found))
 
     main = find_main_wechat_window()
     if main:
@@ -458,7 +606,7 @@ def open_publish_page(*, skip_nav: bool = False) -> object:
                 _click_control(host, btn)
                 found = find_publish_window(timeout=15.0)
                 if found:
-                    return found
+                    return PublishSession(found, sparse=not _window_has_publish_form(found))
 
     _log("  [nav] retry Post video on all windows...")
     for win, title, _, _ in iter_wechat_windows():
@@ -469,7 +617,7 @@ def open_publish_page(*, skip_nav: bool = False) -> object:
                 _click_control(win, btn)
                 found = find_publish_window(timeout=12.0)
                 if found:
-                    return found
+                    return PublishSession(found, sparse=not _window_has_publish_form(found))
         except Exception:
             pass
 
@@ -483,29 +631,29 @@ def open_publish_page(*, skip_nav: bool = False) -> object:
     )
 
 
-def _click_upload_area(win) -> None:
-    host, label = find_control_deep("上传时长", "点击上传", "MP4", "H.264")
-    if label:
-        _click_control(host, label)
-        return
+def _click_upload_area(win, *, sparse: bool = False) -> None:
+    if not sparse:
+        host, label = find_control_deep("上传时长", "点击上传", "MP4", "H.264")
+        if label:
+            _click_control(host, label)
+            return
 
-    hints = ("上传时长", "点击上传", "上传视频", "MP4")
-    for hint in hints:
-        try:
-            label = win.child_window(title_re=f".*{hint}.*")
-            if label.exists(timeout=0.5):
-                label.click_input()
-                return
-        except Exception:
-            pass
+        hints = ("上传时长", "点击上传", "上传视频", "MP4")
+        for hint in hints:
+            try:
+                label = win.child_window(title_re=f".*{hint}.*")
+                if label.exists(timeout=0.5):
+                    label.click_input()
+                    return
+            except Exception:
+                pass
 
-    try:
-        rect = win.rectangle()
-        x = rect.left + int(rect.width() * 0.22)
-        y = rect.top + int(rect.height() * 0.42)
-        win.click_input(coords=(x, y))
-    except Exception as exc:
-        raise PcWeChatPublishError(f"cannot click upload area: {exc}") from exc
+    _log("  [upload] coordinate click upload zone")
+    _rect_click(
+        win,
+        _ratio_env("WECHAT_UPLOAD_X_RATIO", 0.22),
+        _ratio_env("WECHAT_UPLOAD_Y_RATIO", 0.42),
+    )
 
 
 def _pick_file_in_dialog(video: Path, *, timeout: float = 30.0) -> None:
@@ -551,11 +699,12 @@ def _pick_file_in_dialog(video: Path, *, timeout: float = 30.0) -> None:
     raise PcWeChatPublishError("file open dialog timeout")
 
 
-def upload_video(win, video: Path) -> None:
+def upload_video(session: PublishSession, video: Path) -> None:
+    win = session.window
     if not video.is_file():
         raise PcWeChatPublishError(f"video not found: {video}")
     _log(f"  [upload] {video}")
-    _click_upload_area(win)
+    _click_upload_area(win, sparse=session.sparse)
     time.sleep(0.8)
     _pick_file_in_dialog(video)
 
@@ -571,60 +720,78 @@ def _is_uploading(win) -> bool:
     return False
 
 
-def wait_upload_done(win, *, timeout: float = 600.0) -> None:
+def wait_upload_done(session: PublishSession, *, timeout: float = 600.0) -> None:
+    win = session.window
     _log("  [upload] waiting for processing...")
     deadline = time.time() + timeout
     last_log = 0.0
     while time.time() < deadline:
-        if _is_uploading(win):
+        if not session.sparse and _is_uploading(win):
             if time.time() - last_log > 8:
                 _log("  [upload] still processing...")
                 last_log = time.time()
             time.sleep(2.0)
             continue
-        if _publish_button(win, click=False):
+        if not session.sparse and _publish_button(win, click=False):
             _log("  [upload] ready")
+            return
+        if session.sparse:
+            time.sleep(8.0)
+            _log("  [upload] sparse UI: assume upload slot ready (fixed wait)")
             return
         time.sleep(2.0)
     raise PcWeChatPublishError("upload/processing timeout")
 
 
-def fill_description(win, body: str) -> None:
+def fill_description(session: PublishSession, body: str) -> None:
     if not body.strip():
         raise PcWeChatPublishError("empty description")
 
+    win = session.window
     _log(f"  [form] description ({len(body)} chars)")
-    host, edit = find_control_deep("添加描述")
-    if edit:
-        _click_control(host, edit)
-        try:
-            edit.set_edit_text(body)
-        except Exception:
-            send_keys("^a")
-            send_keys(body, with_spaces=True)
-        return
 
-    specs = (
-        dict(title="添加描述", control_type="Edit"),
-        dict(title_re=".*添加描述.*", control_type="Edit"),
-        dict(title_re=".*视频描述.*", control_type="Edit"),
-        dict(control_type="Document"),
-        dict(control_type="Edit"),
+    if not session.sparse:
+        host, edit = find_control_deep("添加描述")
+        if edit:
+            _click_control(host, edit)
+            try:
+                edit.set_edit_text(body)
+            except Exception:
+                send_keys("^a")
+                send_keys(body, with_spaces=True)
+            return
+
+        specs = (
+            dict(title="添加描述", control_type="Edit"),
+            dict(title_re=".*添加描述.*", control_type="Edit"),
+            dict(title_re=".*视频描述.*", control_type="Edit"),
+            dict(control_type="Document"),
+            dict(control_type="Edit"),
+        )
+        for spec in specs:
+            try:
+                edit = win.child_window(**spec)
+                if edit.exists(timeout=0.8):
+                    edit.click_input()
+                    try:
+                        edit.set_edit_text(body)
+                    except Exception:
+                        send_keys("^a")
+                        send_keys(body, with_spaces=True)
+                    return
+            except Exception:
+                pass
+
+    _log("  [form] coordinate + clipboard paste")
+    _rect_click(
+        win,
+        _ratio_env("WECHAT_DESC_X_RATIO", 0.62),
+        _ratio_env("WECHAT_DESC_Y_RATIO", 0.28),
     )
-    for spec in specs:
-        try:
-            edit = win.child_window(**spec)
-            if edit.exists(timeout=0.8):
-                edit.click_input()
-                try:
-                    edit.set_edit_text(body)
-                except Exception:
-                    send_keys("^a")
-                    send_keys(body, with_spaces=True)
-                return
-        except Exception:
-            pass
-    raise PcWeChatPublishError("description field not found")
+    time.sleep(0.3)
+    _set_clipboard_text(body)
+    send_keys("^a")
+    send_keys("^v")
 
 
 def _publish_button(win, *, click: bool) -> bool:
@@ -655,11 +822,17 @@ def _publish_button(win, *, click: bool) -> bool:
     return False
 
 
-def click_publish(win) -> None:
+def click_publish(session: PublishSession) -> None:
+    win = session.window
     _log("  [publish] click publish...")
-    if _publish_button(win, click=True):
+    if not session.sparse and _publish_button(win, click=True):
         return
-    raise PcWeChatPublishError("publish button not found")
+    _log("  [publish] coordinate click publish button")
+    _rect_click(
+        win,
+        _ratio_env("WECHAT_PUBLISH_X_RATIO", 0.88),
+        _ratio_env("WECHAT_PUBLISH_Y_RATIO", 0.93),
+    )
 
 
 def publish_via_pc_wechat(
@@ -669,18 +842,23 @@ def publish_via_pc_wechat(
     skip_nav: bool = False,
     no_publish: bool = False,
 ) -> dict:
-    win = open_publish_page(skip_nav=skip_nav)
-    upload_video(win, video)
-    wait_upload_done(win)
-    fill_description(win, body)
+    session = open_publish_page(skip_nav=skip_nav)
+    upload_video(session, video)
+    wait_upload_done(session)
+    fill_description(session, body)
     if no_publish:
         _log("  [publish] --no-publish: uploaded and filled, not submitted")
-        return {"published": False, "video": str(video)}
+        return {"published": False, "video": str(video), "sparse_ui": session.sparse}
 
-    click_publish(win)
+    click_publish(session)
     time.sleep(2.0)
     _log("  [publish] clicked publish (confirm in WeChat UI)")
-    return {"published": True, "video": str(video), "desc_len": len(body)}
+    return {
+        "published": True,
+        "video": str(video),
+        "desc_len": len(body),
+        "sparse_ui": session.sparse,
+    }
 
 
 def _write_result(payload: dict) -> None:
