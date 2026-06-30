@@ -310,12 +310,70 @@ def _is_wechat_foreground(win) -> bool:
 def _prepare_wechat_foreground(win, *, retries: int = 5) -> bool:
     hwnd = int(win.handle)
     for attempt in range(retries):
+        if attempt in (0, 2):
+            _click_taskbar_wechat()
         _force_foreground(hwnd)
         time.sleep(0.35 + attempt * 0.12)
         if _is_wechat_foreground(win):
             return True
-    _log("  [nav] warning: WeChat not foreground — close/minimize PowerShell and retry")
+    try:
+        import win32gui
+
+        if not win32gui.IsIconic(hwnd) and win32gui.IsWindowVisible(hwnd):
+            _log("  [nav] WeChat window visible; vision will crop window area")
+            return True
+    except Exception:
+        pass
+    _log("  [nav] warning: WeChat not foreground — will still try window screenshot")
     return False
+
+
+def _click_taskbar_wechat() -> bool:
+    labels = ("微信", "WeChat", "视频号")
+    try:
+        taskbar = _desktop_uia().window(class_name="Shell_TrayWnd")
+        for btn in taskbar.descendants(control_type="Button"):
+            name = (btn.window_text() or "").strip()
+            if not name:
+                continue
+            if any(label in name for label in labels):
+                _log(f"  [nav] taskbar click {name!r}")
+                btn.click_input()
+                time.sleep(0.7)
+                return True
+    except Exception as exc:
+        _log(f"  [nav] taskbar click: {exc}")
+    for win, title, _, exe in iter_wechat_windows():
+        if "wechat" not in exe and title not in labels:
+            continue
+        try:
+            import win32con
+            import win32gui
+
+            hwnd = int(win.handle)
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            _force_foreground(hwnd)
+            time.sleep(0.4)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _activate_wechat_app(win) -> None:
+    _log("  [nav] activate WeChat (taskbar + restore + focus)")
+    _click_taskbar_wechat()
+    try:
+        import win32con
+        import win32gui
+
+        hwnd = int(win.handle)
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+    except Exception:
+        pass
+    _force_foreground(int(win.handle))
+    time.sleep(0.45)
 
 
 def _window_large_enough(win, *, min_w: int = 480, min_h: int = 360) -> bool:
@@ -378,7 +436,7 @@ def _ratio_env(name: str, default: float) -> float:
 
 
 def _channels_account_hint() -> str:
-    return _env("WECHAT_CHANNELS_ACCOUNT") or _env("AIVIDEO_BRAND_NAME", "AI财知道")
+    return _env("WECHAT_CHANNELS_ACCOUNT") or _env("AIVIDEO_BRAND_NAME", "AI财知道2026")
 
 
 def _sidebar_channels_y_ratios() -> list[float]:
@@ -409,10 +467,11 @@ def _channels_post_video_points() -> list[tuple[float, float]]:
     if custom_x and custom_y:
         return [(float(custom_x), float(custom_y))]
     return [
-        (0.42, 0.28),
+        (0.40, 0.22),
+        (0.35, 0.22),
+        (0.45, 0.24),
         (0.38, 0.26),
-        (0.45, 0.30),
-        (0.40, 0.32),
+        (0.42, 0.28),
     ]
 
 
@@ -487,8 +546,7 @@ def _parse_vision_point(text: str) -> dict:
 
 
 def _vision_locate(win, goal: str) -> tuple[float, float] | None:
-    if not _prepare_wechat_foreground(win):
-        return None
+    _prepare_wechat_foreground(win)
     shot = _screenshot_window(win)
     if not shot:
         return None
@@ -558,29 +616,34 @@ def _sidebar_click(win, y_ratio: float) -> None:
 
 
 def find_channels_host_window():
-    """Main WeChat shell (chat + embedded Channels panel)."""
+    """Best window for Channels UI: standalone 视频号 (WeChatAppEx) or main WeChat shell."""
+    account = _channels_account_hint()
     ranked: list[tuple[int, object]] = []
     for win, title, cls, exe in iter_wechat_windows():
-        if "appex" in exe:
-            continue
         geo = _window_geometry(win)
         if not geo:
             continue
         _, _, w, h = geo
-        if w < 1000 or h < 600:
+        if w < 520 or h < 400:
             continue
         w32 = _win32_window_text(int(win.handle))
         combined = f"{title} {w32}"
         score = w * h
-        if title == "微信" or "WeChatMainWnd" in cls:
+        if "appex" in exe:
+            score += 400_000
+        if title == "视频号" or "视频号" in combined:
+            score += 700_000
+        if account and account in combined:
             score += 500_000
-        if any(m in combined for m in ("视频号", "Channels")):
-            score += 200_000
+        if title == "微信" or "WeChatMainWnd" in cls:
+            score += 250_000
+        if w >= 1000:
+            score += 80_000
         ranked.append((score, win))
     if ranked:
         ranked.sort(key=lambda item: item[0], reverse=True)
         return ranked[0][1]
-    return find_main_wechat_window()
+    return find_main_wechat_window() or find_largest_wechat_window(prefer_appex=True)
 
 
 def _channels_panel_visible(host) -> bool:
@@ -662,10 +725,42 @@ def _wait_publish_session(host, *, timeout: float = 12.0) -> PublishSession | No
     return None
 
 
+def _vision_profile_page_visible(win) -> bool:
+    if not _vision_nav_enabled():
+        return False
+    shot = _screenshot_window(win)
+    if not shot:
+        return False
+    try:
+        from llm_vision_client import vision_chat
+
+        raw = vision_chat(
+            system='Return ONLY JSON: {"profile_page":true/false,"has_post_video":true/false}',
+            user_text=(
+                "Is this the WeChat Channels creator profile page showing "
+                '"发表视频" and "发起直播" buttons below the avatar (NOT the vertical video feed)?'
+            ),
+            screenshot=shot,
+            max_tokens=80,
+        )
+        import json
+
+        text = raw.strip()
+        start, end = text.find("{"), text.rfind("}")
+        data = json.loads(text[start : end + 1]) if start >= 0 else {}
+        ok = bool(data.get("profile_page") and data.get("has_post_video"))
+        if ok:
+            _log("  [vision] creator profile page detected")
+        return ok
+    except Exception as exc:
+        _log(f"  [vision] profile detect: {exc}")
+        return False
+
+
 def _go_to_creator_profile(host) -> None:
     account = _channels_account_hint()
     profile_goals = [
-        f'Click the top tab with creator account name "{account}" (open my profile, NOT "视频号" feed tab)',
+        f'Click the top tab whose title contains "{account}" (creator profile, NOT the "视频号" feed tab)',
         "Click the person/profile icon at the top-right of the Channels panel (open my profile)",
     ]
     if _vision_nav_enabled():
@@ -728,6 +823,7 @@ def _click_open_publish_form(host) -> PublishSession | None:
 
 
 def _navigate_channels_home_to_publish(host) -> PublishSession | None:
+    _activate_wechat_app(host)
     _prepare_wechat_foreground(host)
 
     session = _wait_publish_session(host, timeout=1.5)
@@ -735,13 +831,17 @@ def _navigate_channels_home_to_publish(host) -> PublishSession | None:
         _log("  [nav] publish form already open")
         return session
 
+    if _on_creator_profile_page() or _vision_profile_page_visible(host):
+        _log("  [nav] creator profile ready — click Post video")
+        return _click_open_publish_form(host)
+
     _ensure_channels_panel_open(host)
-    _prepare_wechat_foreground(host)
+    _activate_wechat_app(host)
 
     if not _on_creator_profile_page():
         _go_to_creator_profile(host)
 
-    if not _on_creator_profile_page():
+    if not _on_creator_profile_page() and not _vision_profile_page_visible(host):
         _log("  [nav] creator profile not confirmed; trying Post video anyway")
 
     return _click_open_publish_form(host)
@@ -1082,7 +1182,8 @@ def open_publish_page(*, skip_nav: bool = False) -> PublishSession:
 
     host = find_channels_host_window()
     if host:
-        _log("  [nav] from channels home (default daily page)")
+        title = _win32_window_text(int(host.handle)) or ""
+        _log(f"  [nav] target window {title!r}")
         session = _navigate_channels_home_to_publish(host)
         if session:
             return session
