@@ -2094,40 +2094,6 @@ def _publish_button(win, *, click: bool) -> bool:
     return False
 
 
-def _maximize_window(win) -> None:
-    """Maximize a window so the clipped orange 发表 button (cut off at the
-    right edge of a narrow 视频号助手 window) becomes fully visible/clickable."""
-    try:
-        import win32con
-        import win32gui
-
-        hwnd = int(win.handle)
-        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-        time.sleep(0.2)
-        win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
-        time.sleep(0.8)
-        _log("  [publish] maximized publish-form window")
-    except Exception as exc:
-        _log(f"  [publish] maximize failed: {exc}")
-
-
-def _resolve_form_window(default):
-    """Find the window actually showing the publish form (prefer it over the
-    main 微信 shell, whose coordinate space does not match the form)."""
-    if not _vision_nav_enabled():
-        return default
-    for w, _, _, _ in iter_wechat_windows():
-        geo = _window_geometry(w)
-        if not geo or geo[2] < 450:
-            continue
-        try:
-            if _vision_classify_page(w) == "publish_form":
-                return w
-        except Exception:
-            continue
-    return default
-
-
 def _publish_form_still_open(win) -> bool:
     try:
         return _is_real_publish_form(win)
@@ -2159,12 +2125,6 @@ def _vision_click_publish_button(win) -> bool:
 
 def click_publish(session: PublishSession) -> None:
     win = session.window
-    # The orange 发表 button is often clipped at the right edge of a narrow
-    # 视频号助手 window. Resolve the real form window and maximize it so the
-    # button is fully visible before we try to click it.
-    form_win = _resolve_form_window(win)
-    _maximize_window(form_win)
-    win = form_win
     _log("  [publish] click publish...")
     if not session.sparse and _publish_button(win, click=True):
         if _wait_publish_action_result(win):
@@ -2196,11 +2156,8 @@ def click_publish(session: PublishSession) -> None:
         (0.975, 0.76),
         (0.965, 0.77),
         (0.99, 0.77),
-        (0.965, 0.93),
-        (0.93, 0.93),
         (0.88, 0.93),
         (0.80, 0.93),
-        (0.965, 0.90),
     ):
         _log(f"  [publish] coordinate click publish button ({x_ratio:.3f}, {y_ratio:.3f})")
         _rect_click(win, x_ratio, y_ratio)
@@ -2301,7 +2258,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     body = build_publish_body(fields)
 
-    _log("== PC WeChat Channels publish (test) == [build:2026-06-30j maximize-publish]")
+    _log("== PC WeChat Channels publish (test) == [build:2026-06-30i scroll-publish]")
     _log(f"  video: {video}")
     _log(f"  body: {body[:120]}{'...' if len(body) > 120 else ''}")
 
