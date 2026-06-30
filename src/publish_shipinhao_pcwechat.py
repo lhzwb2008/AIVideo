@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """PC WeChat client: publish to Channels via UI automation (Windows test).
 
-Flow: Channels -> My profile -> Post video -> upload MP4 -> description -> publish.
-Default: latest zh video under archive/published.
+Default start page: Channels home feed (视频号首页) after daily publish.
+Flow: home -> My profile -> Post video -> upload MP4 -> description -> publish.
 
 Deps (Windows)::
     pip install -r requirements-pcwechat.txt
 
 Examples::
     python src/publish_shipinhao_pcwechat.py --latest
-    python src/publish_shipinhao_pcwechat.py --skip-nav --no-publish
+    python src/publish_shipinhao_pcwechat.py --no-publish
+    python src/publish_shipinhao_pcwechat.py --skip-nav   # publish form already open
     python src/publish_shipinhao_pcwechat.py --probe
     python src/publish_shipinhao_pcwechat.py --dump-controls
 """
@@ -328,6 +329,173 @@ def _channels_account_hint() -> str:
     return _env("WECHAT_CHANNELS_ACCOUNT") or _env("AIVIDEO_BRAND_NAME", "AI财知道")
 
 
+def _sidebar_channels_y_ratios() -> list[float]:
+    ratio_env = _env("WECHAT_SIDEBAR_CHANNELS_Y_RATIO", "")
+    if ratio_env:
+        return [float(ratio_env)]
+    return [0.48, 0.54, 0.60, 0.66, 0.72]
+
+
+def _channels_my_tab_points() -> list[tuple[float, float]]:
+    custom_x = _env("WECHAT_CHANNELS_MY_X_RATIO", "")
+    custom_y = _env("WECHAT_CHANNELS_MY_Y_RATIO", "")
+    if custom_x and custom_y:
+        return [(float(custom_x), float(custom_y))]
+    return [
+        (0.90, 0.96),
+        (0.88, 0.97),
+        (0.92, 0.95),
+        (0.86, 0.96),
+    ]
+
+
+def _channels_post_video_points() -> list[tuple[float, float]]:
+    custom_x = _env("WECHAT_POST_VIDEO_X_RATIO", "")
+    custom_y = _env("WECHAT_POST_VIDEO_Y_RATIO", "")
+    if custom_x and custom_y:
+        return [(float(custom_x), float(custom_y))]
+    return [
+        (0.58, 0.30),
+        (0.55, 0.28),
+        (0.60, 0.32),
+        (0.52, 0.33),
+        (0.62, 0.28),
+    ]
+
+
+def _sidebar_click(win, y_ratio: float) -> None:
+    geo = _window_geometry(win)
+    if not geo:
+        return
+    left, top, _, h = geo
+    x = left + int(_env("WECHAT_SIDEBAR_X", "35"))
+    y = top + int(h * y_ratio)
+    _force_foreground(int(win.handle))
+    time.sleep(0.15)
+    _log(f"  [nav] sidebar click ({x},{y}) y_ratio={y_ratio:.2f}")
+    _screen_click(x, y)
+
+
+def find_channels_host_window():
+    """Main WeChat shell (chat + embedded Channels panel)."""
+    ranked: list[tuple[int, object]] = []
+    for win, title, cls, exe in iter_wechat_windows():
+        if "appex" in exe:
+            continue
+        geo = _window_geometry(win)
+        if not geo:
+            continue
+        _, _, w, h = geo
+        if w < 1000 or h < 600:
+            continue
+        w32 = _win32_window_text(int(win.handle))
+        combined = f"{title} {w32}"
+        score = w * h
+        if title == "微信" or "WeChatMainWnd" in cls:
+            score += 500_000
+        if any(m in combined for m in ("视频号", "Channels")):
+            score += 200_000
+        ranked.append((score, win))
+    if ranked:
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return ranked[0][1]
+    return find_main_wechat_window()
+
+
+def _channels_panel_visible(host) -> bool:
+    account = _channels_account_hint()
+    markers = ["推荐", "关注", "朋友", "发表视频", "发起直播", "视频号助手", "视频管理"]
+    if account:
+        markers.append(account)
+    _, probe = find_control_deep(*markers)
+    if probe:
+        return True
+    title = _win32_window_text(int(host.handle))
+    try:
+        title = title or host.window_text() or ""
+    except Exception:
+        pass
+    return any(m in title for m in ("视频号助手", "视频管理", "发表动态"))
+
+
+def _ensure_channels_panel_open(host) -> None:
+    if _channels_panel_visible(host):
+        _log("  [nav] channels panel visible")
+        return
+    _log("  [nav] open Channels from left sidebar...")
+    for ratio in _sidebar_channels_y_ratios():
+        _sidebar_click(host, ratio)
+        time.sleep(1.5)
+        if _channels_panel_visible(host):
+            _log("  [nav] channels panel opened")
+            return
+    _log("  [nav] channels panel not confirmed; continue with coordinate nav")
+
+
+def _detect_publish_session_after_nav(host) -> PublishSession | None:
+    found = find_publish_window(timeout=4.0)
+    if found:
+        sparse = not _window_has_publish_form(found)
+        return PublishSession(found, sparse=sparse)
+
+    assistant = find_channels_assistant_window()
+    if assistant:
+        return PublishSession(assistant, sparse=True)
+
+    _, marker = find_control_deep(
+        "上传时长", "点击上传", "添加描述", "发表动态", "视频管理"
+    )
+    if marker:
+        sparse = not _window_has_publish_form(host)
+        return PublishSession(host, sparse=sparse)
+    return None
+
+
+def _navigate_channels_home_to_publish(host) -> PublishSession | None:
+    _force_foreground(int(host.handle))
+    time.sleep(0.3)
+
+    session = _detect_publish_session_after_nav(host)
+    if session:
+        _log("  [nav] publish form already open")
+        return session
+
+    _ensure_channels_panel_open(host)
+
+    _, post_btn = find_control_deep("发表视频")
+    if not post_btn:
+        _log("  [nav] channels home -> My profile (coordinates)")
+        for x_ratio, y_ratio in _channels_my_tab_points():
+            _log(f"  [nav] click My tab ({x_ratio:.2f}, {y_ratio:.2f})")
+            _rect_click(host, x_ratio, y_ratio)
+            time.sleep(1.2)
+            _, post_btn = find_control_deep("发表视频")
+            if post_btn:
+                break
+
+    _log("  [nav] profile -> Post video")
+    _, post_btn = find_control_deep("发表视频")
+    if post_btn:
+        _log("  [nav] click Post video (UIA)")
+        _click_control(host, post_btn)
+    else:
+        for x_ratio, y_ratio in _channels_post_video_points():
+            _log(f"  [nav] click Post video ({x_ratio:.2f}, {y_ratio:.2f})")
+            _rect_click(host, x_ratio, y_ratio)
+            time.sleep(1.2)
+            session = _detect_publish_session_after_nav(host)
+            if session:
+                _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
+                return session
+
+    time.sleep(1.0)
+    session = _detect_publish_session_after_nav(host)
+    if session:
+        _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
+        return session
+    return None
+
+
 def probe_windows() -> None:
     _log("=== WeChat-related top-level windows ===")
     for win, title, cls, exe in iter_wechat_windows():
@@ -560,8 +728,21 @@ def resolve_skip_nav_session() -> PublishSession:
         _log("  [nav] skip-nav: detected publish form" + (" (sparse UI)" if sparse else ""))
         return PublishSession(detected, sparse=sparse)
 
-    _log("  [nav] waiting 1.5s — click WeChat publish page if needed...")
-    time.sleep(1.5)
+    assistant = find_channels_assistant_window()
+    if assistant:
+        title = _win32_window_text(int(assistant.handle)) or ""
+        _log(f"  [nav] skip-nav: channels assistant {title!r} (coordinate mode)")
+        _force_foreground(int(assistant.handle))
+        return PublishSession(assistant, sparse=True)
+
+    host = find_channels_host_window()
+    if host:
+        session = _detect_publish_session_after_nav(host)
+        if session:
+            _log("  [nav] skip-nav: publish form on main window")
+            _force_foreground(int(session.window.handle))
+            return session
+
     fg = get_foreground_wechat_window()
     if fg and _window_large_enough(fg):
         title = _win32_window_text(int(fg.handle)) or ""
@@ -571,20 +752,13 @@ def resolve_skip_nav_session() -> PublishSession:
         except Exception:
             pass
         _log(f"  [nav] skip-nav: foreground {title!r} (coordinate mode)")
-        _focus_hwnd(int(fg.handle))
+        _force_foreground(int(fg.handle))
         return PublishSession(fg, sparse=True)
-
-    assistant = find_channels_assistant_window()
-    if assistant:
-        title = _win32_window_text(int(assistant.handle)) or ""
-        _log(f"  [nav] skip-nav: channels assistant {title!r} (coordinate mode)")
-        _focus_hwnd(int(assistant.handle))
-        return PublishSession(assistant, sparse=True)
 
     best, label = find_best_skip_nav_window()
     if best:
         _log(f"  [nav] skip-nav: best window {label} (coordinate mode)")
-        _focus_hwnd(int(best.handle))
+        _force_foreground(int(best.handle))
         return PublishSession(best, sparse=True)
 
     account = _channels_account_hint()
@@ -593,25 +767,25 @@ def resolve_skip_nav_session() -> PublishSession:
             w32 = _win32_window_text(int(win.handle))
             if account in f"{title} {w32}" and _window_large_enough(win):
                 _log(f"  [nav] skip-nav: account window {(title or w32)!r}")
-                _focus_hwnd(int(win.handle))
+                _force_foreground(int(win.handle))
                 return PublishSession(win, sparse=True)
 
     large = find_largest_wechat_window(prefer_appex=True)
     if large:
         title = _win32_window_text(int(large.handle)) or ""
         _log(f"  [nav] skip-nav: largest WeChatAppEx {title!r}")
-        _focus_hwnd(int(large.handle))
+        _force_foreground(int(large.handle))
         return PublishSession(large, sparse=True)
 
     large = find_largest_wechat_window(prefer_appex=False)
     if large:
         _log("  [nav] skip-nav: largest WeChat window")
-        _focus_hwnd(int(large.handle))
+        _force_foreground(int(large.handle))
         return PublishSession(large, sparse=True)
 
     raise PcWeChatPublishError(
-        "skip-nav: no WeChat window found. Click the publish form, then rerun. "
-        "Run --probe to list windows."
+        "skip-nav: no WeChat window found. Run without --skip-nav from channels home, "
+        "or run --probe to list windows."
     )
 
 
@@ -635,30 +809,13 @@ def _click_control(host, ctrl) -> None:
 
 
 def _click_sidebar_channels_icon(main_win) -> bool:
-    try:
-        main_win.set_focus()
-        rect = main_win.rectangle()
-    except Exception as exc:
-        _log(f"  [nav] main window focus failed: {exc}")
-        return False
-
-    x = rect.left + int(_env("WECHAT_SIDEBAR_X", "35"))
-    ratio_env = _env("WECHAT_SIDEBAR_CHANNELS_Y_RATIO", "")
-    if ratio_env:
-        ratios = [float(ratio_env)]
-    else:
-        ratios = [0.48, 0.54, 0.60, 0.66, 0.72]
-
-    for ratio in ratios:
-        y = rect.top + int(rect.height() * ratio)
-        _log(f"  [nav] sidebar click ({x}, {y}) ratio={ratio:.2f}")
-        try:
-            main_win.click_input(coords=(x, y))
-        except Exception:
-            continue
+    for ratio in _sidebar_channels_y_ratios():
+        _sidebar_click(main_win, ratio)
         time.sleep(1.5)
         _, probe = find_control_deep("发表视频", "发起直播", _channels_account_hint())
         if probe:
+            return True
+        if _channels_panel_visible(main_win):
             return True
     return False
 
@@ -683,6 +840,18 @@ def open_publish_page(*, skip_nav: bool = False) -> PublishSession:
         if found:
             return PublishSession(found, sparse=not _window_has_publish_form(found))
 
+    host = find_channels_host_window()
+    if host:
+        _log("  [nav] from channels home (default daily page)")
+        session = _navigate_channels_home_to_publish(host)
+        if session:
+            return session
+        _log("  [nav] retry after sidebar Channels icon")
+        if _click_sidebar_channels_icon(host):
+            session = _navigate_channels_home_to_publish(host)
+            if session:
+                return session
+
     _log("  [nav] open account tab if present...")
     if account:
         host, tab = find_control_deep(account)
@@ -692,23 +861,6 @@ def open_publish_page(*, skip_nav: bool = False) -> PublishSession:
             time.sleep(1.2)
             host, btn = find_control_deep("发表视频")
             if btn:
-                _click_control(host, btn)
-                found = find_publish_window(timeout=15.0)
-                if found:
-                    return PublishSession(found, sparse=not _window_has_publish_form(found))
-
-    main = find_main_wechat_window()
-    if main:
-        _log("  [nav] click Channels icon on main sidebar...")
-        if _click_sidebar_channels_icon(main):
-            if account:
-                host, tab = find_control_deep(account)
-                if tab:
-                    _click_control(host, tab)
-                    time.sleep(1.0)
-            host, btn = find_control_deep("发表视频")
-            if btn:
-                _log("  [nav] click Post video after sidebar")
                 _click_control(host, btn)
                 found = find_publish_window(timeout=15.0)
                 if found:
@@ -730,14 +882,90 @@ def open_publish_page(*, skip_nav: bool = False) -> PublishSession:
     shot = _save_debug_shot("nav_fail")
     hint = f" screenshot: {shot}" if shot else ""
     raise PcWeChatPublishError(
-        "cannot open publish form. Manual: PC WeChat -> Channels -> My -> Post video, "
-        f"then run with --skip-nav.{hint} "
-        "Tip: run --dump-controls to inspect UI tree; set WECHAT_SIDEBAR_CHANNELS_Y_RATIO "
-        "if sidebar icon position differs."
+        "cannot open publish form from channels home. Keep PC WeChat on the Channels feed "
+        f"(视频号首页) and rerun.{hint} "
+        "Tune WECHAT_CHANNELS_MY_X/Y_RATIO and WECHAT_POST_VIDEO_X/Y_RATIO in .env if needed."
     )
 
 
-def _file_dialog_window():
+def _enum_file_dialog_hwnds(*, folder_hint: str = "") -> list[tuple[int, str, str]]:
+    import win32gui
+
+    found: list[tuple[int, str, str]] = []
+
+    def _cb(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return True
+        cls = win32gui.GetClassName(hwnd) or ""
+        title = (win32gui.GetWindowText(hwnd) or "").strip()
+        if cls == "#32770":
+            found.append((hwnd, cls, title))
+            return True
+        if cls == "CabinetWClass":
+            lower = title.lower()
+            if folder_hint and folder_hint in title:
+                found.append((hwnd, cls, title))
+            elif any(k in title for k in ("打开", "Open", "选择", "上传")):
+                found.append((hwnd, cls, title))
+        return True
+
+    win32gui.EnumWindows(_cb, None)
+    return found
+
+
+def _pick_file_dialog_hwnd(*, folder_hint: str = "") -> int | None:
+    dialogs = _enum_file_dialog_hwnds(folder_hint=folder_hint)
+    if not dialogs:
+        return None
+    for hwnd, cls, title in dialogs:
+        if cls == "#32770" and any(k in title for k in ("打开", "Open", "选择", "上传", "文件")):
+            return hwnd
+    for hwnd, cls, _ in dialogs:
+        if cls == "#32770":
+            return hwnd
+    return dialogs[0][0]
+
+
+def _force_foreground(hwnd: int) -> None:
+    try:
+        import win32con
+        import win32gui
+        import win32process
+
+        if win32gui.GetForegroundWindow() == hwnd:
+            return
+        fg = win32gui.GetForegroundWindow()
+        fg_thread = win32process.GetWindowThreadProcessId(fg)[0]
+        target_thread = win32process.GetWindowThreadProcessId(hwnd)[0]
+        attached = False
+        if fg_thread and target_thread and fg_thread != target_thread:
+            win32process.AttachThreadInput(fg_thread, target_thread, True)
+            attached = True
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+            win32gui.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                win32process.AttachThreadInput(fg_thread, target_thread, False)
+    except Exception:
+        _focus_hwnd(hwnd)
+
+
+def _file_dialog_window(*, folder_hint: str = ""):
+    hwnd = _pick_file_dialog_hwnd(folder_hint=folder_hint)
+    if hwnd:
+        try:
+            return _desktop_uia().window(handle=hwnd)
+        except Exception:
+            try:
+                from pywinauto import Application
+
+                return Application(backend="win32").connect(handle=hwnd, timeout=2).window(
+                    handle=hwnd
+                )
+            except Exception:
+                pass
+
     desktop = _desktop_uia()
     for win in desktop.windows():
         try:
@@ -755,26 +983,82 @@ def _file_dialog_window():
     return None
 
 
-def _file_dialog_visible() -> bool:
-    if _file_dialog_window() is not None:
-        return True
-    try:
-        import win32gui
+def _file_dialog_visible(*, folder_hint: str = "") -> bool:
+    return _pick_file_dialog_hwnd(folder_hint=folder_hint) is not None
 
-        found = False
 
-        def _cb(hwnd, _):
-            nonlocal found
-            if not win32gui.IsWindowVisible(hwnd):
-                return True
-            if win32gui.GetClassName(hwnd) == "#32770":
-                found = True
+def _dialog_still_open(*, folder_hint: str = "") -> bool:
+    return _file_dialog_visible(folder_hint=folder_hint)
+
+
+def _submit_path_via_win32(hwnd: int, path_str: str, *, cls: str = "#32770") -> None:
+    import win32con
+    import win32gui
+
+    _force_foreground(hwnd)
+    time.sleep(0.35)
+    _log(f"  [upload] focus dialog hwnd={hwnd} class={cls!r}")
+
+    if cls == "#32770":
+        try:
+            edit = win32gui.GetDlgItem(hwnd, 1148)
+            if edit:
+                win32gui.SendMessage(edit, win32con.WM_SETTEXT, 0, path_str)
+                time.sleep(0.15)
+                open_btn = win32gui.GetDlgItem(hwnd, 1)
+                if open_btn:
+                    win32gui.PostMessage(open_btn, win32con.BM_CLICK, 0, 0)
+                    return
+        except Exception:
+            pass
+
+    _set_clipboard_text(path_str)
+    if cls == "CabinetWClass":
+        send_keys("%d")
+        time.sleep(0.2)
+        send_keys("^a^v{ENTER}")
+        time.sleep(0.4)
+        send_keys("^a^v{ENTER}")
+        return
+
+    for combo in ("%n", "%l"):
+        send_keys(combo)
+        time.sleep(0.15)
+    send_keys("^a^v")
+    time.sleep(0.15)
+    send_keys("{ENTER}")
+
+
+def _submit_path_to_open_dialog(path_str: str, video: Path | None = None) -> bool:
+    folder_hint = video.parent.name if video else ""
+    dialogs = _enum_file_dialog_hwnds(folder_hint=folder_hint)
+    if not dialogs:
+        return False
+
+    for hwnd, cls, title in dialogs:
+        _log(f"  [upload] try dialog {cls!r} title={title!r}")
+        _submit_path_via_win32(hwnd, path_str, cls=cls)
+        time.sleep(0.8)
+        if not _dialog_still_open(folder_hint=folder_hint):
             return True
 
-        win32gui.EnumWindows(_cb, None)
-        return found
-    except Exception:
-        return False
+    dlg = _file_dialog_window(folder_hint=folder_hint)
+    if dlg is not None:
+        _submit_path_to_file_dialog(dlg, path_str)
+        time.sleep(0.8)
+        if not _dialog_still_open(folder_hint=folder_hint):
+            return True
+    return False
+
+
+def _try_blind_file_path(path_str: str, *, hwnd: int | None = None) -> None:
+    if hwnd:
+        _submit_path_via_win32(hwnd, path_str)
+        return
+    _set_clipboard_text(path_str)
+    send_keys("^a^v")
+    time.sleep(0.15)
+    send_keys("{ENTER}")
 
 
 def _upload_points_for_window(win) -> list[tuple[float, float]]:
@@ -803,13 +1087,6 @@ def _upload_points_for_window(win) -> list[tuple[float, float]]:
     ]
 
 
-def _try_blind_file_path(path_str: str) -> None:
-    send_keys("^a")
-    send_keys(path_str, with_spaces=True)
-    time.sleep(0.15)
-    send_keys("{ENTER}")
-
-
 def _upload_coordinate_grid(win, *, path_str: str = "") -> None:
     abs_x = _env("WECHAT_UPLOAD_ABS_X", "")
     abs_y = _env("WECHAT_UPLOAD_ABS_Y", "")
@@ -834,12 +1111,16 @@ def _upload_coordinate_grid(win, *, path_str: str = "") -> None:
         _rect_click(win, x_ratio, y_ratio)
         time.sleep(0.5)
         if _file_dialog_visible():
-            _log("  [upload] file dialog opened")
+            hwnd = _pick_file_dialog_hwnd()
+            title = _win32_window_text(hwnd) if hwnd else ""
+            _log(f"  [upload] file dialog opened hwnd={hwnd} title={title!r}")
             return
         _rect_click(win, x_ratio, y_ratio, double=True)
         time.sleep(0.5)
         if _file_dialog_visible():
-            _log("  [upload] file dialog opened (double-click)")
+            hwnd = _pick_file_dialog_hwnd()
+            title = _win32_window_text(hwnd) if hwnd else ""
+            _log(f"  [upload] file dialog opened (double-click) hwnd={hwnd} title={title!r}")
             return
         if path_str:
             _try_blind_file_path(path_str)
@@ -889,26 +1170,27 @@ def _submit_path_to_file_dialog(dlg, path_str: str) -> None:
 
 def _pick_file_in_dialog(video: Path, *, timeout: float = 45.0) -> None:
     path_str = str(video.resolve())
+    folder_hint = video.parent.name
     deadline = time.time() + timeout
 
     while time.time() < deadline:
-        dlg = _file_dialog_window()
-        if dlg is not None:
-            _submit_path_to_file_dialog(dlg, path_str)
+        if not _dialog_still_open(folder_hint=folder_hint):
             _log(f"  [upload] selected: {video.name}")
             return
-        time.sleep(0.25)
+        if _submit_path_to_open_dialog(path_str, video):
+            _log(f"  [upload] selected: {video.name}")
+            return
+        time.sleep(0.35)
 
-    _log("  [upload] dialog not found via UIA; try typing path to active window")
-    send_keys("^a")
-    send_keys(path_str, with_spaces=True)
-    time.sleep(0.2)
-    send_keys("{ENTER}")
-    time.sleep(1.0)
-    if not _file_dialog_visible():
-        _log(f"  [upload] selected (blind enter): {video.name}")
+    if _submit_path_to_open_dialog(path_str, video):
+        _log(f"  [upload] selected: {video.name}")
+        return
+    if not _dialog_still_open(folder_hint=folder_hint):
+        _log(f"  [upload] selected: {video.name}")
         return
 
+    dialogs = _enum_file_dialog_hwnds(folder_hint=folder_hint)
+    dlg_tail = "; ".join(f"{cls}|{title}" for _, cls, title in dialogs[:4])
     seen = []
     for win in _desktop_uia().windows():
         try:
@@ -916,7 +1198,8 @@ def _pick_file_in_dialog(video: Path, *, timeout: float = 45.0) -> None:
         except Exception:
             pass
     tail = "; ".join(seen[:8])
-    raise PcWeChatPublishError(f"file open dialog timeout. visible={tail}")
+    extra = f" win32_dialogs={dlg_tail or 'none'};" if dlg_tail else " "
+    raise PcWeChatPublishError(f"file open dialog timeout.{extra} visible={tail}")
 
 
 def _click_upload_area(win, *, sparse: bool = False, path_str: str = "") -> None:
@@ -947,8 +1230,15 @@ def upload_video(session: PublishSession, video: Path) -> None:
     win = session.window
     if not video.is_file():
         raise PcWeChatPublishError(f"video not found: {video}")
+    path_str = str(video.resolve())
+    folder_hint = video.parent.name
     _log(f"  [upload] {video}")
-    _click_upload_area(win, sparse=session.sparse, path_str=str(video.resolve()))
+    _click_upload_area(win, sparse=session.sparse, path_str=path_str)
+    if _file_dialog_visible(folder_hint=folder_hint):
+        _log("  [upload] submitting path to open dialog...")
+        if _submit_path_to_open_dialog(path_str, video):
+            _log(f"  [upload] selected: {video.name}")
+            return
     _pick_file_in_dialog(video)
 
 

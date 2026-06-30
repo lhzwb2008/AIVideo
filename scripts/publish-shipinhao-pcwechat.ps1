@@ -2,13 +2,14 @@
 <#
 .SYNOPSIS
   Publish to WeChat Channels via PC WeChat UI automation (test).
+  Default: starts from Channels home feed (视频号首页), auto-navigates to Post video.
 
 .EXAMPLE
   .\scripts\publish-shipinhao-pcwechat.ps1
   .\scripts\publish-shipinhao-pcwechat.ps1 -DryRun
   .\scripts\publish-shipinhao-pcwechat.ps1 -Probe
   .\scripts\publish-shipinhao-pcwechat.ps1 -DumpControls
-  .\scripts\publish-shipinhao-pcwechat.ps1 -SkipNav
+  .\scripts\publish-shipinhao-pcwechat.ps1 -SkipNav   # publish form already open
   .\scripts\publish-shipinhao-pcwechat.ps1 -Video archive\published\20260630\zh\xxx.mp4
   .\scripts\publish-shipinhao-pcwechat.ps1 -NoPublish
 #>
