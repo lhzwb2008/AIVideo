@@ -1,11 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  PC 微信客户端 · 视频号 UI 自动化发布（测试）
-
-.DESCRIPTION
-  默认发布 archive/published 下最新的 zh 视频。
-  需 Windows + PC 微信已登录（建议勾选「自动登录该设备」）。
+  Publish to WeChat Channels via PC WeChat UI automation (test).
 
 .EXAMPLE
   .\scripts\publish-shipinhao-pcwechat.ps1
@@ -42,12 +38,13 @@ if (-not (Test-Path $MainPy)) {
     $MainPy = 'python'
 }
 
-# 检查 pywinauto
 & $MainPy -c "import pywinauto" 2>$null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host '安装 PC 微信自动化依赖…' -ForegroundColor Yellow
+    Write-Host 'Installing requirements-pcwechat.txt ...' -ForegroundColor Yellow
     & $MainPy -m pip install -r (Join-Path $Root 'requirements-pcwechat.txt')
-    if ($LASTEXITCODE -ne 0) { throw 'pip install requirements-pcwechat.txt 失败' }
+    if ($LASTEXITCODE -ne 0) {
+        throw 'pip install requirements-pcwechat.txt failed'
+    }
 }
 
 $env:PYTHONPATH = "$Root\src"
@@ -67,6 +64,6 @@ if ($Video) {
 }
 if ($ExtraArgs) { $PyArgs += $ExtraArgs }
 
-Write-Host '==> PC 微信 · 视频号 UI 发布' -ForegroundColor Cyan
+Write-Host '==> shipinhao PC WeChat UI publish' -ForegroundColor Cyan
 & $MainPy @PyArgs
 if ($null -ne $LASTEXITCODE) { exit [int]$LASTEXITCODE }
