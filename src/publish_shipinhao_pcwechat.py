@@ -966,33 +966,111 @@ def find_main_wechat_window():
     return best
 
 
+def _is_video_feed_page(win) -> bool:
+    """Vertical Channels feed / playback — not the publish form."""
+    if _control_exists_on_window(win, "赞和收藏", "朋友赞过", "关注"):
+        if not _control_exists_on_window(
+            win, "封面预览", "上传时长", "发表动态", "短标题", "视频管理"
+        ):
+            return True
+    if _vision_nav_enabled():
+        shot = _screenshot_window(win)
+        if shot:
+            try:
+                from llm_vision_client import vision_chat
+                import json
+
+                raw = vision_chat(
+                    system='Return ONLY JSON: {"video_feed":true/false}',
+                    user_text=(
+                        "Is this the WeChat Channels vertical VIDEO FEED with playback "
+                        "(progress bar, like/share icons on the side)? NOT the publish/upload form."
+                    ),
+                    screenshot=shot,
+                    max_tokens=60,
+                )
+                start, end = raw.find("{"), raw.rfind("}")
+                data = json.loads(raw[start : end + 1]) if start >= 0 else {}
+                if data.get("video_feed"):
+                    _log("  [nav] vision: Channels video feed (not publish form)")
+                    return True
+            except Exception:
+                pass
+    return False
+
+
+def _control_exists_on_window(win, *needles: str) -> bool:
+    for needle in needles:
+        if not needle:
+            continue
+        try:
+            if win.child_window(title=needle).exists(timeout=0.12):
+                return True
+            if win.child_window(title_re=f".*{needle}.*").exists(timeout=0.12):
+                return True
+        except Exception:
+            pass
+        try:
+            for elem in win.descendants():
+                try:
+                    if not elem.is_visible():
+                        continue
+                    name = (elem.window_text() or "").strip()
+                    if needle in name:
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    return False
+
+
 def _window_has_publish_form(win) -> bool:
+    return _is_real_publish_form(win)
+
+
+def _is_real_publish_form(win) -> bool:
+    if _is_video_feed_page(win):
+        return False
     title = ""
     try:
         title = win.window_text() or ""
     except Exception:
         pass
-    if any(k in title for k in ("发表动态", "视频管理")):
+    w32 = _win32_window_text(int(win.handle))
+    combined = f"{title} {w32}"
+    if any(k in combined for k in ("发表动态", "视频号助手", "视频管理")):
         return True
-    probes = ("发表动态", "视频描述", "添加描述", "上传时长", "视频管理")
-    for text in probes:
-        try:
-            if win.child_window(title_re=f".*{text}.*").exists(timeout=0.15):
-                return True
-        except Exception:
-            pass
-    try:
-        for elem in win.descendants():
+    strong = ("上传时长", "点击上传", "封面预览", "发表动态", "视频管理", "短标题")
+    if _control_exists_on_window(win, *strong):
+        return True
+    if _control_exists_on_window(win, "删除") and _control_exists_on_window(
+        win, "视频描述"
+    ):
+        return True
+    if _vision_nav_enabled():
+        shot = _screenshot_window(win)
+        if shot:
             try:
-                if not elem.is_visible():
-                    continue
-                name = (elem.window_text() or "").strip()
-                if name in probes or any(p in name for p in probes):
+                from llm_vision_client import vision_chat
+                import json
+
+                raw = vision_chat(
+                    system='Return ONLY JSON: {"publish_form":true/false}',
+                    user_text=(
+                        "Is this the WeChat Channels PUBLISH form (upload slot or video "
+                        "preview with 封面预览/视频描述/短标题 fields)? NOT the video feed player."
+                    ),
+                    screenshot=shot,
+                    max_tokens=60,
+                )
+                start, end = raw.find("{"), raw.rfind("}")
+                data = json.loads(raw[start : end + 1]) if start >= 0 else {}
+                if data.get("publish_form"):
+                    _log("  [nav] vision: publish form detected")
                     return True
             except Exception:
-                continue
-    except Exception:
-        pass
+                pass
     return False
 
 
@@ -1008,8 +1086,10 @@ def find_best_publish_session_window(
     deadline = time.time() + timeout
     while time.time() < deadline:
         assistant = find_channels_assistant_window()
-        if assistant:
-            sparse = not _window_has_publish_form(assistant)
+        if assistant and _is_real_publish_form(assistant):
+            sparse = not _control_exists_on_window(
+                assistant, "上传时长", "封面预览", "发表动态"
+            )
             try:
                 assistant.set_focus()
             except Exception:
@@ -1018,7 +1098,7 @@ def find_best_publish_session_window(
 
         ranked: list[tuple[int, object]] = []
         for win, title, cls, exe in iter_wechat_windows():
-            if not _window_has_publish_form(win):
+            if not _is_real_publish_form(win):
                 continue
             geo = _window_geometry(win)
             if not geo:
@@ -1218,7 +1298,7 @@ def open_publish_page(*, skip_nav: bool = False) -> PublishSession:
         return resolve_skip_nav_session()
 
     existing, sparse = find_best_publish_session_window(timeout=1.5)
-    if existing:
+    if existing and _is_real_publish_form(existing):
         title = _win32_window_text(int(existing.handle)) or ""
         _log(f"  [nav] publish form already open ({title!r})")
         _activate_wechat_app(existing)
@@ -1227,7 +1307,13 @@ def open_publish_page(*, skip_nav: bool = False) -> PublishSession:
     host = find_channels_host_window()
     if host:
         title = _win32_window_text(int(host.handle)) or ""
-        _log(f"  [nav] target window {title!r}")
+        if _is_video_feed_page(host):
+            _log(f"  [nav] on Channels feed ({title!r}) — navigate to Post video")
+        elif _is_real_publish_form(host):
+            _log(f"  [nav] publish form on {title!r}")
+            return PublishSession(host, sparse=sparse)
+        else:
+            _log(f"  [nav] target window {title!r}")
         session = _navigate_channels_home_to_publish(host)
         if session:
             return session
@@ -1657,6 +1743,12 @@ def upload_video(session: PublishSession, video: Path) -> None:
         raise PcWeChatPublishError(f"video not found: {video}")
     _dismiss_stray_upload_windows()
     _activate_wechat_app(win)
+
+    if not _is_real_publish_form(win):
+        raise PcWeChatPublishError(
+            "not on publish form (maybe on video feed). "
+            "Open 发表动态 page or run without --skip-nav."
+        )
 
     if _video_slot_filled(session):
         _log("  [upload] skip — video already on publish form")
