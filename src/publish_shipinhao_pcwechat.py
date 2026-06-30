@@ -1054,6 +1054,47 @@ _PUBLISH_FORM_ONLY = (
 )
 
 
+def _vision_classify_page(win) -> str:
+    """Ask the vision LLM which WeChat Channels page this is.
+
+    Returns one of: publish_form, management_list, feed, profile, other, "".
+    Empty string means vision unavailable / failed.
+    """
+    if not _vision_nav_enabled():
+        return ""
+    shot = _screenshot_window(win)
+    if not shot:
+        return ""
+    try:
+        from llm_vision_client import vision_chat
+        import json
+
+        raw = vision_chat(
+            system='Return ONLY JSON: {"page":"publish_form|management_list|feed|profile|other"}',
+            user_text=(
+                "Classify this WeChat Channels (视频号) screen:\n"
+                "- publish_form: the POST/PUBLISH editor with an upload slot OR a single "
+                "video preview plus 视频描述/封面预览/短标题 fields and an orange 发表 button.\n"
+                "- management_list: 视频管理 page showing a GRID/LIST of already-published "
+                "videos with view/like counts (浏览/点赞), NOT an editor.\n"
+                "- feed: vertical video player feed.\n"
+                "- profile: creator profile with 发表视频/发起直播 buttons under the avatar.\n"
+                "- other: anything else."
+            ),
+            screenshot=shot,
+            max_tokens=40,
+        )
+        start, end = raw.find("{"), raw.rfind("}")
+        data = json.loads(raw[start : end + 1]) if start >= 0 else {}
+        page = str(data.get("page", "")).strip()
+        if page:
+            _log(f"  [vision] page = {page}")
+        return page
+    except Exception as exc:
+        _log(f"  [vision] classify: {exc}")
+        return ""
+
+
 def _is_management_list_page(win) -> bool:
     """The creator profile / 视频管理 list page where you START a post.
 
@@ -1061,20 +1102,23 @@ def _is_management_list_page(win) -> bool:
     but it is NOT the publish form. Detecting it as a form makes the navigator
     skip opening a fresh form, then fail to find the publish button.
     """
+    # A real form field present => definitely not the management list.
+    if _control_exists_on_window(win, *_PUBLISH_FORM_ONLY):
+        return False
     has_entry = _control_exists_on_window(win, "发表视频", "发起直播")
     if not has_entry:
         _, post_btn = find_control_deep("发表视频")
         _, live_btn = find_control_deep("发起直播")
         has_entry = bool(post_btn or live_btn)
-    has_form_field = _control_exists_on_window(win, *_PUBLISH_FORM_ONLY)
-    return has_entry and not has_form_field
+    if has_entry:
+        return True
+    # Sparse UIA (WeChatAppEx) hides controls — let vision decide.
+    page = _vision_classify_page(win)
+    return page in ("management_list", "profile", "feed")
 
 
 def _is_real_publish_form(win) -> bool:
     if _is_video_feed_page(win):
-        return False
-    # Profile/视频管理 list page: has 发表视频 entry but no real form fields.
-    if _is_management_list_page(win):
         return False
     title = ""
     try:
@@ -1083,10 +1127,7 @@ def _is_real_publish_form(win) -> bool:
         pass
     w32 = _win32_window_text(int(win.handle))
     combined = f"{title} {w32}"
-    # "视频号助手/视频管理" also appears on the post-submit management list, so
-    # do not treat those labels alone as the publish form.
-    if "发表动态" in combined:
-        return True
+    # Reliable UIA positive: real publish-form-only fields are present.
     strong = (
         "上传时长",
         "点击上传",
@@ -1100,35 +1141,25 @@ def _is_real_publish_form(win) -> bool:
         "定时发表",
         "声明原创",
     )
-    if _control_exists_on_window(win, *strong):
+    if "发表动态" in combined or _control_exists_on_window(win, *strong):
         return True
+    # No reliable form field via UIA. The 视频管理 list page also has 删除 buttons,
+    # so when vision is available let it be the authority to avoid mistaking the
+    # management list for the publish form (the recurring failure mode).
+    if _vision_nav_enabled():
+        page = _vision_classify_page(win)
+        if page == "publish_form":
+            _log("  [nav] vision: publish form detected")
+            return True
+        if page in ("management_list", "profile", "feed", "other"):
+            return False
+    # Vision unavailable: fall back to UIA management guard + weak combo.
+    if _is_management_list_page(win):
+        return False
     if _control_exists_on_window(win, "删除") and _control_exists_on_window(
         win, "视频描述"
     ):
         return True
-    if _vision_nav_enabled():
-        shot = _screenshot_window(win)
-        if shot:
-            try:
-                from llm_vision_client import vision_chat
-                import json
-
-                raw = vision_chat(
-                    system='Return ONLY JSON: {"publish_form":true/false}',
-                    user_text=(
-                        "Is this the WeChat Channels PUBLISH form (upload slot or video "
-                        "preview with 封面预览/视频描述/短标题 fields)? NOT the video feed player."
-                    ),
-                    screenshot=shot,
-                    max_tokens=60,
-                )
-                start, end = raw.find("{"), raw.rfind("}")
-                data = json.loads(raw[start : end + 1]) if start >= 0 else {}
-                if data.get("publish_form"):
-                    _log("  [nav] vision: publish form detected")
-                    return True
-            except Exception:
-                pass
     return False
 
 
@@ -1435,6 +1466,11 @@ def _video_slot_filled(session: PublishSession) -> bool:
     if _is_management_list_page(win):
         _log("  [upload] management list page — not a publish form, will navigate")
         return False
+    if _vision_nav_enabled():
+        page = _vision_classify_page(win)
+        if page and page != "publish_form":
+            _log(f"  [upload] vision page={page} — not a publish form, will navigate")
+            return False
     _, delete_btn = find_control_deep("删除")
     if delete_btn:
         _log("  [upload] detected 删除 — video already on form")
@@ -2105,7 +2141,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     body = build_publish_body(fields)
 
-    _log("== PC WeChat Channels publish (test) ==")
+    _log("== PC WeChat Channels publish (test) == [build:2026-06-30b vision-auth]")
     _log(f"  video: {video}")
     _log(f"  body: {body[:120]}{'...' if len(body) > 120 else ''}")
 
