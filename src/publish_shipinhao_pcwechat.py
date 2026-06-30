@@ -1127,7 +1127,6 @@ def _is_real_publish_form(win) -> bool:
         pass
     w32 = _win32_window_text(int(win.handle))
     combined = f"{title} {w32}"
-    # Reliable UIA positive: real publish-form-only fields are present.
     strong = (
         "上传时长",
         "点击上传",
@@ -1141,19 +1140,20 @@ def _is_real_publish_form(win) -> bool:
         "定时发表",
         "声明原创",
     )
-    if "发表动态" in combined or _control_exists_on_window(win, *strong):
-        return True
-    # No reliable form field via UIA. The 视频管理 list page also has 删除 buttons,
-    # so when vision is available let it be the authority to avoid mistaking the
-    # management list for the publish form (the recurring failure mode).
+    # Vision is AUTHORITATIVE and runs BEFORE UIA strong markers: the 视频管理
+    # list page (视频号助手) shares the WeChatAppEx renderer and can expose stale
+    # controls like 短标题/删除, which falsely match strong markers. Trust vision
+    # to reject management/profile/feed pages so the navigator opens a fresh form.
     if _vision_nav_enabled():
         page = _vision_classify_page(win)
         if page == "publish_form":
             _log("  [nav] vision: publish form detected")
             return True
-        if page in ("management_list", "profile", "feed", "other"):
+        if page in ("management_list", "profile", "feed"):
             return False
-    # Vision unavailable: fall back to UIA management guard + weak combo.
+        # page == "other" / "" => fall through to UIA heuristics below.
+    if "发表动态" in combined or _control_exists_on_window(win, *strong):
+        return True
     if _is_management_list_page(win):
         return False
     if _control_exists_on_window(win, "删除") and _control_exists_on_window(
@@ -2141,7 +2141,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     body = build_publish_body(fields)
 
-    _log("== PC WeChat Channels publish (test) == [build:2026-06-30b vision-auth]")
+    _log("== PC WeChat Channels publish (test) == [build:2026-06-30c vision-first]")
     _log(f"  video: {video}")
     _log(f"  body: {body[:120]}{'...' if len(body) > 120 else ''}")
 
