@@ -471,12 +471,16 @@ def _channels_post_video_points() -> list[tuple[float, float]]:
     custom_y = _env("WECHAT_POST_VIDEO_Y_RATIO", "")
     if custom_x and custom_y:
         return [(float(custom_x), float(custom_y))]
+    # "发表视频" sits in the profile header, to the RIGHT of the avatar/name,
+    # ABOVE the video thumbnail grid. Center-top points (old defaults) hit the
+    # first thumbnail row and opened the feed, so try top-right first.
     return [
-        (0.40, 0.22),
-        (0.35, 0.22),
-        (0.45, 0.24),
-        (0.38, 0.26),
-        (0.42, 0.28),
+        (0.88, 0.20),
+        (0.82, 0.20),
+        (0.90, 0.18),
+        (0.85, 0.23),
+        (0.78, 0.21),
+        (0.92, 0.22),
     ]
 
 
@@ -2213,7 +2217,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     body = build_publish_body(fields)
 
-    _log("== PC WeChat Channels publish (test) == [build:2026-06-30e vision-postvideo-retry]")
+    _log("== PC WeChat Channels publish (test) == [build:2026-06-30f postvideo-topright]")
     _log(f"  video: {video}")
     _log(f"  body: {body[:120]}{'...' if len(body) > 120 else ''}")
 
