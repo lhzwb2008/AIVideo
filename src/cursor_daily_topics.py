@@ -2,8 +2,8 @@
 """Cursor Cloud Agent 固定五槽位日更：联网调研 → 长文草稿 → Opus 深读 → 短视频改编。
 
 槽位顺序（每天按序，可接昨日进度续排）：
-  1. astock_market  — A股收盘概述（指数/成交/结构）
-  2. astock_sector  — A股热点与新闻（配合槽位1，不写全盘收评）
+  1. astock_market  — A股收盘概述（指数/成交/结构）【日更队列已关闭，可用 --slot 单独重跑】
+  2. astock_sector  — A股热点与新闻
   3. domestic       — 国内财经新闻分析
   4. ai             — AI 新闻热点分析
   5. world          — 世界财经新闻分析
@@ -52,6 +52,8 @@ ASTOCK_MARKET_SLOT = "astock_market"
 ASTOCK_SECTOR_SLOT = "astock_sector"
 OFFDAY_SKIP_SLOTS = frozenset({ASTOCK_MARKET_SLOT, ASTOCK_SECTOR_SLOT})
 PRE_CLOSE_SKIP_SLOTS = frozenset({ASTOCK_MARKET_SLOT})
+# 日更自动队列永久跳过的槽位（不影响 --slot astock_market 手动重跑）
+DAILY_DISABLED_SLOTS = frozenset({ASTOCK_MARKET_SLOT})
 
 
 def china_now() -> datetime:
@@ -565,7 +567,13 @@ def discover_cursor_topics(*, target: int = 5) -> list[dict]:
     """生成今日固定槽位话题列表（不调 Exa、不调 Opus 选题）。"""
     load_env()
     start = _today_queue_offset()
-    skip_slots: frozenset[str] = frozenset()
+    skip_slots: frozenset[str] = DAILY_DISABLED_SLOTS
+    if DAILY_DISABLED_SLOTS:
+        skipped = "」「".join(SLOT_LABEL[s] for s in DAILY_DISABLED_SLOTS)
+        print(
+            f"  ⏭  日更队列已关闭槽位「{skipped}」（可用 --slot 单独重跑）",
+            flush=True,
+        )
 
     if should_skip_astock_market_today():
         d = china_today()
@@ -576,8 +584,11 @@ def discover_cursor_topics(*, target: int = 5) -> list[dict]:
             f"  ⏭  今日非工作日（{reason}），跳过槽位「{skipped}」",
             flush=True,
         )
-        skip_slots = OFFDAY_SKIP_SLOTS
-    elif should_skip_astock_market_before_close():
+        skip_slots = skip_slots | OFFDAY_SKIP_SLOTS
+    elif (
+        should_skip_astock_market_before_close()
+        and ASTOCK_MARKET_SLOT not in DAILY_DISABLED_SLOTS
+    ):
         close_at = astock_market_close_at()
         now = china_now()
         print(
@@ -586,7 +597,7 @@ def discover_cursor_topics(*, target: int = 5) -> list[dict]:
             f"跳过槽位「{SLOT_LABEL[ASTOCK_MARKET_SLOT]}」",
             flush=True,
         )
-        skip_slots = PRE_CLOSE_SKIP_SLOTS
+        skip_slots = skip_slots | PRE_CLOSE_SKIP_SLOTS
 
     slots = planned_slots(target, start_offset=start, skip_slots=skip_slots)
     today = china_today().isoformat()
