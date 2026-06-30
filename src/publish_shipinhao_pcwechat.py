@@ -1041,8 +1041,40 @@ def _window_has_publish_form(win) -> bool:
     return _is_real_publish_form(win)
 
 
+_PUBLISH_FORM_ONLY = (
+    "封面预览",
+    "上传时长",
+    "视频描述",
+    "添加描述",
+    "发表动态",
+    "点击上传",
+    "添加到合集",
+    "声明原创",
+    "定时发表",
+)
+
+
+def _is_management_list_page(win) -> bool:
+    """The creator profile / 视频管理 list page where you START a post.
+
+    It exposes a "发表视频" entry button and a grid of already-published videos,
+    but it is NOT the publish form. Detecting it as a form makes the navigator
+    skip opening a fresh form, then fail to find the publish button.
+    """
+    has_entry = _control_exists_on_window(win, "发表视频", "发起直播")
+    if not has_entry:
+        _, post_btn = find_control_deep("发表视频")
+        _, live_btn = find_control_deep("发起直播")
+        has_entry = bool(post_btn or live_btn)
+    has_form_field = _control_exists_on_window(win, *_PUBLISH_FORM_ONLY)
+    return has_entry and not has_form_field
+
+
 def _is_real_publish_form(win) -> bool:
     if _is_video_feed_page(win):
+        return False
+    # Profile/视频管理 list page: has 发表视频 entry but no real form fields.
+    if _is_management_list_page(win):
         return False
     title = ""
     try:
@@ -1398,6 +1430,11 @@ def _dismiss_stray_upload_windows() -> None:
 
 def _video_slot_filled(session: PublishSession) -> bool:
     win = session.window
+    # On the 视频管理 list page each published video also has a 删除 button, so
+    # never trust 删除 unless we are actually on the publish form.
+    if _is_management_list_page(win):
+        _log("  [upload] management list page — not a publish form, will navigate")
+        return False
     _, delete_btn = find_control_deep("删除")
     if delete_btn:
         _log("  [upload] detected 删除 — video already on form")
