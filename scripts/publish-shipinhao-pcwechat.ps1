@@ -38,8 +38,9 @@ if (-not (Test-Path $MainPy)) {
     $MainPy = 'python'
 }
 
-& $MainPy -c "import pywinauto" 2>$null
-if ($LASTEXITCODE -ne 0) {
+& $MainPy -m pip show pywinauto 1>$null 2>$null
+$hasPywinauto = ($LASTEXITCODE -eq 0)
+if (-not $hasPywinauto) {
     Write-Host 'Installing requirements-pcwechat.txt ...' -ForegroundColor Yellow
     & $MainPy -m pip install -r (Join-Path $Root 'requirements-pcwechat.txt')
     if ($LASTEXITCODE -ne 0) {
