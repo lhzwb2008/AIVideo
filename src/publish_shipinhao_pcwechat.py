@@ -448,12 +448,44 @@ def find_publish_window(*, timeout: float = 20.0):
     return None
 
 
+def find_channels_assistant_window():
+    markers = ("视频号助手", "视频管理", "发表动态")
+    best = None
+    best_area = 0
+    for win, title, _, _ in iter_wechat_windows():
+        if not any(m in title for m in markers):
+            continue
+        geo = _window_geometry(win)
+        if not geo:
+            continue
+        _, _, w, h = geo
+        area = w * h
+        if area > best_area:
+            best_area = area
+            best = win
+    return best
+
+
 def resolve_skip_nav_session() -> PublishSession:
     detected = find_publish_window(timeout=0.8)
     if detected:
         sparse = not _window_has_publish_form(detected)
         _log("  [nav] skip-nav: detected publish form" + (" (sparse UI)" if sparse else ""))
         return PublishSession(detected, sparse=sparse)
+
+    assistant = find_channels_assistant_window()
+    if assistant:
+        title = ""
+        try:
+            title = assistant.window_text() or ""
+        except Exception:
+            pass
+        _log(f"  [nav] skip-nav: channels assistant {title!r} (coordinate mode)")
+        try:
+            assistant.set_focus()
+        except Exception:
+            pass
+        return PublishSession(assistant, sparse=True)
 
     fg = get_foreground_wechat_window()
     if fg and _window_large_enough(fg):
@@ -631,12 +663,127 @@ def open_publish_page(*, skip_nav: bool = False) -> PublishSession:
     )
 
 
+def _file_dialog_window():
+    desktop = _desktop_uia()
+    for win in desktop.windows():
+        try:
+            cls = win.class_name() or ""
+            title = (win.window_text() or "").strip()
+            if cls == "#32770":
+                return win
+            lower = title.lower()
+            if any(k in title for k in ("打开", "Open", "选择文件", "选择要上传的文件")):
+                return win
+            if "file" in lower and "open" in lower:
+                return win
+        except Exception:
+            continue
+    return None
+
+
+def _file_dialog_visible() -> bool:
+    return _file_dialog_window() is not None
+
+
+def _upload_coordinate_grid(win) -> None:
+    custom_x = _env("WECHAT_UPLOAD_X_RATIO", "")
+    custom_y = _env("WECHAT_UPLOAD_Y_RATIO", "")
+    if custom_x and custom_y:
+        points = [(float(custom_x), float(custom_y))]
+    else:
+        points = [
+            (0.38, 0.45),
+            (0.36, 0.42),
+            (0.40, 0.48),
+            (0.34, 0.45),
+            (0.42, 0.42),
+        ]
+
+    for x_ratio, y_ratio in points:
+        _log(f"  [upload] click upload zone ({x_ratio:.2f}, {y_ratio:.2f})")
+        _rect_click(win, x_ratio, y_ratio)
+        time.sleep(0.7)
+        if _file_dialog_visible():
+            _log("  [upload] file dialog opened")
+            return
+    raise PcWeChatPublishError(
+        "upload zone click missed (no file dialog). "
+        "Set WECHAT_UPLOAD_X_RATIO / WECHAT_UPLOAD_Y_RATIO in .env"
+    )
+
+
+def _submit_path_to_file_dialog(dlg, path_str: str) -> None:
+    try:
+        dlg.set_focus()
+    except Exception:
+        pass
+    edits = []
+    try:
+        edits = [e for e in dlg.descendants(control_type="Edit") if e.is_visible()]
+    except Exception:
+        pass
+    if edits:
+        edits[-1].set_focus()
+        try:
+            edits[-1].set_edit_text(path_str)
+        except Exception:
+            send_keys("^a")
+            send_keys(path_str, with_spaces=True)
+    else:
+        send_keys("^a")
+        send_keys(path_str, with_spaces=True)
+    time.sleep(0.2)
+    for open_label in ("打开(&O)", "打开", "Open", "选择"):
+        try:
+            btn = dlg.child_window(title=open_label, control_type="Button")
+            if btn.exists(timeout=0.2):
+                btn.click_input()
+                return
+        except Exception:
+            pass
+    send_keys("{ENTER}")
+
+
+def _pick_file_in_dialog(video: Path, *, timeout: float = 45.0) -> None:
+    path_str = str(video.resolve())
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        dlg = _file_dialog_window()
+        if dlg is not None:
+            _submit_path_to_file_dialog(dlg, path_str)
+            _log(f"  [upload] selected: {video.name}")
+            return
+        time.sleep(0.25)
+
+    _log("  [upload] dialog not found via UIA; try typing path to active window")
+    send_keys("^a")
+    send_keys(path_str, with_spaces=True)
+    time.sleep(0.2)
+    send_keys("{ENTER}")
+    time.sleep(1.0)
+    if not _file_dialog_visible():
+        _log(f"  [upload] selected (blind enter): {video.name}")
+        return
+
+    seen = []
+    for win in _desktop_uia().windows():
+        try:
+            seen.append(f"{win.class_name()}|{win.window_text()}")
+        except Exception:
+            pass
+    tail = "; ".join(seen[:8])
+    raise PcWeChatPublishError(f"file open dialog timeout. visible={tail}")
+
+
 def _click_upload_area(win, *, sparse: bool = False) -> None:
     if not sparse:
         host, label = find_control_deep("上传时长", "点击上传", "MP4", "H.264")
         if label:
             _click_control(host, label)
-            return
+            time.sleep(0.5)
+            if _file_dialog_visible():
+                return
 
         hints = ("上传时长", "点击上传", "上传视频", "MP4")
         for hint in hints:
@@ -644,59 +791,13 @@ def _click_upload_area(win, *, sparse: bool = False) -> None:
                 label = win.child_window(title_re=f".*{hint}.*")
                 if label.exists(timeout=0.5):
                     label.click_input()
-                    return
+                    time.sleep(0.5)
+                    if _file_dialog_visible():
+                        return
             except Exception:
                 pass
 
-    _log("  [upload] coordinate click upload zone")
-    _rect_click(
-        win,
-        _ratio_env("WECHAT_UPLOAD_X_RATIO", 0.22),
-        _ratio_env("WECHAT_UPLOAD_Y_RATIO", 0.42),
-    )
-
-
-def _pick_file_in_dialog(video: Path, *, timeout: float = 30.0) -> None:
-    desktop = _desktop_uia()
-    path_str = str(video.resolve())
-    deadline = time.time() + timeout
-
-    while time.time() < deadline:
-        for dlg_title in ("打开", "Open", "选择文件", "选择要上传的文件"):
-            try:
-                dlg = desktop.window(class_name="#32770", title=dlg_title)
-                if not dlg.exists(timeout=0.2):
-                    continue
-                dlg.set_focus()
-                edits = [e for e in dlg.descendants(control_type="Edit") if e.is_visible()]
-                if edits:
-                    edits[-1].set_focus()
-                    try:
-                        edits[-1].set_edit_text(path_str)
-                    except Exception:
-                        send_keys("^a")
-                        send_keys(path_str, with_spaces=True)
-                else:
-                    send_keys("^a")
-                    send_keys(path_str, with_spaces=True)
-                time.sleep(0.2)
-                for open_label in ("打开(&O)", "打开", "Open", "选择"):
-                    try:
-                        btn = dlg.child_window(title=open_label, control_type="Button")
-                        if btn.exists(timeout=0.2):
-                            btn.click_input()
-                            _log(f"  [upload] selected: {video.name}")
-                            return
-                    except Exception:
-                        pass
-                send_keys("{ENTER}")
-                _log(f"  [upload] selected: {video.name}")
-                return
-            except Exception:
-                pass
-        time.sleep(0.25)
-
-    raise PcWeChatPublishError("file open dialog timeout")
+    _upload_coordinate_grid(win)
 
 
 def upload_video(session: PublishSession, video: Path) -> None:
@@ -705,7 +806,6 @@ def upload_video(session: PublishSession, video: Path) -> None:
         raise PcWeChatPublishError(f"video not found: {video}")
     _log(f"  [upload] {video}")
     _click_upload_area(win, sparse=session.sparse)
-    time.sleep(0.8)
     _pick_file_in_dialog(video)
 
 
@@ -785,8 +885,8 @@ def fill_description(session: PublishSession, body: str) -> None:
     _log("  [form] coordinate + clipboard paste")
     _rect_click(
         win,
-        _ratio_env("WECHAT_DESC_X_RATIO", 0.62),
-        _ratio_env("WECHAT_DESC_Y_RATIO", 0.28),
+        _ratio_env("WECHAT_DESC_X_RATIO", 0.68),
+        _ratio_env("WECHAT_DESC_Y_RATIO", 0.30),
     )
     time.sleep(0.3)
     _set_clipboard_text(body)
