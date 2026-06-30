@@ -821,6 +821,14 @@ def _click_open_publish_form(host) -> PublishSession | None:
 
     if _vision_nav_enabled():
         for attempt in range(4):
+            # If a publish form is already open anywhere (e.g. opened by a prior
+            # attempt), reuse it instead of clicking 发表视频 again — this stops
+            # the "several 发表动态 windows opened and jumped around" problem.
+            existing = _wait_publish_session(host, timeout=1.0)
+            if existing:
+                _log("  [nav] publish form ready (already open)")
+                return existing
+
             target, page = _pick_profile_like_window(host)
             if page == "publish_form":
                 session = _wait_publish_session(target, timeout=6.0)
@@ -837,13 +845,14 @@ def _click_open_publish_form(host) -> PublishSession | None:
             _prepare_wechat_foreground(target)
             if not _vision_click(target, post_goal):
                 continue
-            time.sleep(1.2)
+            time.sleep(1.5)
+            # The publish form usually opens in a SEPARATE window, so scan ALL
+            # windows for it rather than only re-checking the clicked window.
+            session = _wait_publish_session(host, timeout=8.0)
+            if session:
+                _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
+                return session
             after = _vision_classify_page(target, force=True)
-            if after == "publish_form":
-                session = _wait_publish_session(target, timeout=10.0)
-                if session:
-                    _log("  [nav] publish form ready" + (" (sparse UI)" if session.sparse else ""))
-                    return session
             if after == "feed":
                 _log("  [nav] landed on feed video — Escape and retry")
                 try:
@@ -2218,7 +2227,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     body = build_publish_body(fields)
 
-    _log("== PC WeChat Channels publish (test) == [build:2026-06-30g postvideo-leftbtn]")
+    _log("== PC WeChat Channels publish (test) == [build:2026-06-30h dedup-form]")
     _log(f"  video: {video}")
     _log(f"  body: {body[:120]}{'...' if len(body) > 120 else ''}")
 
