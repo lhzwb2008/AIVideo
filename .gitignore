@@ -39,6 +39,9 @@ __pycache__/
 # social-auto-upload（vendor 内账号 cookie 等）
 vendor/
 
+# 常驻 CDP Chrome 用户数据目录（含各平台登录态，不入库）
+chrome-cdp-profile/
+
 # 系统 / IDE
 .DS_Store
 .idea/

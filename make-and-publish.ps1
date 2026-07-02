@@ -52,6 +52,80 @@ function Test-EnvEnabled {
     return $val -match '^(1|true|yes|on)$'
 }
 
+function Get-DefaultChromePath {
+    if ($env:LOCAL_CHROME_PATH -and (Test-Path $env:LOCAL_CHROME_PATH)) {
+        return $env:LOCAL_CHROME_PATH
+    }
+    $candidates = @(
+        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+    )
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) { return $c }
+    }
+    return $null
+}
+
+function Test-CdpEndpointReady {
+    param([int]$Port)
+    try {
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/json/version" -UseBasicParsing -TimeoutSec 2
+        return $resp.StatusCode -eq 200
+    } catch {
+        return $false
+    }
+}
+
+function Start-PersistentAutomationChrome {
+    # Launch (or reuse) a standalone, long-lived real Chrome window (NOT started via
+    # Playwright launch()), so llm_browser_publish.py can attach to it with
+    # connect_over_cdp() instead of spawning its own automation-flagged Chromium.
+    # Real Chrome carries no --enable-automation flag and a genuine fingerprint/UA/
+    # TLS stack, which is meant to reduce automation-behavior detection on platforms
+    # like Xiaohongshu. This Chrome is left running (not closed) so login state
+    # (QR scans for Douyin/Xiaohongshu/Shipinhao) persists across runs.
+    $port = if ($env:AIVIDEO_CHROME_CDP_PORT) { [int]$env:AIVIDEO_CHROME_CDP_PORT } else { 9222 }
+    $profileDir = if ($env:AIVIDEO_CHROME_CDP_PROFILE) {
+        $env:AIVIDEO_CHROME_CDP_PROFILE
+    } else {
+        Join-Path $Root 'chrome-cdp-profile'
+    }
+
+    if (Test-CdpEndpointReady -Port $port) {
+        Write-Host "[make-and-publish] CDP Chrome already running (port $port)" -ForegroundColor DarkGray
+        return "http://127.0.0.1:$port"
+    }
+
+    $chrome = Get-DefaultChromePath
+    if (-not $chrome) {
+        Write-Host '[make-and-publish] WARN Windows default Chrome not found; falling back to Playwright-launched browser' -ForegroundColor Yellow
+        return $null
+    }
+
+    if (-not (Test-Path $profileDir)) {
+        New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+    }
+
+    Write-Host "[make-and-publish] starting persistent CDP Chrome (port $port, profile $profileDir)" -ForegroundColor DarkGray
+    Start-Process -FilePath $chrome -ArgumentList @(
+        "--remote-debugging-port=$port",
+        "--user-data-dir=$profileDir",
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--lang=zh-CN'
+    ) | Out-Null
+
+    for ($i = 0; $i -lt 20; $i++) {
+        Start-Sleep -Milliseconds 500
+        if (Test-CdpEndpointReady -Port $port) {
+            return "http://127.0.0.1:$port"
+        }
+    }
+    Write-Host '[make-and-publish] WARN CDP Chrome start timed out; falling back to Playwright-launched browser' -ForegroundColor Yellow
+    return $null
+}
+
 function Test-ShipinhaoReady {
     # PC WeChat UI automation: requires pywinauto installed and WeChat running
     # (logged in, "auto login this device" on). No browser/SAU session needed.
@@ -119,6 +193,18 @@ if ($WillPublish -and (Test-EnvEnabled -Name 'AIVIDEO_PUBLISH_SHIPINHAO')) {
         Write-Host '[make-and-publish] skip shipinhao auto publish this run' -ForegroundColor Yellow
         $env:AIVIDEO_PUBLISH_SHIPINHAO = '0'
     }
+}
+
+if ($WillPublish -and (Test-EnvEnabled -Name 'AIVIDEO_USE_CHROME_CDP' -Default '1')) {
+    $CdpUrl = Start-PersistentAutomationChrome
+    if ($CdpUrl) {
+        $env:AIVIDEO_CHROME_CDP_URL = $CdpUrl
+        Write-Host "[make-and-publish] douyin/xiaohongshu/shipinhao browser publish will use CDP: $CdpUrl" -ForegroundColor DarkGreen
+    } else {
+        Remove-Item Env:AIVIDEO_CHROME_CDP_URL -ErrorAction SilentlyContinue
+    }
+} else {
+    Remove-Item Env:AIVIDEO_CHROME_CDP_URL -ErrorAction SilentlyContinue
 }
 
 # PS 5.1 `& python @args` array splat can falsely report "index out of bounds"

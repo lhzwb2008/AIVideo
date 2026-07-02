@@ -144,6 +144,16 @@ def _chrome_path() -> str:
     return chrome_executable()
 
 
+def _cdp_url() -> str:
+    """若设置，则通过 CDP 接管一个已独立运行的真实 Chrome，而不是自己 launch。
+
+    这个 Chrome 由 make-and-publish.ps1（Windows）在流水线之外常驻启动，带真实
+    UA/指纹/TLS 栈，没有 --enable-automation 标记，用于规避小红书等平台的自动化
+    识别。该浏览器/Profile 生命周期由外部管理，本进程只连接、不关闭。
+    """
+    return _env("AIVIDEO_CHROME_CDP_URL")
+
+
 def _ensure_patchright() -> None:
     try:
         ensure_patchright_import(sau_home())
@@ -511,6 +521,20 @@ async def _launch_persistent_with_retry(
 
 
 async def _launch_context(p, platform: str, *, headed: bool):
+    cdp_url = _cdp_url()
+    if cdp_url:
+        browser = await p.chromium.connect_over_cdp(cdp_url)
+        contexts = browser.contexts
+        if contexts:
+            context = contexts[0]
+        else:
+            context = await browser.new_context(locale="zh-CN", timezone_id="Asia/Shanghai")
+        if platform in ("xiaohongshu", "bilibili"):
+            from llm_browser_agent import install_browser_shadow_hooks
+
+            await install_browser_shadow_hooks(context)
+        return context, browser
+
     vp = _browser_viewport(platform)
     launch: dict = {
         "headless": not headed,
@@ -633,7 +657,9 @@ async def probe_page(platform: str, *, headed: bool = True) -> dict:
                 "body_preview": state.body_snippet[:200],
             }
         finally:
-            if browser:
+            if _cdp_url():
+                pass  # 常驻真实 Chrome，由外部管理生命周期，不在此关闭
+            elif browser:
                 await browser.close()
             else:
                 await context.close()
@@ -712,7 +738,9 @@ async def publish_zhihu_async(
             result["draft_only"] = not fields.get("auto_publish")
             return result
         finally:
-            if browser:
+            if _cdp_url():
+                pass  # 常驻真实 Chrome，由外部管理生命周期，不在此关闭
+            elif browser:
                 await browser.close()
             else:
                 await context.close()
@@ -788,7 +816,9 @@ async def publish_async(
             result["title"] = fields["title"]
             return result
         finally:
-            if browser:
+            if _cdp_url():
+                pass  # 常驻真实 Chrome，由外部管理生命周期，不在此关闭
+            elif browser:
                 await browser.close()
             else:
                 await context.close()
@@ -925,17 +955,20 @@ def main() -> int:
         f"模型: {browser_model()}（{browser_provider_label()} · {mode}，"
         f"最多 {browser_max_steps(platform)} 步）"
     )
-    ck = cookie_path(platform, required=False)
-    prof = profile_dir(platform)
-    if ck:
-        print(f"Cookie: {ck}")
-    if prof.is_dir() and any(prof.iterdir()):
-        print(f"Profile: {prof}（持久化登录，推荐）")
-    elif not ck:
-        print(
-            f"登录态: 未找到\n  请先运行: {LOGIN_HINT.get(platform, './social-login.sh')}",
-            flush=True,
-        )
+    if _cdp_url():
+        print(f"浏览器: CDP 接管常驻 Chrome（{_cdp_url()}），登录态由该 Chrome 自身维持")
+    else:
+        ck = cookie_path(platform, required=False)
+        prof = profile_dir(platform)
+        if ck:
+            print(f"Cookie: {ck}")
+        if prof.is_dir() and any(prof.iterdir()):
+            print(f"Profile: {prof}（持久化登录，推荐）")
+        elif not ck:
+            print(
+                f"登录态: 未找到\n  请先运行: {LOGIN_HINT.get(platform, './social-login.sh')}",
+                flush=True,
+            )
 
     if args.dry_run:
         print("（dry-run）")
