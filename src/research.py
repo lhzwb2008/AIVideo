@@ -1542,7 +1542,27 @@ def _slide_texts(slide: dict) -> list[str]:
     ]
 
 
+def _compliance_checks_skipped() -> bool:
+    """AIVIDEO_SKIP_COMPLIANCE=1 时完全跳过合规校验与重试修正（风险自负，仅供临时试验）。"""
+    return os.environ.get("AIVIDEO_SKIP_COMPLIANCE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def validate_article_script(data: dict, article: dict) -> dict:
+    if _compliance_checks_skipped():
+        print(
+            "  ⚠️  AIVIDEO_SKIP_COMPLIANCE=1，已跳过合规校验与重试修正（风险自负）",
+            file=sys.stderr,
+        )
+        if isinstance(data, dict):
+            for i, slide in enumerate(data.get("slides") or []):
+                if isinstance(slide, dict) and "layout" not in slide:
+                    slide["layout"] = "cover" if i == 0 else "body"
+        return data
     if not isinstance(data, dict):
         raise ValueError("根节点必须是 object")
     for key in ("title", "keyword", "slides", "source"):
