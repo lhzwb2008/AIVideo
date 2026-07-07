@@ -211,6 +211,63 @@ def _extract_trading_date(markdown: str) -> date | None:
     return None
 
 
+def _prev_cn_workday(d: date) -> date:
+    cur = d - timedelta(days=1)
+    while not is_cn_workday(cur):
+        cur -= timedelta(days=1)
+    return cur
+
+
+def expected_trading_day() -> date:
+    """A 股热点/报盘槽位应写的「最近已收盘交易日」。"""
+    today = china_today()
+    if is_cn_workday(today) and china_now() >= astock_market_close_at(today):
+        return today
+    if is_cn_workday(today) and china_now() < astock_market_close_at(today):
+        return _prev_cn_workday(today)
+    d = today
+    while not is_cn_workday(d):
+        d -= timedelta(days=1)
+    return d
+
+
+def _trading_date_violations(markdown: str) -> list[str]:
+    """校验草稿交易日标记：防去年同月同日旧闻被当作今天。"""
+    expected = expected_trading_day()
+    current_year = china_today().year
+    trading_day = _extract_trading_date(markdown)
+    issues: list[str] = []
+    if trading_day is None:
+        issues.append("正文第一行缺少 `交易日：YYYY-MM-DD` 机器标记")
+        return issues
+    if trading_day.year != current_year:
+        issues.append(
+            f"交易日年份错误：{trading_day.isoformat()}（应为 {current_year} 年，疑似引用往年旧闻）"
+        )
+    if trading_day > china_today():
+        issues.append(f"交易日 {trading_day.isoformat()} 晚于今天，不可用未来日期")
+    if trading_day != expected:
+        issues.append(
+            f"交易日应为最近已收盘交易日 {expected.isoformat()}，"
+            f"草稿写的是 {trading_day.isoformat()}"
+        )
+    return issues
+
+
+def _trading_date_rewrite_prompt(violations: list[str]) -> str:
+    expected = expected_trading_day().isoformat()
+    year = china_today().year
+    detail = "；".join(violations)
+    return (
+        "【重写要求】上一版 A 股草稿交易日不合格，必须整篇重写。\n"
+        f"问题：{detail}\n"
+        f"请重新联网检索 **{year} 年** 最近已收盘交易日（应为 {expected}）的公开报道，"
+        "正文第一行输出 `交易日：YYYY-MM-DD`。\n"
+        "严禁引用去年/前年同月同日旧闻或旧数据；盘面数字、新闻催化必须与标记交易日、"
+        f"当前年份 {year} 一致。重新输出完整 Markdown。"
+    )
+
+
 def market_title_for_date(d: date) -> str:
     """长文草稿内部标题（编辑用），与对外短视频标题分离。"""
     return f"{d.month}月{d.day}日A股大盘分析"
@@ -379,10 +436,13 @@ _COMMON_RULES = """
 硬性要求（全部槽位通用）：
 - 必须联网检索「最新交易日/最近 48 小时」公开报道（财联社、证券时报、新浪财经、东方财富、金融界、华尔街见闻、Reuters、Bloomberg 等），交叉验证
 - 禁止编造搜不到的股价、涨跌幅、成交额；不确定写「数据待核实」
+- 检索时必须核对报道**发布年份=当前年**；禁止把去年/前年同月同日旧闻当作今日盘面或热点
 - 禁止股票代码、荐股、目标价、买卖建议、仓位建议
 - 全文中文 Markdown
 - 把完整 Markdown 正文直接输出，不要只给提纲，不要说「见附件」
 """
+
+_ASTOCK_TRADING_SLOTS = frozenset({ASTOCK_MARKET_SLOT, ASTOCK_SECTOR_SLOT})
 
 _OFFDAY_ASTOCK_BAN = """
 【非交易日约束（违反则视为失败）】
@@ -441,7 +501,13 @@ _SLOT_PROMPTS: dict[str, str] = {
 - 禁止国际宏观（美联储、美股）占篇幅
 - 禁止「加仓」「减仓」「割肉」「抄底」等操作建议措辞；资金描述用「净流入/净流出」
 """ + _COMMON_RULES,
-    "astock_sector": """你是 A 股**热点与新闻编辑**。请联网搜索 A 股「最新一个交易日」最受关注的一条主线。
+    "astock_sector": """你是 A 股**热点与新闻编辑**。请联网搜索 A 股「最近一个**已完整收盘**的交易日」最受关注的一条主线。
+
+【交易日判定（重要，违反则视为失败）】
+- 写的是「最近一个已经收盘的交易日」，不是日历上的今天。例如：周六/周日或交易日盘中、收盘前运行，都要取**上一个已收盘交易日**（周一早上跑 → 取上周五）。
+- 正文**第一行**单独输出一行机器可读标记：`交易日：YYYY-MM-DD`（你联网确认的那个已收盘交易日）。这行必须存在、放最前面。
+- **年份必须是当前日历年**（与【当前日期参考】同一年）；所有盘面数字、新闻催化必须以该交易日**当前年份**的公开报道为准。
+- **严禁**引用去年/前年同月同日旧闻（例如把 2025-07-07 的行情、负荷数据、涨停名单写成今天）；引用前核对报道 URL/发布日期年份。
 
 与同日第一槽位「收盘概述」分工：第一槽已讲指数/成交/整体结构，**本篇不要再写全盘收评**，只深挖当日最热的一条。
 
@@ -664,9 +730,15 @@ def run_cursor_draft(
     offday_note = ""
     if slot in ("domestic", "world") and should_skip_astock_market_today():
         offday_note = "（今日非 A 股交易日：禁止写指数收盘/4000点/成交额收评）\n"
+    trading_note = ""
+    if slot in _ASTOCK_TRADING_SLOTS:
+        trading_note = (
+            f"（A股报盘/热点：必须写最近已收盘交易日，年份必须是 {china_today().year}，"
+            f"预计约为 {expected_trading_day().isoformat()}；"
+            "正文第一行输出 `交易日：YYYY-MM-DD`，禁止引用去年同月同日旧闻）\n"
+        )
     prompt = (
-        f"【当前日期参考】{today}{offday_note}"
-        f"（注意：A股大盘报盘要写最近一个已收盘交易日，未必是今天）\n"
+        f"【当前日期参考】{today}{offday_note}{trading_note}"
         f"【本任务类型】{SLOT_LABEL[slot]}\n\n"
         + raw
     )
@@ -733,6 +805,25 @@ def build_cursor_topic_research(
                 f"  ⚠️  重写后仍含禁写内容（{', '.join(violations)}），继续流程但改编阶段会再拦截",
                 file=sys.stderr,
             )
+    if slot in _ASTOCK_TRADING_SLOTS:
+        td_issues = _trading_date_violations(markdown)
+        if td_issues:
+            print(
+                f"  ⚠️  草稿交易日不合格（{'; '.join(td_issues)}），要求 Agent 重写…",
+                flush=True,
+            )
+            markdown, agent_id, status = run_cursor_draft(
+                slot,
+                agent_id=agent_id,
+                on_assistant=on_assistant,
+                extra_prompt=_trading_date_rewrite_prompt(td_issues),
+            )
+            td_issues = _trading_date_violations(markdown)
+            if td_issues:
+                raise RuntimeError(
+                    "交易日校验失败，已拒绝使用疑似旧闻草稿："
+                    + "；".join(td_issues)
+                )
     if status != "FINISHED":
         print(f"  ⚠️  Agent 状态={status}，仍尝试用已返回正文继续", file=sys.stderr)
 
@@ -757,9 +848,10 @@ def build_cursor_topic_research(
         topic.get("suggested_video_title") or plan.get("suggested_video_title") or ""
     ).strip()
 
+    trading_day = _extract_trading_date(markdown) if slot in _ASTOCK_TRADING_SLOTS else None
+
     # 大盘报盘：长文仍用日期模板标题；对外短视频标题从盘面特点推导。
     if slot == "astock_market":
-        trading_day = _extract_trading_date(markdown)
         video_title = derive_market_recap_video_title(markdown)
         plan["suggested_video_title"] = video_title
         if trading_day:
@@ -772,6 +864,9 @@ def build_cursor_topic_research(
             print(
                 f"  📌 视频标题：{video_title}（未能从草稿解析交易日，冷开场沿用计划日期）",
             )
+    elif slot == "astock_sector" and trading_day:
+        plan["trading_day"] = trading_day.isoformat()
+        print(f"  📅 热点交易日：{trading_day.isoformat()}", flush=True)
 
     fallback = video_title or str(topic.get("title_hint") or SLOT_LABEL[slot])
     title = video_title or _extract_title(markdown, fallback)
@@ -784,7 +879,7 @@ def build_cursor_topic_research(
         "url": f"cursor-draft://{draft_path.name}",
         "site": "cursor-cloud-agent",
         "author": model_id(),
-        "published_at": date.today().isoformat(),
+        "published_at": (trading_day or china_today()).isoformat(),
         "language": "zh",
         "summary_zh": markdown[:500],
         "thesis": title,
