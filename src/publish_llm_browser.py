@@ -307,6 +307,18 @@ def publish_llm_browser(
     label = LLM_PLATFORMS[platform]
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    # 每个平台发布前确保常驻 CDP Chrome 存活；挂了则自动拉起
+    try:
+        from chrome_cdp import cdp_enabled, ensure_cdp_chrome
+
+        if cdp_enabled() or env.get("AIVIDEO_CHROME_CDP_URL"):
+            url = ensure_cdp_chrome(restart_if_dead=True)
+            if url:
+                env["AIVIDEO_CHROME_CDP_URL"] = url
+                os.environ["AIVIDEO_CHROME_CDP_URL"] = url
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [cdp] 发布前保活失败（继续尝试）: {exc}", flush=True)
+
     global_lock: Path | None = None
     platform_lock: Path | None = None
     proc: subprocess.CompletedProcess[str] | None = None
@@ -315,7 +327,9 @@ def publish_llm_browser(
         platform_lock = _acquire_profile_lock(platform)
         proc = subprocess.run(cmd, cwd=ROOT, env=env)
     finally:
-        settle = int(os.environ.get("LLM_BROWSER_PROFILE_SETTLE", "5"))
+        # CDP 模式下平台切换需要更长冷却，避免抖音收尾与小红书启动抢浏览器
+        default_settle = "8" if env.get("AIVIDEO_CHROME_CDP_URL") else "5"
+        settle = int(os.environ.get("LLM_BROWSER_PROFILE_SETTLE", default_settle))
         if settle > 0:
             time.sleep(settle)
         _release_profile_lock(platform_lock)

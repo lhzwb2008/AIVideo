@@ -147,11 +147,37 @@ def _chrome_path() -> str:
 def _cdp_url() -> str:
     """若设置，则通过 CDP 接管一个已独立运行的真实 Chrome，而不是自己 launch。
 
-    这个 Chrome 由 make-and-publish.ps1（Windows）在流水线之外常驻启动，带真实
-    UA/指纹/TLS 栈，没有 --enable-automation 标记，用于规避小红书等平台的自动化
-    识别。该浏览器/Profile 生命周期由外部管理，本进程只连接、不关闭。
+    这个 Chrome 由 make-and-publish.ps1 / chrome_cdp.ensure_cdp_chrome 常驻启动，
+    带真实 UA/指纹/TLS 栈，没有 --enable-automation 标记。进程挂掉时会自动重拉。
     """
     return _env("AIVIDEO_CHROME_CDP_URL")
+
+
+def _ensure_cdp_ready() -> str:
+    """发布前确保 CDP Chrome 存活；挂了则自动重启并写回环境变量。"""
+    from chrome_cdp import ensure_cdp_chrome
+
+    url = ensure_cdp_chrome(restart_if_dead=True)
+    if not url:
+        return ""
+    os.environ["AIVIDEO_CHROME_CDP_URL"] = url
+    return url
+
+
+def _is_cdp_connection_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(
+        k in msg
+        for k in (
+            "econnrefused",
+            "target closed",
+            "target page, context or browser has been closed",
+            "browser has been closed",
+            "connect_over_cdp",
+            "websocket",
+            "connection refused",
+        )
+    )
 
 
 def _ensure_patchright() -> None:
@@ -437,28 +463,43 @@ _PLATFORM_HOST = {
 
 
 async def _ensure_platform_page(context, platform: str):
-    """复用首个标签导航到目标平台，关掉多余旧标签，避免上一平台页面串台。
+    """为当前平台准备一个可用标签页。
 
-    注意：持久化 Profile（patchright persistent context）下不可先关光所有页面再
-    new_page()，否则 Windows 上会报 `Failed to open a new tab`。务必保留一个页面。
+    CDP 常驻 Chrome 下：优先 new_page()，避免复用/关闭其它平台标签导致
+    TargetClosed 或把整个浏览器弄挂。非 CDP（persistent profile）仍复用首个
+    标签，因为 Windows 上关光所有页再 new_page 会失败。
     """
     target = platform_url(platform)
     marker = _PLATFORM_HOST.get(platform, "")
+    use_cdp = bool(_cdp_url())
 
-    pages = list(context.pages)
-    if pages:
-        page = pages[0]
-        for old in pages[1:]:
-            try:
-                await old.close()
-            except Exception:
-                pass
-    else:
+    page = None
+    if use_cdp:
         try:
             page = await context.new_page()
-        except Exception:
-            await asyncio.sleep(1.5)
-            page = await context.new_page()
+        except Exception as exc:
+            print(f"  [browser] new_page 失败，回退复用已有标签: {exc}", flush=True)
+            pages = list(context.pages)
+            if pages:
+                page = pages[0]
+            else:
+                await asyncio.sleep(1.5)
+                page = await context.new_page()
+    else:
+        pages = list(context.pages)
+        if pages:
+            page = pages[0]
+            for old in pages[1:]:
+                try:
+                    await old.close()
+                except Exception:
+                    pass
+        else:
+            try:
+                page = await context.new_page()
+            except Exception:
+                await asyncio.sleep(1.5)
+                page = await context.new_page()
 
     print(f"  打开 {target} …", flush=True)
     await _goto_page(page, target)
@@ -520,20 +561,62 @@ async def _launch_persistent_with_retry(
     raise PublishError("无法启动浏览器 Profile")
 
 
-async def _launch_context(p, platform: str, *, headed: bool):
-    cdp_url = _cdp_url()
-    if cdp_url:
-        browser = await p.chromium.connect_over_cdp(cdp_url)
-        contexts = browser.contexts
-        if contexts:
-            context = contexts[0]
-        else:
-            context = await browser.new_context(locale="zh-CN", timezone_id="Asia/Shanghai")
-        if platform in ("xiaohongshu", "bilibili"):
-            from llm_browser_agent import install_browser_shadow_hooks
+async def _connect_cdp(p, platform: str):
+    """连接常驻 Chrome；ECONNREFUSED / TargetClosed 时自动重启再连一次。"""
+    from chrome_cdp import reconnect_cdp_chrome
 
-            await install_browser_shadow_hooks(context)
-        return context, browser
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        url = _ensure_cdp_ready()
+        if not url:
+            raise PublishError("CDP Chrome 不可用（AIVIDEO_CHROME_CDP_URL 未设置且无法启动）")
+        try:
+            browser = await p.chromium.connect_over_cdp(url)
+            contexts = browser.contexts
+            if contexts:
+                context = contexts[0]
+            else:
+                context = await browser.new_context(
+                    locale="zh-CN", timezone_id="Asia/Shanghai"
+                )
+            if platform in ("xiaohongshu", "bilibili"):
+                from llm_browser_agent import install_browser_shadow_hooks
+
+                await install_browser_shadow_hooks(context)
+            print(f"  [cdp] 已连接 {url}", flush=True)
+            return context, browser
+        except Exception as exc:
+            last_exc = exc
+            if not _is_cdp_connection_error(exc) or attempt >= 3:
+                raise
+            print(
+                f"  [cdp] 连接失败（{attempt}/3）: {exc}；重启 Chrome 后重试…",
+                flush=True,
+            )
+            try:
+                reconnect_cdp_chrome()
+            except Exception as restart_exc:
+                print(f"  [cdp] 重启失败: {restart_exc}", flush=True)
+            await asyncio.sleep(1.5)
+    if last_exc:
+        raise last_exc
+    raise PublishError("无法连接 CDP Chrome")
+
+
+async def _launch_context(p, platform: str, *, headed: bool):
+    # 显式 URL，或默认开启 CDP 时，都走常驻真实 Chrome
+    if _cdp_url() or _env("AIVIDEO_USE_CHROME_CDP", "1").lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        try:
+            return await _connect_cdp(p, platform)
+        except Exception as exc:
+            # CDP 彻底失败时回退旧 launch，避免整条流水线卡死
+            print(f"  [cdp] 放弃 CDP，回退 Playwright launch: {exc}", flush=True)
+            os.environ.pop("AIVIDEO_CHROME_CDP_URL", None)
 
     vp = _browser_viewport(platform)
     launch: dict = {
@@ -616,13 +699,45 @@ async def _launch_context(p, platform: str, *, headed: bool):
     return context, browser
 
 
+async def _cleanup_browser_session(
+    *,
+    page=None,
+    context=None,
+    browser=None,
+) -> None:
+    """结束一次发布会话。
+
+    CDP 模式：只关本进程新建的标签，绝不 browser.close()（会杀掉常驻 Chrome）。
+    非 CDP：按原逻辑关闭 browser / context。
+    """
+    if _cdp_url():
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
+        return
+    if browser:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+    elif context:
+        try:
+            await context.close()
+        except Exception:
+            pass
+
+
 async def probe_page(platform: str, *, headed: bool = True) -> dict:
     _ensure_patchright()
     from patchright.async_api import async_playwright
     from llm_browser_agent import extract_page_state
 
+    _ensure_cdp_ready()
     async with async_playwright() as p:
         context, browser = await _launch_context(p, platform, headed=headed)
+        page = None
         try:
             page = await _ensure_platform_page(context, platform)
             await human_pause(AgentConfig())
@@ -657,12 +772,7 @@ async def probe_page(platform: str, *, headed: bool = True) -> dict:
                 "body_preview": state.body_snippet[:200],
             }
         finally:
-            if _cdp_url():
-                pass  # 常驻真实 Chrome，由外部管理生命周期，不在此关闭
-            elif browser:
-                await browser.close()
-            else:
-                await context.close()
+            await _cleanup_browser_session(page=page, context=context, browser=browser)
 
 
 async def publish_zhihu_async(
@@ -703,9 +813,11 @@ async def publish_zhihu_async(
     _ensure_patchright()
     from patchright.async_api import async_playwright
 
+    _ensure_cdp_ready()
     task = build_task("zhihu", fields)
     async with async_playwright() as p:
         context, browser = await _launch_context(p, "zhihu", headed=headed)
+        page = None
         try:
             page = await _ensure_platform_page(context, "zhihu")
             await asyncio.sleep(2)
@@ -738,12 +850,63 @@ async def publish_zhihu_async(
             result["draft_only"] = not fields.get("auto_publish")
             return result
         finally:
-            if _cdp_url():
-                pass  # 常驻真实 Chrome，由外部管理生命周期，不在此关闭
-            elif browser:
-                await browser.close()
-            else:
-                await context.close()
+            await _cleanup_browser_session(page=page, context=context, browser=browser)
+
+
+async def _publish_once(
+    p,
+    platform: str,
+    video: Path,
+    fields: dict,
+    *,
+    headed: bool,
+) -> dict:
+    """单次发布尝试；CDP 连接/页面关闭错误由外层重试。"""
+    context, browser = await _launch_context(p, platform, headed=headed)
+    page = None
+    try:
+        page = await _ensure_platform_page(context, platform)
+        if platform in ("xiaohongshu", "bilibili"):
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=90_000)
+                await asyncio.sleep(1.5)
+            except Exception:
+                pass
+        await asyncio.sleep(2)
+        if platform == "bilibili":
+            from llm_browser_agent import bilibili_prepare_page
+
+            await bilibili_prepare_page(page)
+        if platform == "xiaohongshu":
+            from llm_browser_agent import xhs_prepare_page
+
+            await xhs_prepare_page(page)
+        await human_pause(AgentConfig())
+
+        result = await run_agent(
+            page,
+            platform=PLATFORM_LABEL.get(platform, platform),
+            platform_key=platform,
+            task=build_task(platform, fields),
+            fields=fields,
+            video_path=video,
+            success_patterns=success_patterns(platform),
+            pre_upload=True,
+        )
+
+        cookie = cookie_path(platform, required=False)
+        if cookie:
+            try:
+                await context.storage_state(path=str(cookie))
+                print(f"  cookie 已更新: {cookie}", flush=True)
+            except Exception:
+                pass
+        result["video"] = str(video)
+        result["platform"] = platform
+        result["title"] = fields["title"]
+        return result
+    finally:
+        await _cleanup_browser_session(page=page, context=context, browser=browser)
 
 
 async def publish_async(
@@ -766,62 +929,36 @@ async def publish_async(
         raise PublishError(f"{platform} 发布需要视频路径")
     _ensure_patchright()
     from patchright.async_api import async_playwright
+    from chrome_cdp import reconnect_cdp_chrome
 
     if probe_only:
         return await probe_page(platform, headed=headed)
 
-    task = build_task(platform, fields)
+    _ensure_cdp_ready()
+    last_exc: Exception | None = None
     async with async_playwright() as p:
-        context, browser = await _launch_context(p, platform, headed=headed)
-        page = None
-        try:
-            page = await _ensure_platform_page(context, platform)
-            if platform in ("xiaohongshu", "bilibili"):
+        for attempt in range(1, 4):
+            try:
+                return await _publish_once(
+                    p, platform, video, fields, headed=headed
+                )
+            except Exception as exc:
+                last_exc = exc
+                if not _is_cdp_connection_error(exc) or attempt >= 3:
+                    raise
+                print(
+                    f"  [cdp] 发布中浏览器断开（{attempt}/3）: {exc}；"
+                    f"重启后重试…",
+                    flush=True,
+                )
                 try:
-                    await page.reload(wait_until="domcontentloaded", timeout=90_000)
-                    await asyncio.sleep(1.5)
-                except Exception:
-                    pass
-            await asyncio.sleep(2)
-            if platform == "bilibili":
-                from llm_browser_agent import bilibili_prepare_page
-
-                await bilibili_prepare_page(page)
-            if platform == "xiaohongshu":
-                from llm_browser_agent import xhs_prepare_page
-
-                await xhs_prepare_page(page)
-            await human_pause(AgentConfig())
-
-            result = await run_agent(
-                page,
-                platform=PLATFORM_LABEL.get(platform, platform),
-                platform_key=platform,
-                task=task,
-                fields=fields,
-                video_path=video,
-                success_patterns=success_patterns(platform),
-                pre_upload=True,
-            )
-
-            cookie = cookie_path(platform, required=False)
-            if cookie:
-                try:
-                    await context.storage_state(path=str(cookie))
-                    print(f"  cookie 已更新: {cookie}", flush=True)
-                except Exception:
-                    pass
-            result["video"] = str(video)
-            result["platform"] = platform
-            result["title"] = fields["title"]
-            return result
-        finally:
-            if _cdp_url():
-                pass  # 常驻真实 Chrome，由外部管理生命周期，不在此关闭
-            elif browser:
-                await browser.close()
-            else:
-                await context.close()
+                    reconnect_cdp_chrome()
+                except Exception as restart_exc:
+                    print(f"  [cdp] 重启失败: {restart_exc}", flush=True)
+                await asyncio.sleep(2)
+    if last_exc:
+        raise last_exc
+    raise PublishError(f"{platform} 发布失败")
 
 
 def resolve_playwright_python() -> Path | None:

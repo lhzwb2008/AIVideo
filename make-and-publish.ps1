@@ -52,62 +52,55 @@ function Test-EnvEnabled {
     return $val -match '^(1|true|yes|on)$'
 }
 
-function Get-DefaultChromePath {
-    if ($env:LOCAL_CHROME_PATH -and (Test-Path $env:LOCAL_CHROME_PATH)) {
-        return $env:LOCAL_CHROME_PATH
-    }
-    $candidates = @(
-        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
-        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
-    )
-    foreach ($c in $candidates) {
-        if ($c -and (Test-Path $c)) { return $c }
-    }
-    return $null
-}
-
-function Test-CdpEndpointReady {
-    param([int]$Port)
-    try {
-        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/json/version" -UseBasicParsing -TimeoutSec 2
-        return $resp.StatusCode -eq 200
-    } catch {
-        return $false
-    }
-}
-
 function Start-PersistentAutomationChrome {
-    # Launch (or reuse) a standalone, long-lived real Chrome window (NOT started via
-    # Playwright launch()), so llm_browser_publish.py can attach to it with
-    # connect_over_cdp() instead of spawning its own automation-flagged Chromium.
-    # Real Chrome carries no --enable-automation flag and a genuine fingerprint/UA/
-    # TLS stack, which is meant to reduce automation-behavior detection on platforms
-    # like Xiaohongshu. This Chrome is left running (not closed) so login state
-    # (QR scans for Douyin/Xiaohongshu/Shipinhao) persists across runs.
+    # Prefer the shared Python helper (src/chrome_cdp.py): detect / start / restart
+    # a long-lived real Chrome with --remote-debugging-port. Falls back to a
+    # minimal PowerShell Start-Process if the helper import fails.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & $Py -c @"
+from chrome_cdp import ensure_cdp_chrome
+url = ensure_cdp_chrome(restart_if_dead=True)
+print(url or '')
+"@ 2>&1
+        $url = @($out | Where-Object { $_ -match '^https?://' } | Select-Object -Last 1)
+        if ($url) {
+            Write-Host "[make-and-publish] CDP Chrome ready: $url" -ForegroundColor DarkGray
+            return [string]$url
+        }
+        Write-Host "[make-and-publish] WARN chrome_cdp helper returned no URL: $out" -ForegroundColor Yellow
+    } catch {
+        Write-Host "[make-and-publish] WARN chrome_cdp helper failed: $_" -ForegroundColor Yellow
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+
+    # Fallback: direct Start-Process
     $port = if ($env:AIVIDEO_CHROME_CDP_PORT) { [int]$env:AIVIDEO_CHROME_CDP_PORT } else { 9222 }
     $profileDir = if ($env:AIVIDEO_CHROME_CDP_PROFILE) {
         $env:AIVIDEO_CHROME_CDP_PROFILE
     } else {
         Join-Path $Root 'chrome-cdp-profile'
     }
-
-    if (Test-CdpEndpointReady -Port $port) {
-        Write-Host "[make-and-publish] CDP Chrome already running (port $port)" -ForegroundColor DarkGray
-        return "http://127.0.0.1:$port"
+    $chrome = $env:LOCAL_CHROME_PATH
+    if (-not $chrome -or -not (Test-Path $chrome)) {
+        foreach ($c in @(
+            "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+            "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+            "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+        )) {
+            if ($c -and (Test-Path $c)) { $chrome = $c; break }
+        }
     }
-
-    $chrome = Get-DefaultChromePath
     if (-not $chrome) {
-        Write-Host '[make-and-publish] WARN Windows default Chrome not found; falling back to Playwright-launched browser' -ForegroundColor Yellow
+        Write-Host '[make-and-publish] WARN Chrome not found; falling back to Playwright launch' -ForegroundColor Yellow
         return $null
     }
-
     if (-not (Test-Path $profileDir)) {
         New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
     }
-
-    Write-Host "[make-and-publish] starting persistent CDP Chrome (port $port, profile $profileDir)" -ForegroundColor DarkGray
+    Write-Host "[make-and-publish] starting CDP Chrome fallback (port $port)" -ForegroundColor DarkGray
     Start-Process -FilePath $chrome -ArgumentList @(
         "--remote-debugging-port=$port",
         "--user-data-dir=$profileDir",
@@ -115,14 +108,14 @@ function Start-PersistentAutomationChrome {
         '--no-default-browser-check',
         '--lang=zh-CN'
     ) | Out-Null
-
     for ($i = 0; $i -lt 20; $i++) {
         Start-Sleep -Milliseconds 500
-        if (Test-CdpEndpointReady -Port $port) {
-            return "http://127.0.0.1:$port"
-        }
+        try {
+            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$port/json/version" -UseBasicParsing -TimeoutSec 2
+            if ($resp.StatusCode -eq 200) { return "http://127.0.0.1:$port" }
+        } catch { }
     }
-    Write-Host '[make-and-publish] WARN CDP Chrome start timed out; falling back to Playwright-launched browser' -ForegroundColor Yellow
+    Write-Host '[make-and-publish] WARN CDP Chrome start timed out; falling back to Playwright launch' -ForegroundColor Yellow
     return $null
 }
 
