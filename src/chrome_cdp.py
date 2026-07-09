@@ -91,23 +91,22 @@ def start_cdp_chrome(*, port: int | None = None, profile: Path | None = None) ->
         f"  [cdp] 启动常驻 Chrome (port {port}, profile {profile})",
         flush=True,
     )
-    kwargs: dict = {
-        "args": args,
+    popen_kw: dict = {
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     }
     if sys.platform == "win32":
-        # 脱离父进程控制台，避免计划任务结束时连带关掉 Chrome
-        kwargs["creationflags"] = (
+        # 脱离父进程控制台，避免计划任务结束时连带关掉 Chrome。
+        # 不用 CREATE_NO_WINDOW：Chrome 需要可见窗口供扫码登录。
+        popen_kw["creationflags"] = (
             getattr(subprocess, "DETACHED_PROCESS", 0)
             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
-        kwargs["close_fds"] = True
+        popen_kw["close_fds"] = True
     else:
-        kwargs["start_new_session"] = True
+        popen_kw["start_new_session"] = True
 
-    subprocess.Popen(args, **kwargs)
+    subprocess.Popen(args, **popen_kw)
 
     deadline = time.time() + 20
     while time.time() < deadline:
