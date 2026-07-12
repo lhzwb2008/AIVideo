@@ -1,6 +1,6 @@
 """概念簇：选题去重（同产业链/同题材换皮）与 history 联动。
 
-支持一天多次执行 make-and-publish.sh 1：每次做完写入 theme_cluster，
+支持一天多次执行 make-and-publish.ps1 1：每次做完写入 theme_cluster，
 下次选题会避开近 N 天已发簇。
 
 科普（edu_*）额外用「概念指纹」做硬去重：同一概念换皮标题也算重复。

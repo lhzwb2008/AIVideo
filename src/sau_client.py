@@ -29,7 +29,7 @@ def sau_home(root: Path | None = None) -> Path:
 def _setup_hint() -> str:
     if os.name == "nt":
         return "请先运行: .\\setup-windows.ps1\n或设置 SAU_BIN / SAU_HOME，见 .env.example"
-    return "请先运行: ./setup-sau.sh\n或设置 SAU_BIN / SAU_HOME，见 .env.example"
+    return "请先运行: .\\setup-windows.ps1\n或设置 SAU_BIN / SAU_HOME，见 .env.example"
 
 
 def is_sau_config_error(message: str) -> bool:
@@ -117,7 +117,7 @@ def check_douyin_session(*, root: Path | None = None) -> None:
     if proc.returncode == 0 and "valid" in out.lower():
         return
     raise SauError(
-        f"抖音 cookie 无效。请运行: ./douyin-login.sh\n{out or f'exit {proc.returncode}'}"
+        f"抖音 cookie 无效。请运行: .\\scripts\\login-cn.ps1 douyin --force\n{out or f'exit {proc.returncode}'}"
     )
 
 
@@ -125,7 +125,7 @@ def check_bilibili_session(*, root: Path | None = None) -> None:
     cookie = bilibili_cookie_path(root=root)
     if not cookie.is_file():
         raise SauError(
-            f"B 站账号文件不存在: {cookie}\n请先运行: ./bilibili-login.sh"
+            f"B 站账号文件不存在: {cookie}\n请先运行: .\\scripts\\login-cn.ps1 bilibili"
         )
     proc = run_sau(
         ["bilibili", "check", "--account", bilibili_account()],
@@ -136,7 +136,7 @@ def check_bilibili_session(*, root: Path | None = None) -> None:
     if proc.returncode == 0 and "valid" in out.lower():
         return
     raise SauError(
-        f"B 站登录态无效。请运行: ./bilibili-login.sh\n{out or f'exit {proc.returncode}'}"
+        f"B 站登录态无效。请运行: .\\scripts\\login-cn.ps1 bilibili\n{out or f'exit {proc.returncode}'}"
     )
 
 

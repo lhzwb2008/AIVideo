@@ -2,7 +2,7 @@
 """Cursor Cloud Agent 固定五槽位日更：联网调研 → 长文草稿 → Opus 深读 → 短视频改编。
 
 槽位顺序（每天按序，可接昨日进度续排）：
-  1. astock_market  — A股收盘概述（指数/成交/结构）【日更队列已关闭，可用 --slot 单独重跑】
+  1. astock_market  — A股收盘概述（指数/成交/结构）【日更自动队列已关闭】
   2. astock_sector  — A股热点与新闻
   3. domestic       — 国内财经新闻分析
   4. ai             — AI 新闻热点分析
@@ -52,7 +52,7 @@ ASTOCK_MARKET_SLOT = "astock_market"
 ASTOCK_SECTOR_SLOT = "astock_sector"
 OFFDAY_SKIP_SLOTS = frozenset({ASTOCK_MARKET_SLOT, ASTOCK_SECTOR_SLOT})
 PRE_CLOSE_SKIP_SLOTS = frozenset({ASTOCK_MARKET_SLOT})
-# 日更自动队列永久跳过的槽位（不影响 --slot astock_market 手动重跑）
+# 日更自动队列永久跳过的槽位
 DAILY_DISABLED_SLOTS = frozenset({ASTOCK_MARKET_SLOT})
 
 
@@ -637,7 +637,7 @@ def discover_cursor_topics(*, target: int = 5) -> list[dict]:
     if DAILY_DISABLED_SLOTS:
         skipped = "」「".join(SLOT_LABEL[s] for s in DAILY_DISABLED_SLOTS)
         print(
-            f"  ⏭  日更队列已关闭槽位「{skipped}」（可用 --slot 单独重跑）",
+            f"  ⏭  日更队列已关闭槽位「{skipped}」",
             flush=True,
         )
 

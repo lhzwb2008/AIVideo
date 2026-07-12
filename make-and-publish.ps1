@@ -15,7 +15,6 @@
   .\make-and-publish.ps1
   .\make-and-publish.ps1 1
   .\make-and-publish.ps1 --no-publish
-  .\make-and-publish.ps1 --slot edu_quant
 #>
 param(
     [Parameter(ValueFromRemainingArguments = $true)]

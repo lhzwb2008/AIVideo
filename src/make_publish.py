@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """中文流水线：工作日五槽位新闻 / 周末三槽位科普 → Opus 深读+改编 → 生图合成发布。
 
-工作日固定顺序 5 条（日更默认跳过 A股收盘概述）：
-  A股热点板块 → 国内财经 → AI 热点 → 世界财经（+ 可选 A股大盘 --slot）
+工作日固定顺序（日更默认跳过 A股收盘概述）：
+  A股热点板块 → 国内财经 → AI 热点 → 世界财经
 
-周末固定顺序 3 条（科普教育，与新闻槽位分离）：
-  财经基础 → 量化入门 → 估值与计算
+周末：Opus 动态科普选题（基础/量化/估值），与新闻槽位分离。
 """
 
 from __future__ import annotations
@@ -21,23 +20,18 @@ from batch_aivideo import append_history_from_script
 from cursor_daily_topics import (
     CURSOR_SLOT_ORDER,
     SLOT_LABEL,
-    SLOT_TO_CATEGORY,
     build_cursor_topic_research,
-    china_today,
     discover_cursor_topics,
-    topic_plan_for_slot,
 )
 from paths import ROOT
 from publish_pipeline import log, process_topic, recover_missing_forum_packs
 from locale_env import load_locale_env, locale_logs_dir
 from research import load_env
 from weekend_edu_topics import (
-    ALL_SLOT_CHOICES,
     EDU_SLOT_LABEL,
     build_weekend_edu_research,
     discover_weekend_edu_topics,
     is_weekend_edu_mode,
-    topic_for_edu_slot,
     weekend_default_count,
 )
 
@@ -51,30 +45,6 @@ def _slot_label(slot: str) -> str:
         cat = slot.replace("edu_", "", 1)
         return EDU_SLOT_LABEL.get(cat, slot)
     return SLOT_LABEL.get(slot, slot)
-
-
-def _topic_for_slot(slot: str) -> dict:
-    """为 --slot 指定槽位构建话题。"""
-    if slot.startswith("edu_"):
-        return topic_for_edu_slot(slot)
-    label = SLOT_LABEL[slot]
-    today = china_today().isoformat()
-    plan = topic_plan_for_slot(slot)
-    row = {
-        "index": 1,
-        "slot": slot,
-        "direction": slot,
-        "cursor_slot": slot,
-        "title_hint": plan.get("title_hint") or f"{today} {label}",
-        "category": SLOT_TO_CATEGORY.get(slot, "ai"),
-        "theme_cluster": plan.get("theme_cluster") or f"cursor_{slot}",
-        "angle": plan.get("angle") or label,
-        "reason": f"指定槽位重跑：{label}",
-    }
-    for key in ("suggested_video_title", "cold_open", "script_mode"):
-        if plan.get(key):
-            row[key] = plan[key]
-    return row
 
 
 def _discover_topics(*, target: int) -> list[dict]:
@@ -109,11 +79,6 @@ def main() -> int:
         default=int(os.environ.get("AIVIDEO_MAX_VIDEOS_PER_RUN", str(default_count))),
         help=f"本次制作条数（默认 {default_count}）",
     )
-    parser.add_argument(
-        "--slot",
-        choices=ALL_SLOT_CHOICES,
-        help="只跑指定槽位（工作日如 astock_market；周末如 edu_basic）",
-    )
     parser.add_argument("--dry-run", action="store_true", help="只预演发布参数")
     parser.add_argument("--no-publish", action="store_true", help="只生成视频，跳过发布")
     parser.add_argument(
@@ -124,14 +89,8 @@ def main() -> int:
     args = parser.parse_args()
 
     max_slots = 99 if weekend else len(CURSOR_SLOT_ORDER)
-
-    if args.slot:
-        target = 1
-        topics = [_topic_for_slot(args.slot)]
-        weekend = args.slot.startswith("edu_") or is_weekend_edu_mode()
-    else:
-        target = max(1, min(args.count, max_slots))
-        topics = _discover_topics(target=target)
+    target = max(1, min(args.count, max_slots))
+    topics = _discover_topics(target=target)
     if not topics:
         log("没有可用槽位/话题。")
         return 0

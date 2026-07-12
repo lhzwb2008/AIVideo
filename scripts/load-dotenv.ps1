@@ -1,4 +1,4 @@
-# Load env vars from .env by locale section (mirrors scripts/load-dotenv.sh)
+# Load env vars from .env by locale section (Windows).
 # Usage: . .\scripts\load-dotenv.ps1 zh
 param(
     [ValidateSet('zh', 'en')]

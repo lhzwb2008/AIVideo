@@ -15,7 +15,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from cursor_client import create_agent, create_run, model_id, run_with_stream
-from cursor_daily_topics import CURSOR_SLOT_ORDER, china_today
+from cursor_daily_topics import china_today
 from paths import ROOT
 from research import deep_read_article, extract_json, load_env
 from text_client import chat_complete, text_model
@@ -390,15 +390,6 @@ def discover_weekend_edu_topics(*, target: int | None = None) -> list[dict]:
     return [_row_to_topic(row, index=i) for i, row in enumerate(rows, 1)]
 
 
-def topic_for_edu_slot(slot: str) -> dict:
-    """--slot edu_basic / edu_quant / edu_valuation"""
-    cat = slot.replace("edu_", "", 1) if slot.startswith("edu_") else slot
-    if cat not in EDU_CATEGORY_ORDER:
-        raise ValueError(f"未知周末科普槽位: {slot}")
-    rows = _opus_pick_topics(count=1, category=cat)
-    return _row_to_topic(rows[0], index=1)
-
-
 def _save_draft(slot: str, markdown: str, meta: dict) -> Path:
     drafts = ROOT / "logs" / "edu_drafts"
     drafts.mkdir(parents=True, exist_ok=True)
@@ -531,6 +522,3 @@ def build_weekend_edu_research(
     print("  🤖 Opus 深读科普草稿（抽取短视频素材）…")
     details, _ = deep_read_article(article, agent_id=None, full_text=markdown)
     return article, details, agent_id
-
-
-ALL_SLOT_CHOICES = tuple(list(CURSOR_SLOT_ORDER) + [f"edu_{c}" for c in EDU_CATEGORY_ORDER])

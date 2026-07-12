@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""打印当前发布模式，供 make-and-publish.ps1 / .sh 解析。
+"""打印当前发布模式，供 make-and-publish.ps1 解析。
 
 输出一行：<mode>|<default_count>|<中文描述>
 - mode: weekend / weekday

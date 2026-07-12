@@ -121,7 +121,7 @@ def main() -> int:
                 f"未找到登录态（Profile 或 cookie）\n"
                 f"  Profile: {prof}\n"
                 f"  Cookie: {cookie}\n"
-                f"请运行: ./douyin-login.sh --force",
+                f"请运行: .\scripts\login-cn.ps1 douyin --force",
                 file=sys.stderr,
             )
         return 1
@@ -133,7 +133,7 @@ def main() -> int:
             if not has_profile:
                 if not args.quiet:
                     print(
-                        "抖音 cookie 无效。请运行: ./douyin-login.sh --force",
+                        "抖音 cookie 无效。请运行: .\scripts\login-cn.ps1 douyin --force",
                         file=sys.stderr,
                     )
                 return 1
@@ -151,7 +151,7 @@ def main() -> int:
         if not args.quiet:
             print(
                 "登录态无效或上传页未就绪。"
-                "请运行: ./douyin-login.sh --force",
+                "请运行: .\scripts\login-cn.ps1 douyin --force",
                 file=sys.stderr,
             )
         return 1
