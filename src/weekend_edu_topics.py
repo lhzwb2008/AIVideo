@@ -63,13 +63,17 @@ EDU_PICK_USER = """【今天】{today}
 
 【近 {dedup_days} 天已发布/已制作的标题（禁止重复、禁止换皮相似）】
 {recent_titles}
+
+【已用过的科普概念 id（同一概念换皮也算重复，禁止再选）】
+{used_concepts}
 {reject_block}
 【要求】
 1. 每个话题 12–28 字，用「X是什么/怎么算/怎么看」形式，聚焦**一个**概念
 2. 不要当日新闻、不要个股、不要荐股
-3. count=1 时选 1 个与历史差异最大、最值得做的概念即可
-4. count≥3 时尽量覆盖 basic / quant / valuation 三类各至少 1 个
-5. theme_cluster 用 edu_ 开头的英文 snake_case，概括概念即可
+3. **科普概念近似永不重复**：CPI/通胀、DCF、最大回撤、夏普、PE/PB 等已讲过的概念禁止再做；换问法（「是什么」vs「怎么算」vs「和X有啥区别」）也算重复
+4. count=1 时选 1 个与历史差异最大、最值得做的**全新**概念即可
+5. count≥3 时尽量覆盖 basic / quant / valuation 三类各至少 1 个，且三类概念互不重叠
+6. theme_cluster 必须用 edu_ 开头的英文 snake_case，且与已用概念 id 不重复
 
 输出 JSON：
 {{
@@ -106,36 +110,29 @@ def weekend_default_count() -> int:
 
 
 def edu_dedup_days() -> int:
-    raw = os.environ.get("AIVIDEO_EDU_DEDUP_DAYS", "90").strip()
-    try:
-        return max(7, int(raw))
-    except ValueError:
-        return 90
+    from theme_clusters import edu_dedup_days as _days
+
+    return _days()
 
 
 def _norm_title(text: str) -> str:
-    t = re.sub(r"\s+", "", (text or "").lower())
-    return re.sub(r"[？?！!。，、：:；;「」\"'（）()【】\[\]·\-—]", "", t)
+    from theme_clusters import _norm_compact
+
+    return _norm_compact(text)
 
 
 def _titles_overlap(a: str, b: str) -> bool:
-    na, nb = _norm_title(a), _norm_title(b)
-    if not na or not nb:
-        return False
-    if na == nb:
-        return True
-    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
-    if len(shorter) >= 6 and shorter in longer:
-        return True
-    # 同一核心概念：去掉「是什么/怎么算」后高度重叠
-    core_a = re.sub(r"(是什么|怎么算|怎么看|如何计算|入门|科普)", "", na)
-    core_b = re.sub(r"(是什么|怎么算|怎么看|如何计算|入门|科普)", "", nb)
-    if len(core_a) >= 4 and core_a == core_b:
-        return True
-    return False
+    from theme_clusters import titles_concept_overlap
+
+    return titles_concept_overlap(a, b)
 
 
 def _topic_id_from_title(title: str) -> str:
+    from theme_clusters import infer_edu_concept
+
+    concept = infer_edu_concept(title)
+    if concept:
+        return concept
     norm = _norm_title(title)[:48]
     digest = hashlib.md5(norm.encode("utf-8")).hexdigest()[:10]
     return f"edu_{digest}"
@@ -144,10 +141,29 @@ def _topic_id_from_title(title: str) -> str:
 def _recent_titles_for_pick() -> list[str]:
     from batch_aivideo import published_titles_for_dedup
 
-    return published_titles_for_dedup(days=edu_dedup_days(), limit=80)
+    # 科普近似永不重复：拉全窗口标题，上限放宽避免早期概念被截断
+    return published_titles_for_dedup(days=edu_dedup_days(), limit=500)
 
 
-def _validate_pick(row: dict, *, avoid: list[str], batch_titles: list[str]) -> str:
+def _used_edu_concepts(titles: list[str]) -> set[str]:
+    from batch_aivideo import recent_history
+    from theme_clusters import edu_concepts_from_items, edu_concepts_from_titles
+
+    used = edu_concepts_from_titles(titles)
+    used |= edu_concepts_from_items(recent_history(edu_dedup_days()))
+    return used
+
+
+def _validate_pick(
+    row: dict,
+    *,
+    avoid: list[str],
+    batch_titles: list[str],
+    used_concepts: set[str] | None = None,
+    batch_concepts: set[str] | None = None,
+) -> str:
+    from theme_clusters import cluster_duplicate_reason, infer_edu_concept, infer_theme_cluster
+
     title = str(row.get("title") or "").strip()
     if not title or len(title) < 6:
         return "标题过短或为空"
@@ -157,6 +173,24 @@ def _validate_pick(row: dict, *, avoid: list[str], batch_titles: list[str]) -> s
     for prev in avoid + batch_titles:
         if _titles_overlap(title, prev):
             return f"与已做话题过于相似：{prev[:40]}"
+
+    concept = infer_edu_concept(title) or str(row.get("theme_cluster") or "").strip()
+    if not concept.startswith("edu_"):
+        concept = infer_theme_cluster(title)
+    blocked = set(used_concepts or ()) | set(batch_concepts or ())
+    if concept.startswith("edu_") and concept in blocked:
+        return f"科普概念已做过：{concept}"
+
+    reason = cluster_duplicate_reason(
+        {
+            "title": title,
+            "theme_cluster": concept if concept.startswith("edu_") else str(row.get("theme_cluster") or ""),
+            "edu_concept": concept if concept.startswith("edu_") else "",
+        },
+        extra_counts={c: 1 for c in (batch_concepts or ())},
+    )
+    if reason:
+        return reason
     return ""
 
 
@@ -167,8 +201,11 @@ def _opus_pick_topics(
     extra_reject: list[str] | None = None,
 ) -> list[dict]:
     """让 Opus 根据历史动态提出科普话题。"""
+    from theme_clusters import infer_edu_concept, infer_theme_cluster
+
     load_env()
     recent = _recent_titles_for_pick()
+    used_concepts = _used_edu_concepts(recent)
     reject = list(extra_reject or [])
     max_attempts = max(2, int(os.environ.get("AIVIDEO_EDU_PICK_ATTEMPTS", "3")))
 
@@ -184,16 +221,26 @@ def _opus_pick_topics(
                 + "\n".join(f"- {t}" for t in reject[-12:])
                 + "\n"
             )
-        recent_lines = "\n".join(f"- {t}" for t in recent[:60]) if recent else "（暂无历史，可自由选题）"
+        recent_lines = "\n".join(f"- {t}" for t in recent[:200]) if recent else "（暂无历史，可自由选题）"
+        concept_lines = (
+            "\n".join(f"- {c}" for c in sorted(used_concepts))
+            if used_concepts
+            else "（暂无已用概念）"
+        )
         user = EDU_PICK_USER.format(
             today=china_today().isoformat(),
             count=count,
             category_hint=category_hint,
             dedup_days=edu_dedup_days(),
             recent_titles=recent_lines,
+            used_concepts=concept_lines,
             reject_block=reject_block,
         )
-        print(f"  🎯 {text_model()} 周末科普选题（{count} 条，历史 {len(recent)} 条）…", flush=True)
+        print(
+            f"  🎯 {text_model()} 周末科普选题（{count} 条，历史 {len(recent)} 条，"
+            f"已用概念 {len(used_concepts)} 个）…",
+            flush=True,
+        )
         raw = chat_complete(
             system=EDU_PICK_SYSTEM,
             user=user,
@@ -208,11 +255,18 @@ def _opus_pick_topics(
 
         picked: list[dict] = []
         batch_titles: list[str] = []
+        batch_concepts: set[str] = set()
         errors: list[str] = []
         for row in rows[: count + 2]:
             if not isinstance(row, dict):
                 continue
-            err = _validate_pick(row, avoid=recent, batch_titles=batch_titles)
+            err = _validate_pick(
+                row,
+                avoid=recent,
+                batch_titles=batch_titles,
+                used_concepts=used_concepts,
+                batch_concepts=batch_concepts,
+            )
             if err:
                 t = str(row.get("title") or "")
                 errors.append(f"{t}: {err}")
@@ -221,32 +275,41 @@ def _opus_pick_topics(
                 continue
             title = str(row["title"]).strip()
             cat = str(row["category"]).strip().lower()
+            concept = infer_edu_concept(title) or str(row.get("theme_cluster") or "").strip()
+            if not concept.startswith("edu_"):
+                concept = infer_theme_cluster(title) if infer_theme_cluster(title).startswith("edu_") else f"edu_{cat}"
+            if not concept.startswith("edu_"):
+                concept = _topic_id_from_title(title)
             picked.append({
                 "title": title,
                 "category": cat,
-                "theme_cluster": str(row.get("theme_cluster") or f"edu_{cat}").strip(),
+                "theme_cluster": concept,
+                "edu_concept": concept,
                 "cold_open": str(row.get("cold_open") or f"今天搞懂：{title.split('，')[0]}").strip(),
                 "angle": str(row.get("angle") or EDU_SLOT_LABEL.get(cat, "财经科普")).strip(),
                 "reason": str(row.get("reason") or "").strip(),
-                "topic_id": _topic_id_from_title(title),
+                "topic_id": concept if concept.startswith("edu_") else _topic_id_from_title(title),
             })
             batch_titles.append(title)
+            if concept.startswith("edu_"):
+                batch_concepts.add(concept)
             if len(picked) >= count:
                 break
 
         if len(picked) >= count:
-            _save_pick_log(picked, recent_count=len(recent))
+            _save_pick_log(picked, recent_count=len(recent), concept_count=len(used_concepts))
             return picked[:count]
 
         reject.extend(errors)
         print(f"  ⚠️  选题校验未通过（{attempt + 1}/{max_attempts}），重试…", flush=True)
 
     raise RuntimeError(
-        f"Opus 未能提出 {count} 个不重复科普话题（近 {edu_dedup_days()} 天已有 {len(recent)} 条历史）"
+        f"Opus 未能提出 {count} 个不重复科普话题（近 {edu_dedup_days()} 天已有 {len(recent)} 条历史，"
+        f"{len(used_concepts)} 个已用概念）"
     )
 
 
-def _save_pick_log(topics: list[dict], *, recent_count: int) -> None:
+def _save_pick_log(topics: list[dict], *, recent_count: int, concept_count: int = 0) -> None:
     try:
         from locale_env import locale_logs_dir
 
@@ -257,6 +320,7 @@ def _save_pick_log(topics: list[dict], *, recent_count: int) -> None:
                 {
                     "picked_at": datetime.now(timezone.utc).isoformat(),
                     "recent_history_count": recent_count,
+                    "used_concept_count": concept_count,
                     "topics": topics,
                 },
                 ensure_ascii=False,
@@ -271,6 +335,8 @@ def _save_pick_log(topics: list[dict], *, recent_count: int) -> None:
 def topic_plan_for_edu(row: dict) -> dict:
     cat = str(row.get("category") or "basic").strip().lower()
     title = str(row.get("title") or "").strip()
+    cluster = str(row.get("theme_cluster") or f"edu_{cat}").strip()
+    concept = str(row.get("edu_concept") or cluster).strip()
     return {
         "slot": f"edu_{cat}",
         "script_mode": "edu_explain",
@@ -278,7 +344,8 @@ def topic_plan_for_edu(row: dict) -> dict:
         "suggested_video_title": title,
         "cold_open": row.get("cold_open") or f"今天搞懂：{title.split('，')[0]}",
         "angle": row.get("angle") or EDU_SLOT_LABEL.get(cat, "财经科普"),
-        "theme_cluster": row.get("theme_cluster") or f"edu_{cat}",
+        "theme_cluster": cluster,
+        "edu_concept": concept,
         "topic_id": row.get("topic_id") or _topic_id_from_title(title),
         "category": "quant" if cat == "quant" else "basic",
         "direction": f"edu_{cat}",
@@ -296,6 +363,7 @@ def _row_to_topic(row: dict, *, index: int) -> dict:
         "title_hint": plan["title_hint"],
         "category": plan["category"],
         "theme_cluster": plan["theme_cluster"],
+        "edu_concept": plan.get("edu_concept") or plan["theme_cluster"],
         "topic_id": plan["topic_id"],
         "angle": plan["angle"],
         "cold_open": plan["cold_open"],
@@ -311,9 +379,11 @@ def discover_weekend_edu_topics(*, target: int | None = None) -> list[dict]:
     target = target if target is not None else weekend_default_count()
     target = max(1, target)
     recent = _recent_titles_for_pick()
-    if recent:
+    used = _used_edu_concepts(recent)
+    if recent or used:
         print(
-            f"  📚 科普去重：近 {edu_dedup_days()} 天已有 {len(recent)} 条标题记录",
+            f"  📚 科普去重：近 {edu_dedup_days()} 天已有 {len(recent)} 条标题、"
+            f"{len(used)} 个概念（科普概念近似永不重复）",
             flush=True,
         )
     rows = _opus_pick_topics(count=target)

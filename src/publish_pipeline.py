@@ -918,6 +918,12 @@ def pipeline_after_script(
 
     if skip_publish:
         log(f"\n=== [{index}/{target}] 跳过自动发布（--no-publish）===")
+        # 制作完成即写历史，避免科普/选题去重漏记（国内常先制后发）
+        try:
+            append_history_fn(script_path)
+            log("  ✓ 已写入选题历史（供去重）")
+        except Exception as exc:  # noqa: BLE001
+            log(f"  ⚠️  写入选题历史失败: {exc}")
         print_manual_publish_pack(script_path, video, skip_auto_note=True)
         return {"title": title, "video": rel(video), "script": rel(script_path), "published": False}
 
