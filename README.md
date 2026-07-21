@@ -24,8 +24,8 @@
 ## 内容策略
 
 - **工作日**：固定新闻槽位（A股板块 → 国内财经 → AI → 世界财经；大盘概述默认关闭）
-- **周末**：Opus 动态科普选题（基础 / 量化 / 估值），概念级去重（近似永不重复）
-- 风格校验 + 合规红线（禁股票代码/荐股等，见 `research.py`）
+- **周末**：Opus 动态科普选题（基础 / 量化 / 估值），概念级去重；标题优先故事/后果钩子，避免「X是什么」教材腔
+- 工作日封面标题优先「反常事件 + 可感知钩子」；风格校验 + 合规红线（禁股票代码/荐股等，见 `research.py`）
 
 ## 子栏目（同一主账号下的频道）
 
@@ -55,7 +55,7 @@
 
 | 步骤 | 服务 | 模型 |
 |------|------|------|
-| 写稿 / 深读 | Cursor Cloud Agent | `CURSOR_MODEL_ID`（默认 `composer-2.5`） |
+| 写稿 | Cursor Cloud Agent | `CURSOR_MODEL_ID`（默认 `cursor-grok-4.5-high`） |
 | 评审 / 改编 | AiHubMix Chat | `AIHUBMIX_TEXT_MODEL` |
 | 生图 | AiHubMix Images | `AIHUBMIX_IMAGE_MODEL` |
 | TTS | 豆包声音复刻 / DashScope CosyVoice | `TTS_PROVIDER` |

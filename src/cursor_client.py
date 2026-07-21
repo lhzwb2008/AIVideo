@@ -28,7 +28,8 @@ def base_url() -> str:
 
 
 def model_id() -> str:
-    return _env("CURSOR_MODEL_ID", "composer-2")
+    # 财经写稿/联网叙事优先 Grok；仍可用 .env 覆盖回 composer-2.5
+    return _env("CURSOR_MODEL_ID", "cursor-grok-4.5-high")
 
 
 def sandbox_repo_url() -> str:
