@@ -81,7 +81,7 @@ git clone https://kkgithub.com/dreammis/social-auto-upload.git vendor\social-aut
 
 - [ ] `CURSOR_API_KEY`
 - [ ] `CURSOR_SANDBOX_REPO_URL`（Cloud Agent 沙箱仓库）
-- [ ] `CURSOR_MODEL_ID`（推荐 `cursor-grok-4.5-high`；账号无权限可改 `composer-2.5`）
+- [ ] `CURSOR_MODEL_ID`（推荐 `grok-4.5`；不行可改 `composer-2.5`）
 - [ ] `AIHUBMIX_API_KEY`
 - [ ] `VOLCENGINE_TTS_API_KEY` + `VOLCENGINE_TTS_SPEAKER`（豆包克隆音色）
 - [ ] `WECHAT_APP_ID` / `WECHAT_APP_SECRET`（若开公众号）
