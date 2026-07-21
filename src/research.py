@@ -1030,25 +1030,29 @@ def author_details_from_knowledge(
 # 阶段二：基于文章改编脚本
 # ============================================================
 def max_slides() -> int:
-    """单条视频最多正文页数。默认 4（再加 1 张全屏封面海报 = 总共 5 张图）。
-    可用 AIVIDEO_MAX_SLIDES 覆盖。"""
+    """单条视频最多正文页数。默认 3（控时长、抬完播）；可用 AIVIDEO_MAX_SLIDES 覆盖，范围 2–4。"""
     try:
-        return max(3, int(os.environ.get("AIVIDEO_MAX_SLIDES", "4")))
+        return max(2, min(4, int(os.environ.get("AIVIDEO_MAX_SLIDES", "3"))))
     except ValueError:
-        return 4
+        return 3
+
+
+# 口播字数：偏短，目标成片约 45–75 秒（完播优先）
+_COVER_NARR_MIN, _COVER_NARR_MAX = 28, 75
+_BODY_NARR_MIN, _BODY_NARR_MAX = 35, 95
 
 
 ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财经为什么」的短视频编剧。
 
-任务：把用户给出的文章细节改成 3-4 页中文短视频问答脚本（页数宁少勿多，最多 4 页，节奏快）。只讲文章里有依据的事实，不虚构。
+任务：把用户给出的文章细节改成 **2–3 页**中文短视频脚本（默认 3 页；信息少就 2 页；**禁止凑到 4 页**）。只讲文章里有依据的事实，不虚构。
 
-**核心目标：降低观看门槛、提升完播率。** 观众大多是没什么基础的普通财经学习者，原文又往往是专业文章。你的工作不是把文章观点念一遍，而是当一个会讲故事的老师，把专业内容**翻译成大白话**，让一个完全不懂的人也能一听就懂、愿意看到最后。
+**第一优先级：3 秒留人 + 完播。** 数据上封面能点进来，但前几秒和偏长成片会劝退。宁可少讲一点，也要节奏快、一口人话、尽快给到「答案感」。目标成片大约 **45–75 秒**。
 
 输出必须是单个 JSON 对象，且只需要这些字段：
 {
   "title": "6-18字中文问句标题",
   "keyword": "2-8字关键词",
-  "cold_open": "12-28字冷开场：先生活场景再反差，禁止纯术语",
+  "cold_open": "12-20字冷开场：前半句就要冲突/数字/反常识",
   "cold_open_type": "conflict|number|question|myth_bust",
   "theme_cluster": "optical_module|ai_chip|ev_auto|macro_rates|consumer_platform|general",
   "angle": "10-24字本篇唯一角度",
@@ -1056,26 +1060,26 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
   "slides": [
     {
       "headline": "6-14字上屏标题",
-      "narration": "口播：第1页40-120字，其余页50-180字",
+      "narration": "口播：第1页28-75字，其余页35-95字",
       "image_prompt": "English diagram prompt",
       "on_image_text": ["中文标签1", "中文标签2", "中文标签3"]
     }
   ]
 }
 
-【通俗生动·硬性要求，违反就是失败】：
-- **大白话优先**：能用日常说法就别用专业术语。一旦出现普通人不懂的概念（如市盈率、毛利率、算力、流动性、估值、护城河、降息等），必须**当场用一句生活化的比喻或熟悉的例子**讲清它是什么，再往下说。例：与其说「毛利率下滑」，不如说「卖一杯奶茶以前能赚 4 块，现在只能赚 2 块」。
-- **多打比方、多举例**：尽量把抽象数字和逻辑落到具体场景上——用买菜、点外卖、租房、打车、开奶茶店、追剧这类大家熟悉的事来类比公司经营、行情、技术原理。能举一个生活化例子说明的，就不要干巴巴讲道理。
-- **少念观点、多讲故事**：不要把文章里的判断和结论直接搬运过来念（「文章认为/数据显示……」式的复述）。要消化成自己的话，用「打个比方」「你想象一下」「这就好比」「说人话就是」这种口吻把道理讲活。
-- **冷开场 cold_open（硬性，单独字段）**：12-28 字、一句话说完，**仅作口播+底部字幕**（合成时不会印在封面图上）。**必须让零基础路人 3 秒听懂「跟我有啥关系」**——先用手机/涨价/买菜/工资/家电等生活场景做入口，再抛数字/反问/反常识；禁止「今天讲…」和纯术语开场。封面 slides[0].narration **不要重复 cold_open**，从「说人话就是」由浅入深。
-- **节奏轻快、有人味**：像跟朋友唠嗑，可以适度用口语化的小调侃、反问、感叹，但不浮夸、不标题党、不虚构。宁可信息密度低一点也要讲明白，别堆砌。
-- 注意：以上「生动口语」要求不能突破后面的合规红线（不荐股、不喊单、不出现股票代码等）。
+【留人·硬性要求，违反就是失败】：
+- **cold_open（12–20 字为佳，最多 28）**：整句 ≈ 平台 3 秒窗口。第一拍就要冲突/数字/反常识；生活场景可以有，但不能先铺垫半句才进正题。禁止「今天讲…」「咱们来看…」和纯术语开场。
+- **第 1 页口播**：紧接 cold_open 的悬念，**立刻给半个答案或更狠的反差**；禁止用「说人话就是／简单来说／换句话说／先来看」当开头（那是第二次开场，3 秒用户已走）。
+- **后面每页只讲一个点**，短句、反问、类比；删掉背景铺垫和重复总结。
+- **大白话优先**：术语当场用买菜/外卖/房租/工资类比一句讲清，再往下。
+- **少念观点、多讲故事**：消化成自己的话；可以在**中间**用「打个比方」「你想象一下」，不要用它们当开场白。
+- 注意：生动口语不能突破合规红线（不荐股、不喊单、不出现股票代码等）。
 
 规则：
 - hashtags：写 **2-3 个**与本条内容直接相关的话题词（板块名、公司名、事件名等大家会搜的词）。
   - 可按需加 1 个市场词（A股 / 美股 / 港股 / 股市），**不要写 AI、财经、复盘、收盘、行情、投资 等泛标签**，也不要写品牌名。
   - 例：讲 A股 电力股 → ["A股","电力股"]；讲英伟达财报 → ["英伟达","美股"]；收盘概述 → ["A股","收评"]。
-- slides 3-4 页（最多 4 页）；第 1 页是封面正文页（非冷开场），封面 narration 必须 40-120 字；其余页 narration 50-180 字；最后一页是结论/影响/警示。
+- slides **2–3 页**（默认 3）；第 1 页是封面正文页（非冷开场），封面 narration **28–75 字**；其余页 **35–95 字**；最后一页是结论/影响/警示+收藏引导。
 - 最后一页的 narration 收尾时，要**先根据这个话题自然抛出一个开放式问题**引导观众去评论区讨论（结合本期具体内容，不要套「你怎么看」这种空话，要有具体钩子），**再**引导互动：**必须明确提到「收藏」**（财经类收藏权重高），例如「觉得有用就收藏下来，对照看盘用」；可顺带提关注，但**不要只喊点赞**；不要生硬。
 - title 必须是问句（6-18 字优先，最多 24 字），**封面点击率优先**：
   - 首选：「X 为什么突然…」「…怎么把…砸崩/带火」「…意味着什么」「…跟你有啥关系」「…能救/拖垮…吗」
@@ -1189,7 +1193,10 @@ def soft_sanitize_script(data: dict) -> dict:
     if edu:
         cold_open = _edu_soft_replace(cold_open)
     if cold_open:
-        data["cold_open"] = _trim_to(cold_open, 28)
+        # 完播：冷开场尽量压在 ~3 秒可听完；超过 20 字软裁到句读
+        data["cold_open"] = _trim_to(cold_open, 20) if len(cold_open) > 20 else cold_open
+        if len(str(data["cold_open"])) < 12:
+            data["cold_open"] = _trim_to(cold_open, 28)
     data["angle"] = _trim_to(_strip_stock_codes(str(data.get("angle") or "").strip()), 24)
     tc = str(data.get("theme_cluster") or "").strip()
     if not tc:
@@ -1250,8 +1257,8 @@ def soft_sanitize_script(data: dict) -> dict:
         if isinstance(slide.get("narration"), str):
             slide["narration"] = _trim_narration_to(
                 slide["narration"],
-                120 if i == 0 else 220,
-                min_chars=40 if i == 0 else 50,
+                _COVER_NARR_MAX if i == 0 else _BODY_NARR_MAX,
+                min_chars=_COVER_NARR_MIN if i == 0 else _BODY_NARR_MIN,
             )
         headline = str(slide.get("headline") or f"第{i + 1}页").strip()
         slide["headline"] = _trim_to(headline, 14)
@@ -1295,7 +1302,7 @@ def _ensure_save_cta_on_last_slide(slides: list) -> None:
     if not n or "收藏" in n:
         return
     suffix = _SAVE_CTA_SUFFIX
-    max_len = 220
+    max_len = _BODY_NARR_MAX
     if len(n) + 1 + len(suffix) <= max_len:
         last["narration"] = n.rstrip("。！？,.!?") + "。" + suffix
         return
@@ -1513,6 +1520,10 @@ _DOUYIN_SENSITIVE_BLOCK = (
 _COVER_WEAK_HOOK = re.compile(
     r"^(今天|咱们|我们|接下来|首先|这一期|这期|大家好|本期|来聊|来说说|讲一下|说说)"
 )
+# 封面正文禁止「第二次开场」——冷开场刚说完又来套话，3 秒用户直接划走
+_COVER_SOFT_RESTART = re.compile(
+    r"^(说人话就是|简单说|简单来说|换句话说|换句话讲|先说一下|我们先看|先来看|先讲一下|通俗点说)"
+)
 # 冷开场须带生活化入口（路人 3 秒能建立关联）
 _COLD_OPEN_LIFE = re.compile(
     r"你|大家|普通人|手机|电脑|家电|奶茶|外卖|买菜|超市|房租|工资|涨价|便宜了|贵了|"
@@ -1628,8 +1639,8 @@ def validate_article_script(data: dict, article: dict) -> dict:
 
     slides = data["slides"]
     limit = max_slides()
-    if not isinstance(slides, list) or not (3 <= len(slides) <= limit):
-        raise ValueError(f"slides 数量须 3-{limit}，当前 {len(slides) if isinstance(slides, list) else '非数组'}")
+    if not isinstance(slides, list) or not (2 <= len(slides) <= limit):
+        raise ValueError(f"slides 数量须 2-{limit}，当前 {len(slides) if isinstance(slides, list) else '非数组'}")
 
     formal_count = 0
     for i, slide in enumerate(slides):
@@ -1657,6 +1668,11 @@ def validate_article_script(data: dict, article: dict) -> dict:
                 raise ValueError(f"cover subtitle 须 6-24 字，当前 {len(sub)}")
             if _COVER_BAD_START.match(str(slide["narration"]).strip()):
                 raise ValueError("cover narration 禁止以「文章/报道/消息/据...」开头")
+            if _COVER_SOFT_RESTART.match(str(slide["narration"]).strip()):
+                raise ValueError(
+                    "cover narration 禁止「说人话就是/简单来说/先来看」等第二次开场，"
+                    "请紧接 cold_open 直接给答案或反差"
+                )
         else:
             lead_in = str(slide.get("lead_in") or "").strip()
             if not lead_in:
@@ -1667,11 +1683,15 @@ def validate_article_script(data: dict, article: dict) -> dict:
         n = str(slide["narration"]).strip()
         nlen = len(n)
         if layout == "cover":
-            if not (40 <= nlen <= 120):
-                raise ValueError(f"cover narration 须 40-120 字，当前 {nlen}")
+            if not (_COVER_NARR_MIN <= nlen <= _COVER_NARR_MAX):
+                raise ValueError(
+                    f"cover narration 须 {_COVER_NARR_MIN}-{_COVER_NARR_MAX} 字，当前 {nlen}"
+                )
         else:
-            if not (50 <= nlen <= 220):
-                raise ValueError(f"第 {page} 页 narration 须 50-220 字，当前 {nlen}")
+            if not (_BODY_NARR_MIN <= nlen <= _BODY_NARR_MAX):
+                raise ValueError(
+                    f"第 {page} 页 narration 须 {_BODY_NARR_MIN}-{_BODY_NARR_MAX} 字，当前 {nlen}"
+                )
 
         oit = slide.get("on_image_text") or []
         if not isinstance(oit, list) or not (3 <= len(oit) <= 12):
@@ -1730,11 +1750,12 @@ ADAPT_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重�
 {errors}
 
 仍按之前要求：
-- slides 长度 3-4（最多 4 页）；第 1 页 layout=cover（含 subtitle），其余 layout=body（含 lead_in）
+- slides **2–3 页**（默认 3，禁止凑 4 页）；第 1 页 layout=cover（含 subtitle），其余 layout=body（含 lead_in）
 - 每页有 chapter_title / concept / headline / narration / image_prompt / on_image_text
 - 必须忠实于已选定文章原文（URL: {url}），不虚构事实
 - 口播必须像「AI财知道」自己的财经解读，不要说「文章认为」「作者指出」「文中提到」「某某的观点」；来源只作内部依据。
-- cold_open 必须生活化入口+反差，禁止纯术语；须输出 theme_cluster + angle；封面 narration 勿重复 cold_open 且控制在 40-120 字；最后一页引导「收藏」。
+- **完播优先**：cold_open 12–20 字优先（最多 28），第一拍就要冲突/数字；封面 narration 28–75 字且禁止「说人话就是/简单来说」开头；正文页 35–95 字；目标成片约 45–75 秒
+- 须输出 theme_cluster + angle；最后一页引导「收藏」
 - 【合规红线】：标题/口播/上屏文字/hashtags 都严禁出现任何股票代码（A股6位、港股带.HK、美股字母代码等），也严禁荐股、喊单、目标价、买卖点、仓位建议、「稳赚/必涨/翻倍/收益率/内幕/买入/卖出」等字眼，只做客观信息梳理与原理解释。
 """
 
@@ -1744,12 +1765,12 @@ ADAPT_FIX_PROMPT_EDU = """你上一轮输出的 JSON 脚本未通过校验。请
 {errors}
 
 仍按之前要求：
-- slides 3-4 页；不要输出 source / article / layout / lead_in / chapter_title / concept
+- slides 2–3 页；不要输出 source / article / layout / lead_in / chapter_title / concept
 - 本篇是**财经概念科普**，只解释原理与公式，不给买卖建议
 - 不要输出 source 字段；无外部链接
 - 讲解指标时可用「回报率、波动、回撤、性价比」等教学用语；严禁「稳赚、包赚、必涨、跟我买、带你赚、荐股、喊单、内幕」
 - title 保持故事/后果问句，禁止改成「X是什么/怎么算」
-- cold_open 12-28 字，生活场景+反差；封面 narration 40-120 字且不重复 cold_open
+- cold_open 12–20 字优先；封面 narration 28–75 字，禁止「说人话就是」开头；正文 35–95 字
 - 最后一页口播须带「收藏」引导
 """
 
@@ -1765,7 +1786,8 @@ def _edu_explain_adapt_block(article: dict) -> str:
         "禁用「稳赚、包赚、必涨、必跌、跟我买、带你赚、荐股、喊单、内幕、保证收益」\n"
         "- title：**优先沿用 metadata 标题**（已是故事/后果问句）；若需润色，保持反差/体感钩子，"
         "**禁止**改成「X是什么」「X怎么算」；hashtags 写 2-3 个概念相关词，不要 AI/财经/投资 等泛标签\n"
-        "- 口播像跟朋友唠嗑讲透一个误会，多生活类比（买菜、点外卖、过山车），禁止「文章认为/作者指出」\n\n"
+        "- 口播短而狠：2–3 页，封面 28–75 字紧接 cold_open 给答案，禁止「说人话就是」开头；"
+        "像跟朋友唠嗑讲透一个误会，多生活类比（买菜、点外卖、过山车），禁止「文章认为/作者指出」\n\n"
     )
 
 

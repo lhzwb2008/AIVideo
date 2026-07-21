@@ -89,11 +89,11 @@ def cover_duration_s() -> float:
 
 def cold_open_duration_s(text: str, audio_path: Path | None = None) -> float:
     """冷开场时长：已有 TTS 时按真实音频走，避免裁掉尾字。"""
-    min_s = max(1.5, _env_float("AIVIDEO_COLD_OPEN_MIN_S", 2.5))
-    max_s = max(min_s, _env_float("AIVIDEO_COLD_OPEN_MAX_S", 4.5))
+    min_s = max(1.5, _env_float("AIVIDEO_COLD_OPEN_MIN_S", 2.2))
+    max_s = max(min_s, _env_float("AIVIDEO_COLD_OPEN_MAX_S", 3.8))
     if audio_path and audio_path.is_file():
         dur = ffprobe_duration(audio_path)
-        audio_max_s = max(max_s, _env_float("AIVIDEO_COLD_OPEN_AUDIO_MAX_S", 8.0))
+        audio_max_s = max(max_s, _env_float("AIVIDEO_COLD_OPEN_AUDIO_MAX_S", 5.0))
         return max(min_s, min(audio_max_s, dur + 0.25))
     n = len((text or "").strip())
     return max(min_s, min(max_s, n / 4.5))
