@@ -39,21 +39,67 @@ def sandbox_repo_url() -> str:
     return url
 
 
+_RETRY_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
+
+
+def _retry_after_s(raw: str, headers: Any = None, *, default: float = 60.0) -> float:
+    """从 Retry-After 头或 Cursor/GitHub 429 JSON 里取等待秒数。"""
+    if headers is not None:
+        try:
+            ra = headers.get("Retry-After")
+            if ra is not None and str(ra).strip().isdigit():
+                return max(1.0, float(str(ra).strip()))
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        data = json.loads(raw) if raw else None
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, dict):
+        return default
+    # details[].debug.details.additionalInfo.retryAfter 或 details[].retryAfter
+    details = data.get("details")
+    if isinstance(details, list):
+        for item in details:
+            if not isinstance(item, dict):
+                continue
+            debug = item.get("debug") if isinstance(item.get("debug"), dict) else {}
+            inner = debug.get("details") if isinstance(debug.get("details"), dict) else {}
+            info = inner.get("additionalInfo") if isinstance(inner.get("additionalInfo"), dict) else {}
+            for blob in (info, inner, item, data):
+                if not isinstance(blob, dict):
+                    continue
+                for key in ("retryAfter", "retry_after"):
+                    val = blob.get(key)
+                    if val is None:
+                        continue
+                    try:
+                        return max(1.0, float(val))
+                    except (TypeError, ValueError):
+                        continue
+    raw_l = raw.lower()
+    if "rate limit" in raw_l or "resource_exhausted" in raw_l:
+        return default
+    return default
+
+
 def _http(method: str, path: str, body: dict | None = None) -> tuple[int, Any, str]:
     url = base_url() + path
     data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method=method,
-        headers={
-            "Authorization": auth_header(),
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
+    max_attempts = max(1, int(_env("CURSOR_HTTP_MAX_RETRIES", "6")))
     last_err: Exception | None = None
-    for attempt in range(1, 5):
+    last_status, last_parsed, last_raw = 0, None, ""
+    for attempt in range(1, max_attempts + 1):
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method=method,
+            headers={
+                "Authorization": auth_header(),
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 raw = resp.read().decode()
@@ -68,11 +114,29 @@ def _http(method: str, path: str, body: dict | None = None) -> tuple[int, Any, s
                 parsed = json.loads(raw) if raw else None
             except json.JSONDecodeError:
                 parsed = None
+            last_status, last_parsed, last_raw = e.code, parsed, raw
+            if e.code in _RETRY_HTTP_CODES and attempt < max_attempts:
+                wait_s = _retry_after_s(raw, getattr(e, "headers", None), default=60.0 if e.code == 429 else 5.0)
+                # 429 按官方建议等；其它 5xx 指数退避，封顶 120s
+                if e.code != 429:
+                    wait_s = min(120.0, max(wait_s, 2.0 * attempt))
+                print(
+                    f"[cursor] {method} {path} → {e.code}，{wait_s:.0f}s 后重试 "
+                    f"({attempt}/{max_attempts - 1})",
+                    flush=True,
+                )
+                time.sleep(wait_s)
+                continue
             return e.code, parsed, raw
         except Exception as e:  # noqa: BLE001
             last_err = e
-            time.sleep(0.5 * attempt)
-    raise RuntimeError(f"HTTP {method} {path} 失败: {last_err}") from last_err
+            if attempt < max_attempts:
+                time.sleep(min(30.0, 0.5 * attempt))
+                continue
+            raise RuntimeError(f"HTTP {method} {path} 失败: {last_err}") from last_err
+    if last_status:
+        return last_status, last_parsed, last_raw
+    raise RuntimeError(f"HTTP {method} {path} 失败: {last_err}")
 
 
 def create_agent(prompt: str) -> tuple[str, str]:
