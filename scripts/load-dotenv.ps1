@@ -37,11 +37,14 @@ function Load-EnvSections {
     )
     if (-not (Test-Path $FilePath)) { return }
     $section = 'shared'
-    Get-Content -LiteralPath $FilePath -Encoding UTF8 | ForEach-Object {
-        $line = $_
+    # Windows PowerShell 5.1 的 Get-Content -Encoding UTF8 对无 BOM 文件偶发按系统 ANSI(GBK) 读，
+    # 会把「AI财知道」弄成「AI璐…」烧进画面。显式用无 BOM UTF-8。
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $lines = [System.IO.File]::ReadAllLines((Resolve-Path -LiteralPath $FilePath).Path, $utf8)
+    foreach ($line in $lines) {
         if ($line -match '^#==\s*section:\s*(\w+)\s*==') {
             $section = $Matches[1].ToLower()
-            return
+            continue
         }
         switch ($section) {
             'shared' { Apply-EnvLine -Line $line -Force $false }

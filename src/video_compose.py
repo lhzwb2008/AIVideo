@@ -89,11 +89,11 @@ def cover_duration_s() -> float:
 
 def cold_open_duration_s(text: str, audio_path: Path | None = None) -> float:
     """冷开场时长：已有 TTS 时按真实音频走，避免裁掉尾字。"""
-    min_s = max(1.5, _env_float("AIVIDEO_COLD_OPEN_MIN_S", 2.2))
-    max_s = max(min_s, _env_float("AIVIDEO_COLD_OPEN_MAX_S", 3.8))
+    min_s = max(1.5, _env_float("AIVIDEO_COLD_OPEN_MIN_S", 2.5))
+    max_s = max(min_s, _env_float("AIVIDEO_COLD_OPEN_MAX_S", 4.5))
     if audio_path and audio_path.is_file():
         dur = ffprobe_duration(audio_path)
-        audio_max_s = max(max_s, _env_float("AIVIDEO_COLD_OPEN_AUDIO_MAX_S", 5.0))
+        audio_max_s = max(max_s, _env_float("AIVIDEO_COLD_OPEN_AUDIO_MAX_S", 8.0))
         return max(min_s, min(audio_max_s, dur + 0.25))
     n = len((text or "").strip())
     return max(min_s, min(max_s, n / 4.5))
@@ -160,6 +160,30 @@ OUTRO_SUBLINE = "看懂 AI 和股市的事"
 OUTRO_NARRATION_VARIANTS: list[str] = list(_ZH_OUTRO_VARIANTS)
 
 
+def _cjk_chars(text: str) -> set[str]:
+    return {c for c in text if "\u4e00" <= c <= "\u9fff"}
+
+
+def _env_text(name: str, default: str) -> str:
+    """读环境变量文案；若像 UTF-8 被误按系统码页解码的乱码，回退默认值。
+
+    典型症状：.env 里是「AI财知道」，画面却成「AI璐㈢煡…」（UTF-8 当 GBK 解）。
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    default_cjk = _cjk_chars(default)
+    if len(default_cjk) >= 2:
+        raw_cjk = _cjk_chars(raw)
+        if raw_cjk and not (raw_cjk & default_cjk):
+            print(
+                f"[compose] {name} 疑似编码乱码（{raw[:24]}…），改用内置文案",
+                file=sys.stderr,
+            )
+            return default
+    return raw
+
+
 def _load_brand_outro_config() -> None:
     """按 locale / 环境变量刷新品牌与尾页文案（main 入口在 load_env 后再调一次）。"""
     global BRAND_NAME, BRAND_TAGLINE, OUTRO_NARRATION, OUTRO_HEADLINE, OUTRO_SUBLINE
@@ -180,14 +204,24 @@ def _load_brand_outro_config() -> None:
         subline_default = "看懂 AI 和股市的事"
         pool_default = _ZH_OUTRO_VARIANTS
 
-    BRAND_NAME = os.environ.get("AIVIDEO_BRAND_NAME", brand_default).strip()
-    BRAND_TAGLINE = os.environ.get("AIVIDEO_BRAND_TAGLINE", tagline_default).strip()
-    OUTRO_NARRATION = os.environ.get("AIVIDEO_OUTRO_NARRATION", outro_default).strip()
-    OUTRO_HEADLINE = os.environ.get("AIVIDEO_OUTRO_HEADLINE", headline_default).strip()
-    OUTRO_SUBLINE = os.environ.get("AIVIDEO_OUTRO_SUBLINE", subline_default).strip()
+    BRAND_NAME = _env_text("AIVIDEO_BRAND_NAME", brand_default)
+    BRAND_TAGLINE = _env_text("AIVIDEO_BRAND_TAGLINE", tagline_default)
+    OUTRO_NARRATION = _env_text("AIVIDEO_OUTRO_NARRATION", outro_default)
+    OUTRO_HEADLINE = _env_text("AIVIDEO_OUTRO_HEADLINE", headline_default)
+    OUTRO_SUBLINE = _env_text("AIVIDEO_OUTRO_SUBLINE", subline_default)
     raw = os.environ.get("AIVIDEO_OUTRO_NARRATION_VARIANTS", "").strip()
     if raw:
-        OUTRO_NARRATION_VARIANTS = [s.strip() for s in raw.split("|") if s.strip()]
+        variants = [s.strip() for s in raw.split("|") if s.strip()]
+        # 任一条乱码则整组丢弃，避免尾页口播也糊掉
+        if any(
+            _cjk_chars(v) and not (_cjk_chars(v) & _cjk_chars(pool_default[0]))
+            for v in variants
+            if _cjk_chars(pool_default[0])
+        ):
+            print("[compose] AIVIDEO_OUTRO_NARRATION_VARIANTS 疑似乱码，改用内置文案", file=sys.stderr)
+            OUTRO_NARRATION_VARIANTS = list(pool_default)
+        else:
+            OUTRO_NARRATION_VARIANTS = variants
     else:
         OUTRO_NARRATION_VARIANTS = list(pool_default)
 
