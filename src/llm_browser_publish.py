@@ -709,7 +709,16 @@ async def _cleanup_browser_session(
 
     CDP 模式：只关本进程新建的标签，绝不 browser.close()（会杀掉常驻 Chrome）。
     非 CDP：按原逻辑关闭 browser / context。
+    无论哪种模式，都关掉 Windows 上残留的「打开」文件对话框。
     """
+    try:
+        from win_file_dialogs import dismiss_native_open_dialogs
+
+        n = dismiss_native_open_dialogs()
+        if n:
+            print(f"  [cleanup] 已关闭 {n} 个残留文件选择对话框", flush=True)
+    except Exception:
+        pass
     if _cdp_url():
         if page is not None:
             try:

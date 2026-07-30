@@ -321,9 +321,21 @@ async def try_upload_video(
             upload_input = await _wait_file_input(page, timeout_s=120, root=root or ROOT)
             await upload_input.set_input_files(str(video_path))
             print(f"  [upload] 已选择视频: {video_path.name}", flush=True)
+            try:
+                from douyin_publisher import _dismiss_stray_open_dialogs
+
+                _dismiss_stray_open_dialogs()
+            except Exception:
+                pass
             return True
         except Exception as exc:
             print(f"  [upload] 抖音专用上传失败，尝试通用方式: {exc}", flush=True)
+            try:
+                from douyin_publisher import _dismiss_stray_open_dialogs
+
+                _dismiss_stray_open_dialogs()
+            except Exception:
+                pass
 
     if platform == "bilibili":
         try:
@@ -509,6 +521,17 @@ async def try_upload_video(
             print(f"  [upload] 已通过 file chooser 选择视频 ({text})", flush=True)
             return True
         except Exception:
+            # click 可能已弹出系统对话框但未接到 filechooser → 关掉残留「打开」窗
+            try:
+                from win_file_dialogs import dismiss_native_open_dialogs
+
+                dismiss_native_open_dialogs()
+            except Exception:
+                pass
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
             continue
     return False
 

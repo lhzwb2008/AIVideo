@@ -100,18 +100,47 @@ async def _goto(page, url: str) -> None:
 
 
 async def _try_click_upload_entry(page) -> None:
-    """新版上传页有时需先点入口才渲染 file input。"""
-    for text in ("上传视频", "发布视频", "点击上传", "上传"):
-        loc = page.get_by_text(text, exact=False).first
-        if not await loc.count():
+    """新版上传页有时需先点侧栏入口才渲染 file input。
+
+    禁止裸点「点击上传 / 上传视频 / 发布视频」等会弹出系统文件框的文案：
+    headed/CDP 下未挂 expect_file_chooser 时，Windows「打开」对话框会一直残留。
+    """
+    # 仅点侧栏/导航类入口；上传区内的大按钮会开原生对话框，交给 _wait_file_input 的
+    # set_input_files / expect_file_chooser 路径处理。
+    nav_candidates = (
+        page.locator("a, [role='menuitem'], .semi-navigation-item").filter(
+            has_text="发布视频"
+        ),
+        page.locator("a, [role='menuitem'], .semi-navigation-item").filter(
+            has_text="上传视频"
+        ),
+        page.locator("a, [role='menuitem'], .semi-navigation-item").filter(
+            has_text="内容管理"
+        ),
+    )
+    for loc in nav_candidates:
+        first = loc.first
+        if not await first.count():
             continue
         try:
-            if await loc.is_visible():
-                await loc.click(timeout=3000)
+            if await first.is_visible():
+                await first.click(timeout=3000)
                 await asyncio.sleep(1)
                 return
         except Exception:
             continue
+
+
+def _dismiss_stray_open_dialogs() -> None:
+    """关掉 Windows 上残留的「打开」文件对话框（CDP 常驻 Chrome 不会自动清）。"""
+    try:
+        from win_file_dialogs import dismiss_native_open_dialogs
+
+        n = dismiss_native_open_dialogs()
+        if n:
+            print(f"  已关闭 {n} 个残留文件选择对话框", flush=True)
+    except Exception:
+        pass
 
 
 async def _require_logged_in(page) -> None:
@@ -168,7 +197,7 @@ async def _wait_file_input(page, timeout_s: int = 180, root: Path | None = None)
                 return loc
             except Exception:
                 continue
-        # 兜底：点「点击上传」触发 filechooser（新版页面可能无稳定 input 选择器）
+        # 兜底：点「点击上传」触发 filechooser（必须挂 expect_file_chooser，否则原生对话框残留）
         if i >= 5:
             try:
                 trigger = page.get_by_text("点击上传", exact=False).first
@@ -186,11 +215,17 @@ async def _wait_file_input(page, timeout_s: int = 180, root: Path | None = None)
 
                     return _ChooserProxy(chooser)
             except Exception:
-                pass
+                # click 可能已弹出系统「打开」框但 Playwright 未接到 filechooser
+                _dismiss_stray_open_dialogs()
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
         if i and i % 15 == 0:
             print(f"  等待上传控件… ({i * 2}s) url={page.url}", flush=True)
         await asyncio.sleep(2)
 
+    _dismiss_stray_open_dialogs()
     shot = (root or ROOT) / "logs" / "douyin_upload_page_fail.png"
     shot.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -488,6 +523,7 @@ async def publish_video(
             upload_input = await _wait_file_input(page, root=root)
             await upload_input.set_input_files(str(video_path))
             print("  已选择视频文件", flush=True)
+            _dismiss_stray_open_dialogs()
 
             await _wait_publish_form(page)
             await _dismiss_overlays(page)
@@ -515,6 +551,7 @@ async def publish_video(
             await context.storage_state(path=str(cookie))
             print("  发布成功，cookie 已更新", flush=True)
         finally:
+            _dismiss_stray_open_dialogs()
             if assist and headed:
                 await asyncio.sleep(2)
             await context.close()
