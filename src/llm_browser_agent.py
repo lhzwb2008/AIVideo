@@ -327,6 +327,22 @@ async def try_upload_video(
                 _dismiss_stray_open_dialogs()
             except Exception:
                 pass
+            # 必须仍在上传/编辑流；若跳到作品管理说明没真正进入发布表单
+            url_now = (page.url or "").lower()
+            if "content/manage" in url_now and "content/upload" not in url_now:
+                print(
+                    f"  [upload] 选文件后停在作品管理页（{page.url}），视为上传失败",
+                    flush=True,
+                )
+                return False
+            # 等表单出现，确认视频已进入编辑态
+            try:
+                from douyin_publisher import _wait_publish_form
+
+                await _wait_publish_form(page, timeout_s=90)
+            except Exception as form_exc:
+                print(f"  [upload] 未进入发布表单: {form_exc}", flush=True)
+                return False
             return True
         except Exception as exc:
             print(f"  [upload] 抖音专用上传失败，尝试通用方式: {exc}", flush=True)
@@ -499,6 +515,18 @@ async def try_upload_video(
         try:
             await loc.set_input_files(str(video_path))
             print(f"  [upload] 已通过 file input 选择视频: {video_path.name}", flush=True)
+            if platform == "douyin":
+                url_now = (page.url or "").lower()
+                if "content/manage" in url_now and "content/upload" not in url_now:
+                    print("  [upload] 通用注入后仍在作品管理，忽略此次选择", flush=True)
+                    continue
+                try:
+                    from douyin_publisher import _wait_publish_form
+
+                    await _wait_publish_form(page, timeout_s=60)
+                except Exception as form_exc:
+                    print(f"  [upload] 通用注入未进表单: {form_exc}", flush=True)
+                    continue
             return True
         except Exception:
             continue
@@ -519,6 +547,14 @@ async def try_upload_video(
             chooser = await fc_info.value
             await chooser.set_files(str(video_path))
             print(f"  [upload] 已通过 file chooser 选择视频 ({text})", flush=True)
+            if platform == "douyin":
+                try:
+                    from douyin_publisher import _wait_publish_form
+
+                    await _wait_publish_form(page, timeout_s=60)
+                except Exception as form_exc:
+                    print(f"  [upload] filechooser 后未进表单: {form_exc}", flush=True)
+                    continue
             return True
         except Exception:
             # click 可能已弹出系统对话框但未接到 filechooser → 关掉残留「打开」窗
@@ -648,6 +684,29 @@ def _check_success(
             return True
         if "creator/manage" in url and "drafts" not in url:
             return True
+        return False
+
+    # 抖音：裸 content/manage 不能当成功（CDP 常驻 Chrome 经常停在作品管理页，
+    # 上传未完成也会误报 ok:true / steps:0 / history:[]）
+    if platform_key == "douyin":
+        if "enter_from=publish" in url or "enter_from%3dpublish" in url:
+            return True
+        for text in ("发布成功", "已发布", "作品发布成功"):
+            if text in state.body_snippet:
+                return True
+        start = (start_url or "").lower()
+        if "content/manage" in url and "content/upload" in start:
+            # 本轮从上传页出发后跳到作品管理 → 视为点过发布
+            return True
+        if "content/upload" in url:
+            return False
+        # 其它 URL（含裸 manage）一律不算成功，交给调用方继续填表/点发布
+        for pat in success_patterns:
+            pl = pat.lower()
+            if pl in ("content/manage", "作品管理"):
+                continue
+            if pl in url or pat in state.body_snippet:
+                return True
         return False
 
     url_success_markers = (
@@ -3131,9 +3190,16 @@ async def run_agent(
             raise LLMBrowserError("视频上传失败，请检查 cookie 或登录态后重试（勿自动连跑）")
         if platform_key == "bilibili":
             await _wait_bilibili_upload_ready(page)
+        # 刚上传完尚未填表/点发布：抖音绝不可能已成功。
+        # 旧逻辑在此用 content/manage 早退 → ok:true/steps:0/history:[] 假成功。
+        if platform_key == "douyin":
+            start_url = page.url or start_url
 
     state = await extract_page_state(page, screenshot_path=None)
-    if _check_success(state, success_patterns, start_url=start_url, platform_key=platform_key):
+    skip_early_success = bool(pre_upload and video_path and platform_key == "douyin")
+    if (not skip_early_success) and _check_success(
+        state, success_patterns, start_url=start_url, platform_key=platform_key
+    ):
         return {"ok": True, "steps": 0, "llm_calls": 0, "url": state.url, "history": []}
 
     if not cfg.use_deterministic and fields:

@@ -395,7 +395,9 @@ def platform_url(platform: str) -> str:
 
 def success_patterns(platform: str) -> list[str]:
     patterns = {
-        "douyin": ["content/manage", "发布成功", "已发布", "作品管理"],
+        # 勿把裸 content/manage 当唯一成功信号（CDP 常驻页易误报）；
+        # 真正判定见 llm_browser_agent._check_success 的 douyin 分支。
+        "douyin": ["enter_from=publish", "发布成功", "已发布"],
         "shipinhao": ["platform/post/list", "发表成功", "已发表", "内容管理"],
         "xiaohongshu": [
             "note-manage",

@@ -100,22 +100,28 @@ async def _goto(page, url: str) -> None:
 
 
 async def _try_click_upload_entry(page) -> None:
-    """新版上传页有时需先点侧栏入口才渲染 file input。
+    """新版上传页有时需先点侧栏「发布/上传」入口才渲染 file input。
 
-    禁止裸点「点击上传 / 上传视频 / 发布视频」等会弹出系统文件框的文案：
-    headed/CDP 下未挂 expect_file_chooser 时，Windows「打开」对话框会一直残留。
+    禁止：
+    - 裸点上传区「点击上传」（会弹 Windows「打开」且无人关）
+    - 点「内容管理」（会跳到作品管理页，被误判为已发布）
     """
-    # 仅点侧栏/导航类入口；上传区内的大按钮会开原生对话框，交给 _wait_file_input 的
-    # set_input_files / expect_file_chooser 路径处理。
+    # 若已在作品管理，先回到上传页，绝不能再点「内容管理」
+    url = (page.url or "").lower()
+    if "content/manage" in url and "content/upload" not in url:
+        try:
+            await _goto(page, "https://creator.douyin.com/creator-micro/content/upload")
+            await asyncio.sleep(1)
+        except Exception:
+            pass
+        return
+
     nav_candidates = (
         page.locator("a, [role='menuitem'], .semi-navigation-item").filter(
             has_text="发布视频"
         ),
         page.locator("a, [role='menuitem'], .semi-navigation-item").filter(
             has_text="上传视频"
-        ),
-        page.locator("a, [role='menuitem'], .semi-navigation-item").filter(
-            has_text="内容管理"
         ),
     )
     for loc in nav_candidates:
