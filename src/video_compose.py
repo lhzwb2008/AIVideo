@@ -1547,6 +1547,37 @@ def mix_bgm(
     return out_path
 
 
+
+def host_intro_enabled() -> bool:
+    """中文默认开数字人片头；英文流水线不开。AIVIDEO_HOST_INTRO=0 可关。"""
+    if _locale_en():
+        return False
+    raw = os.environ.get("AIVIDEO_HOST_INTRO", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _try_host_intro(title: str, *, work_dir: Path, script: dict) -> Path | None:
+    """片头失败时跳过，不影响后段冷开场/正文。"""
+    try:
+        from host_intro import generate_host_intro
+
+        category = categories.resolve_category(script, os.environ.get("AIVIDEO_CATEGORY"))
+        reuse = os.environ.get("AIVIDEO_HOST_INTRO_REUSE_STILL", "0").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        path = generate_host_intro(
+            title,
+            work_dir=work_dir / "host_intro",
+            category=category,
+            reuse_still=reuse,
+        )
+        print(f"[host-intro] 前置数字人片头 {ffprobe_duration(path):.2f}s", file=sys.stderr)
+        return path
+    except Exception as exc:  # noqa: BLE001
+        print(f"[host-intro] 生成失败，跳过片头：{exc}", file=sys.stderr)
+        return None
+
+
 def compose_video(
     script_file: Path,
     *,
@@ -1595,6 +1626,11 @@ def compose_video(
     cover_slide = slides[0] if slides else {}
     subtitle_text = str(cover_slide.get("subtitle") or "").strip()
     cold_open_text = str(script.get("cold_open") or "").strip()
+
+    if host_intro_enabled() and title_text:
+        intro_mp4 = _try_host_intro(title_text, work_dir=work_dir, script=script)
+        if intro_mp4:
+            clips.append(intro_mp4)
 
     ai_cover_rel = script.get("cover_image")
     if ai_cover_rel:
