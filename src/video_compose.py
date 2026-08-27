@@ -23,10 +23,11 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 import categories
-from locale_env import locale_logs_dir, locale_output_dir
+from locale_env import locale_logs_dir, locale_output_dir, host_intro_in_video
 from paths import ROOT, ffmpeg_executable
 from research import load_env
 from tts_client import synthesize as tts_synthesize
+import lecture_pointer
 
 CANVAS_W = 1080
 CANVAS_H = 1920
@@ -1276,6 +1277,84 @@ def _collect_subtitle_entries(
     return entries
 
 
+def _filter_complex_args(fc: str, work_dir: Path) -> list[str]:
+    """长滤镜链写进文件，避免 Windows 命令行截断。"""
+    if os.name == "nt" or len(fc) > 6000:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        script = work_dir / "ffmpeg_fc.txt"
+        script.write_text(fc, encoding="utf-8")
+        arg = str(script.resolve()).replace("\\", "/")
+        return ["-filter_complex_script", arg]
+    return ["-filter_complex", fc]
+
+
+def _pointer_filter_complex(
+    *,
+    pointer_fc: str,
+    phrases: list[str],
+    spans: list[tuple[float, float]],
+    work_dir: Path,
+    burn_drawtext: bool,
+) -> str:
+    """pointer_fc 输出 [ann]；后面接字幕或只转 yuv420p。"""
+    if burn_drawtext:
+        font = font_path()
+        dt: list[str] = []
+        for idx, (phrase, (start, end)) in enumerate(zip(phrases, spans)):
+            tf = _make_phrase_textfile(phrase, work_dir / f"phrase_{idx:02d}.txt", fontsize=SUBTITLE_FONT_SIZE)
+            dt.append(
+                _drawtext_filter(
+                    textfile=tf,
+                    font=font,
+                    fontsize=SUBTITLE_FONT_SIZE,
+                    y=SUBTITLE_Y,
+                    start=start,
+                    end=end,
+                )
+            )
+        body = ",".join(dt + ["format=yuv420p"]) if dt else "format=yuv420p"
+        return f"{pointer_fc};[ann]{body}[vout]"
+    return f"{pointer_fc};[ann]format=yuv420p[vout]"
+
+
+def _encode_pointer_clip(
+    *,
+    base_image: Path,
+    audio_path: Path,
+    extra_inputs: list[Path],
+    filter_complex: str,
+    out_path: Path,
+    work_dir: Path,
+    duration: float,
+    audio_start_s: float = 0.0,
+) -> None:
+    cmd: list[str] = [
+        ffmpeg_executable(), "-y",
+        "-loop", "1", "-framerate", "30", "-i", str(base_image),
+    ]
+    if audio_start_s > 0:
+        cmd += ["-ss", f"{audio_start_s:.3f}", "-i", str(audio_path)]
+    else:
+        cmd += ["-i", str(audio_path)]
+    for extra in extra_inputs:
+        cmd += ["-loop", "1", "-framerate", "30", "-i", str(extra)]
+    cmd += [
+        *_filter_complex_args(filter_complex, work_dir),
+        "-map", "[vout]", "-map", "1:a:0",
+        "-af", "pan=stereo|c0=c0|c1=c0",
+        "-r", "30",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
+        "-shortest",
+        "-t", f"{duration:.3f}",
+        str(out_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg 教鞭合成失败:\n{proc.stderr[-1800:]}")
+
+
 def compose_clip(
     *,
     base_image: Path,
@@ -1285,6 +1364,8 @@ def compose_clip(
     work_dir: Path,
     kenburns_direction: int = 0,
     audio_start_s: float = 0.0,
+    labels: list[str] | None = None,
+    pointer_delay_s: float = 0.0,
 ) -> Path:
     if audio_start_s > 0:
         duration = max(0.05, ffprobe_duration(audio_path) - audio_start_s)
@@ -1296,11 +1377,74 @@ def compose_clip(
 
     work_dir.mkdir(parents=True, exist_ok=True)
     font = font_path()
+    subtitle_entries = _collect_subtitle_entries(phrases, spans)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    pointer_fc: str | None = None
+    extra_inputs: list[Path] = []
+    label_list = [str(t).strip() for t in (labels or []) if str(t).strip()]
+    if lecture_pointer.enabled() and label_list:
+        try:
+            built = lecture_pointer.overlay_filter(
+                canvas_png=base_image,
+                labels=label_list,
+                phrases=phrases,
+                spans=spans,
+                duration=duration,
+                work_dir=work_dir,
+                delay_s=pointer_delay_s,
+            )
+            if built:
+                pointer_fc, extra_inputs = built
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [pointer] 生成失败，回退推镜：{exc}", file=sys.stderr)
+            pointer_fc = None
+            extra_inputs = []
+
+    if pointer_fc:
+        burn_drawtext = not (os.name == "nt" and subtitle_entries)
+        fc = _pointer_filter_complex(
+            pointer_fc=pointer_fc,
+            phrases=phrases,
+            spans=spans,
+            work_dir=work_dir,
+            burn_drawtext=burn_drawtext,
+        )
+        if os.name == "nt" and subtitle_entries:
+            print(f"[compose] Windows ASS subtitles ({len(subtitle_entries)} cues)", file=sys.stderr)
+            temp = work_dir / "_pass1_clip.mp4"
+            _encode_pointer_clip(
+                base_image=base_image,
+                audio_path=audio_path,
+                extra_inputs=extra_inputs,
+                filter_complex=fc,
+                out_path=temp,
+                work_dir=work_dir,
+                duration=duration,
+                audio_start_s=audio_start_s,
+            )
+            ass_path = work_dir / "clip.ass"
+            _write_ass_subtitles(subtitle_entries, ass_path)
+            _burn_ass_on_video(input_mp4=temp, ass_path=ass_path, out_path=out_path)
+            try:
+                temp.unlink()
+            except OSError:
+                pass
+            return out_path
+        _encode_pointer_clip(
+            base_image=base_image,
+            audio_path=audio_path,
+            extra_inputs=extra_inputs,
+            filter_complex=fc,
+            out_path=out_path,
+            work_dir=work_dir,
+            duration=duration,
+            audio_start_s=audio_start_s,
+        )
+        return out_path
 
     video_chain = _kenburns_filter(kenburns_direction, duration)
-    subtitle_entries = _collect_subtitle_entries(phrases, spans)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt" and subtitle_entries:
         print(f"[compose] Windows ASS subtitles ({len(subtitle_entries)} cues)", file=sys.stderr)
         temp = work_dir / "_pass1_clip.mp4"
@@ -1369,6 +1513,40 @@ _XFADE_TRANSITIONS = [
     "wiperight", "fade", "circleopen", "smoothleft",
 ]
 XFADE_DURATION = float(os.environ.get("AIVIDEO_XFADE_DURATION", "0.4"))
+
+
+def concat_audio_files(parts: list[Path], out_path: Path) -> Path:
+    """按顺序拼接口播 mp3。"""
+    files = [p for p in parts if p.is_file()]
+    if not files:
+        raise FileNotFoundError("没有可拼接的音频")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if len(files) == 1:
+        if files[0].resolve() != out_path.resolve():
+            shutil.copy(files[0], out_path)
+        return out_path
+    cmd: list[str] = [ffmpeg_executable(), "-y"]
+    for p in files:
+        cmd += ["-i", str(p)]
+    n = len(files)
+    chains = "".join(
+        f"[{i}:a]aformat=sample_fmts=fltp:sample_rates={TTS_SAMPLE_RATE}:channel_layouts=mono[a{i}];"
+        for i in range(n)
+    )
+    ins = "".join(f"[a{i}]" for i in range(n))
+    cmd += [
+        "-filter_complex",
+        f"{chains}{ins}concat=n={n}:v=0:a=1[a]",
+        "-map", "[a]",
+        "-c:a", "libmp3lame", "-q:a", "4",
+        "-ar", str(TTS_SAMPLE_RATE),
+        "-ac", "1",
+        str(out_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"拼接口播失败:\n{proc.stderr[-1200:]}")
+    return out_path
 
 
 def concat_clips(clips: list[Path], out_path: Path, work_dir: Path) -> Path:
@@ -1550,10 +1728,7 @@ def mix_bgm(
 
 def host_intro_enabled() -> bool:
     """中文默认开数字人片头；英文流水线不开。AIVIDEO_HOST_INTRO=0 可关。"""
-    if _locale_en():
-        return False
-    raw = os.environ.get("AIVIDEO_HOST_INTRO", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    return host_intro_in_video()
 
 
 def _try_host_intro(title: str, *, work_dir: Path, script: dict) -> Path | None:
@@ -1565,11 +1740,16 @@ def _try_host_intro(title: str, *, work_dir: Path, script: dict) -> Path | None:
         reuse = os.environ.get("AIVIDEO_HOST_INTRO_REUSE_STILL", "0").strip().lower() in {
             "1", "true", "yes", "on",
         }
+        flavor = " ".join(
+            str(script.get(k) or "").strip()
+            for k in ("keyword", "theme_cluster", "angle")
+        ).strip()
         path = generate_host_intro(
             title,
             work_dir=work_dir / "host_intro",
             category=category,
             reuse_still=reuse,
+            topic_hint=flavor,
         )
         print(f"[host-intro] 前置数字人片头 {ffprobe_duration(path):.2f}s", file=sys.stderr)
         return path
@@ -1627,10 +1807,12 @@ def compose_video(
     subtitle_text = str(cover_slide.get("subtitle") or "").strip()
     cold_open_text = str(script.get("cold_open") or "").strip()
 
+    used_intro = False
     if host_intro_enabled() and title_text:
         intro_mp4 = _try_host_intro(title_text, work_dir=work_dir, script=script)
         if intro_mp4:
             clips.append(intro_mp4)
+            used_intro = True
 
     ai_cover_rel = script.get("cover_image")
     if ai_cover_rel:
@@ -1643,7 +1825,9 @@ def compose_video(
     else:
         hero_path = locale_logs_dir() / "images" / script_file.stem / "slide_01.png"
     cover_png = work_dir / "cover.png"
-    if cold_open_text:
+    if used_intro:
+        print("[cover] 已有吉祥物片头，跳过旧封面海报", file=sys.stderr)
+    elif cold_open_text:
         print(f"[cold_open] 口播：{cold_open_text}", file=sys.stderr)
         build_cover_png(
             out_path=cover_png,
@@ -1719,14 +1903,29 @@ def compose_video(
         narration = str(slide.get("narration") or "")
         audio_path = work_dir / f"audio_{i:02d}.mp3"
         if not audio_path.is_file():
-            print(f"   TTS …", file=sys.stderr)
+            print("   TTS …", file=sys.stderr)
             tts_synthesize(narration, out_path=audio_path)
         elif not skip_tts:
-            print(f"   TTS …", file=sys.stderr)
+            print("   TTS …", file=sys.stderr)
             tts_synthesize(narration, out_path=audio_path)
+
+        pointer_delay_s = 0.0
+        if used_intro and i == 1 and cold_open_text:
+            audio_cold = work_dir / "audio_cold_open.mp3"
+            if not skip_tts or not audio_cold.is_file():
+                print("   冷开场 TTS …", file=sys.stderr)
+                tts_synthesize(cold_open_text, out_path=audio_cold)
+            if audio_cold.is_file():
+                hooked = work_dir / f"audio_{i:02d}_with_hook.mp3"
+                concat_audio_files([audio_cold, audio_path], hooked)
+                audio_path = hooked
+                narration = f"{cold_open_text}。{narration}" if narration else cold_open_text
+                pointer_delay_s = ffprobe_duration(audio_cold)
+                print(f"  冷开场口播并入第一页漫画 {pointer_delay_s:.2f}s", file=sys.stderr)
 
         clip_path = work_dir / f"clip_{i:02d}.mp4"
         print("   ffmpeg 合成 …", file=sys.stderr)
+        labels = [str(x).strip() for x in (slide.get("on_image_text") or []) if str(x).strip()]
         compose_clip(
             base_image=base_png,
             audio_path=audio_path,
@@ -1734,6 +1933,8 @@ def compose_video(
             out_path=clip_path,
             work_dir=work_dir / f"phrases_{i:02d}",
             kenburns_direction=i - 1,
+            labels=labels,
+            pointer_delay_s=pointer_delay_s,
         )
         clips.append(clip_path)
 

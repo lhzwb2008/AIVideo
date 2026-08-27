@@ -102,6 +102,20 @@ def _http_post(url: str, body: dict[str, Any], *, timeout: float, headers: dict[
     raise RuntimeError(f"重试用尽: {last_err}")
 
 
+def comic_style_prefix(*, kind: str = "panel") -> str:
+    """正文页 / 片头共用的方格纸钢笔色调，避免片头走成 3D 实拍。"""
+    what = "cover" if kind == "cover" else "panel"
+    return (
+        f"Hand-drawn comic explainer {what} on light beige graph paper, vertical portrait 9:16 aspect ratio. "
+        "Black ballpoint pen line drawing, casual manga-narration illustration style, "
+        "with subtle yellow and light purple highlighter accents. "
+        "Crisp clean lines, comfortable amount of empty white space, friendly and educational mood. "
+        "Flat 2D ink doodle only: NOT photorealistic, NOT 3D render, NOT clay, NOT marble statue, "
+        "NOT cinematic lighting, NOT a photograph. "
+        "Palette matches the rest of the video: warm beige paper (#FBF6E4), black ink, yellow highlighter, light purple."
+    )
+
+
 def build_prompt(
     image_prompt: str,
     *,
@@ -114,9 +128,7 @@ def build_prompt(
     """白板手绘漫画口播风：方格纸 + 黑色钢笔线 + 手写注释（中/英由 locale 决定）。"""
     lang = "English" if _is_english() else "Chinese"
     parts: list[str] = [
-        "Hand-drawn comic explainer panel on light beige graph paper, vertical portrait 9:16 aspect ratio.",
-        "Black ballpoint pen line drawing, casual manga-narration illustration style, with subtle yellow and light purple highlighter accents.",
-        "Crisp clean lines, comfortable amount of empty white space, friendly and educational mood.",
+        comic_style_prefix(),
         "Important safe area for Douyin/TikTok UI: keep all meaningful text, logos, page numbers, and icons away from the top 18% of the canvas, the leftmost 8%, the rightmost 12%, and the bottom 25%. Use the middle 58% as the main information area, leaving generous empty graph-paper space above.",
         f"Page layout: {image_prompt.strip()}" if image_prompt.strip() else "",
     ]
@@ -159,8 +171,7 @@ def build_cover_prompt(
     """开场封面海报：方格纸 + 手写大标题 + 简单装饰；标题字必须照搬。"""
     lang = "English" if _is_english() else "Chinese"
     parts: list[str] = [
-        "Hand-drawn comic explainer cover on light beige graph paper, vertical portrait 9:16 aspect ratio.",
-        "Black ballpoint pen line drawing, casual manga-narration illustration style, with subtle yellow and light purple highlighter accents.",
+        comic_style_prefix(kind="cover"),
         f"Composition: a bold handwritten {lang} title fills the middle-upper portion of the page as the visual focal point.",
         f'The big handwritten {lang} title text must read EXACTLY: "{title.strip()}". '
         "Write it large in two lines if needed, with a hand-drawn yellow highlighter swipe underneath the most important keyword.",

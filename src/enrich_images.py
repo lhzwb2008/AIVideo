@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from image_client import build_cover_prompt, build_prompt, generate_image, save_b64_image
-from locale_env import locale_logs_dir
+from locale_env import host_intro_in_video, locale_logs_dir
 from paths import ROOT
 from research import load_env
 
@@ -170,15 +170,21 @@ def enrich_script_file(
         if isinstance(entry, dict) and entry.get("is_cover"):
             prev_cover_fp = str(entry.get("fingerprint") or "") or None
             break
-    # 全屏 AI 封面海报：默认开启（是必要的视觉钩子/封面）。控成本靠减少正文页（AIVIDEO_MAX_SLIDES）。
-    ai_cover_enabled = os.environ.get("AIVIDEO_AI_COVER", "1").lower() in ("1", "true", "yes", "on")
-    cover_task_needed = ai_cover_enabled and bool(title) and (
+    # 封面海报：只在成片会用到时才生图。中文吉祥物片头进成片时封面不进视频，生了浪费 token。
+    ai_cover_wanted = (
+        os.environ.get("AIVIDEO_AI_COVER", "1").lower() in ("1", "true", "yes", "on")
+        and not host_intro_in_video()
+    )
+    cover_task_needed = ai_cover_wanted and bool(title) and (
         force
         or not (cover_path.is_file() and cover_path.stat().st_size > 1024)
         or prev_cover_fp != cover_fp
     )
     cover_meta_entry: dict | None = None
-    if title and ai_cover_enabled and not cover_task_needed:
+    if title and host_intro_in_video():
+        script.pop("cover_image", None)
+        print("  [cover] 跳过生图（吉祥物片头进成片，封面海报不进视频）", file=sys.stderr)
+    elif title and ai_cover_wanted and not cover_task_needed:
         cover_meta_entry = {
             "index": 0,
             "image_path": str(cover_path.relative_to(ROOT)),

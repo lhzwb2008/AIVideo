@@ -100,6 +100,14 @@ def archive_published_dir(date_tag: str, locale: str | None = None) -> Path:
     return p
 
 
+def host_intro_in_video() -> bool:
+    """中文成片默认有吉祥物片头；英文没有。此时封面海报不进视频，也不该再去生图。"""
+    if normalize_locale() == "en":
+        return False
+    raw = os.environ.get("AIVIDEO_HOST_INTRO", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 def latest_output_video(locale: str | None = None) -> Path | None:
     """当前 locale 的 output/{locale}/ 下最新 mp4；兼容旧版 output/ 根目录。"""
     loc_dir = locale_output_dir(locale)
