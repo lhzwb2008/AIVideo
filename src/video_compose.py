@@ -1807,13 +1807,6 @@ def compose_video(
     subtitle_text = str(cover_slide.get("subtitle") or "").strip()
     cold_open_text = str(script.get("cold_open") or "").strip()
 
-    used_intro = False
-    if host_intro_enabled() and title_text:
-        intro_mp4 = _try_host_intro(title_text, work_dir=work_dir, script=script)
-        if intro_mp4:
-            clips.append(intro_mp4)
-            used_intro = True
-
     ai_cover_rel = script.get("cover_image")
     if ai_cover_rel:
         ai_cover_path = Path(ai_cover_rel) if Path(ai_cover_rel).is_absolute() else ROOT / ai_cover_rel
@@ -1825,9 +1818,9 @@ def compose_video(
     else:
         hero_path = locale_logs_dir() / "images" / script_file.stem / "slide_01.png"
     cover_png = work_dir / "cover.png"
-    if used_intro:
-        print("[cover] 已有吉祥物片头，跳过旧封面海报", file=sys.stderr)
-    elif cold_open_text:
+
+    # 老封面海报放在最前，平台首帧就是这张图
+    if cold_open_text:
         print(f"[cold_open] 口播：{cold_open_text}", file=sys.stderr)
         build_cover_png(
             out_path=cover_png,
@@ -1884,6 +1877,11 @@ def compose_video(
             clips.append(cover_mp4)
             print(f"  静音封面 {cover_dur:.2f}s（建议脚本补 cold_open）", file=sys.stderr)
 
+    if host_intro_enabled() and title_text:
+        intro_mp4 = _try_host_intro(title_text, work_dir=work_dir, script=script)
+        if intro_mp4:
+            clips.append(intro_mp4)
+
     for i, slide in enumerate(slides, start=1):
         print(f"[{i}/{total}] 合成单段：{slide.get('chapter_title') or slide.get('headline') or ''}", file=sys.stderr)
 
@@ -1909,20 +1907,6 @@ def compose_video(
             print("   TTS …", file=sys.stderr)
             tts_synthesize(narration, out_path=audio_path)
 
-        pointer_delay_s = 0.0
-        if used_intro and i == 1 and cold_open_text:
-            audio_cold = work_dir / "audio_cold_open.mp3"
-            if not skip_tts or not audio_cold.is_file():
-                print("   冷开场 TTS …", file=sys.stderr)
-                tts_synthesize(cold_open_text, out_path=audio_cold)
-            if audio_cold.is_file():
-                hooked = work_dir / f"audio_{i:02d}_with_hook.mp3"
-                concat_audio_files([audio_cold, audio_path], hooked)
-                audio_path = hooked
-                narration = f"{cold_open_text}。{narration}" if narration else cold_open_text
-                pointer_delay_s = ffprobe_duration(audio_cold)
-                print(f"  冷开场口播并入第一页漫画 {pointer_delay_s:.2f}s", file=sys.stderr)
-
         clip_path = work_dir / f"clip_{i:02d}.mp4"
         print("   ffmpeg 合成 …", file=sys.stderr)
         labels = [str(x).strip() for x in (slide.get("on_image_text") or []) if str(x).strip()]
@@ -1934,7 +1918,6 @@ def compose_video(
             work_dir=work_dir / f"phrases_{i:02d}",
             kenburns_direction=i - 1,
             labels=labels,
-            pointer_delay_s=pointer_delay_s,
         )
         clips.append(clip_path)
 

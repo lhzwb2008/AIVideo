@@ -101,7 +101,7 @@ def archive_published_dir(date_tag: str, locale: str | None = None) -> Path:
 
 
 def host_intro_in_video() -> bool:
-    """中文成片默认有吉祥物片头；英文没有。此时封面海报不进视频，也不该再去生图。"""
+    """中文成片默认有吉祥物片头；英文没有。AIVIDEO_HOST_INTRO=0 可关。"""
     if normalize_locale() == "en":
         return False
     raw = os.environ.get("AIVIDEO_HOST_INTRO", "1").strip().lower()
