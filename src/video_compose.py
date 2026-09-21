@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import os
@@ -27,6 +28,7 @@ from locale_env import locale_logs_dir, locale_output_dir, host_intro_in_video
 from paths import ROOT, ffmpeg_executable
 from research import load_env
 from tts_client import synthesize as tts_synthesize
+import fast_cut
 import lecture_pointer
 
 CANVAS_W = 1080
@@ -256,10 +258,25 @@ def _brand_badge_text() -> str:
 
 def font_path() -> str:
     p = os.environ.get("AIVIDEO_FONT", "assets/HiraginoSansGB.ttc").strip()
-    fp = Path(p) if Path(p).is_absolute() else ROOT / p
-    if not fp.is_file():
-        raise RuntimeError(f"字体不存在: {fp}（设置 AIVIDEO_FONT）")
-    return str(fp)
+    candidates = []
+    if p:
+        candidates.append(Path(p) if Path(p).is_absolute() else ROOT / p)
+    candidates.extend(
+        [
+            ROOT / "assets" / "HiraginoSansGB.ttc",
+            Path("/System/Library/Fonts/Hiragino Sans GB.ttc"),
+            Path("/System/Library/Fonts/STHeiti Medium.ttc"),
+        ]
+    )
+    seen: set[str] = set()
+    for fp in candidates:
+        key = str(fp)
+        if key in seen:
+            continue
+        seen.add(key)
+        if fp.is_file():
+            return str(fp)
+    raise RuntimeError("找不到中文字体（设置 AIVIDEO_FONT 或安装 Hiragino Sans GB）")
 
 
 def drawtext_font_path() -> str:
@@ -981,12 +998,48 @@ def allocate_phrase_times(phrases: list[str], total_duration: float) -> list[tup
     return spans
 
 
+def ffprobe_executable() -> str:
+    custom = os.environ.get("FFPROBE_PATH", "").strip()
+    if custom and Path(custom).is_file():
+        return custom
+    ffmpeg = Path(ffmpeg_executable())
+    sibling = ffmpeg.with_name("ffprobe" + ffmpeg.suffix)
+    if sibling.is_file():
+        return str(sibling)
+    found = shutil.which("ffprobe")
+    return found or "ffprobe"
+
+
 def ffprobe_duration(path: Path) -> float:
-    out = subprocess.check_output([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", str(path),
-    ]).decode().strip()
-    return float(out)
+    probe = ffprobe_executable()
+    try:
+        out = subprocess.check_output(
+            [
+                probe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        return float(out)
+    except (FileNotFoundError, subprocess.CalledProcessError, ValueError):
+        pass
+    proc = subprocess.run(
+        [ffmpeg_executable(), "-i", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    blob = (proc.stderr or "") + (proc.stdout or "")
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", blob)
+    if not m:
+        raise RuntimeError(f"无法读取时长: {path}")
+    hours, minutes, seconds = int(m.group(1)), int(m.group(2)), float(m.group(3))
+    return hours * 3600 + minutes * 60 + seconds
 
 
 def _cold_open_zoompan_filter(duration: float, fps: int = 30) -> str:
@@ -1247,19 +1300,24 @@ def _encode_still_with_audio(
     else:
         cmd += ["-i", str(audio_path)]
     cmd += [
+        "-filter_complex_threads", "1",
         "-vf", vf_chain,
         "-af", "pan=stereo|c0=c0|c1=c0",
         "-r", "30",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-threads", "2",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
         "-shortest",
         "-t", f"{duration:.3f}",
         str(out_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg 视频轨合成失败:\n{proc.stderr[-2000:]}")
+    _run_ffmpeg(
+        cmd,
+        log_path=out_path.with_suffix(".ffmpeg.log"),
+        timeout=_ffmpeg_timeout(duration),
+        err_label="ffmpeg 视频轨合成失败",
+    )
 
 
 def _collect_subtitle_entries(
@@ -1286,6 +1344,33 @@ def _filter_complex_args(fc: str, work_dir: Path) -> list[str]:
         arg = str(script.resolve()).replace("\\", "/")
         return ["-filter_complex_script", arg]
     return ["-filter_complex", fc]
+
+
+def _ffmpeg_timeout(duration: float) -> float:
+    """单段编码超时：卡住时杀掉，避免 stderr 把内存打爆。"""
+    return min(240.0, max(45.0, float(duration) * 10.0 + 30.0))
+
+
+def _run_ffmpeg(cmd: list[str], *, log_path: Path, timeout: float, err_label: str) -> None:
+    """stderr 落盘、限时；禁止 capture_output（ffmpeg 卡在 frame=0 时日志会无限涨）。"""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    # 去掉进度刷屏，日志只留错误
+    if "-nostats" not in cmd:
+        cmd = [cmd[0], "-hide_banner", "-nostats", "-loglevel", "error", *cmd[1:]]
+    try:
+        with log_path.open("wb") as logf:
+            proc = subprocess.run(
+                cmd, stdout=subprocess.DEVNULL, stderr=logf, timeout=timeout,
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{err_label} 超时 {timeout:.0f}s（已杀掉，防内存撑爆）") from exc
+    if proc.returncode != 0:
+        tail = ""
+        try:
+            tail = log_path.read_text(encoding="utf-8", errors="replace")[-1800:]
+        except OSError:
+            pass
+        raise RuntimeError(f"{err_label}:\n{tail}")
 
 
 def _pointer_filter_complex(
@@ -1339,20 +1424,166 @@ def _encode_pointer_clip(
     for extra in extra_inputs:
         cmd += ["-loop", "1", "-framerate", "30", "-i", str(extra)]
     cmd += [
+        "-filter_complex_threads", "1",
         *_filter_complex_args(filter_complex, work_dir),
         "-map", "[vout]", "-map", "1:a:0",
         "-af", "pan=stereo|c0=c0|c1=c0",
         "-r", "30",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-threads", "2",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
         "-shortest",
         "-t", f"{duration:.3f}",
         str(out_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg 教鞭合成失败:\n{proc.stderr[-1800:]}")
+    _run_ffmpeg(
+        cmd,
+        log_path=work_dir / "ffmpeg_encode.log",
+        timeout=_ffmpeg_timeout(duration),
+        err_label="ffmpeg 教鞭合成失败",
+    )
+
+
+def _compose_clip_fast(
+    *,
+    base_image: Path,
+    audio_path: Path,
+    out_path: Path,
+    work_dir: Path,
+    duration: float,
+    audio_start_s: float,
+    phrases: list[str],
+    spans: list[tuple[float, float]],
+    subtitle_entries: list[tuple[str, float, float]],
+    pointer_fc: str | None,
+    extra_inputs: list[Path],
+    steps: list[dict],
+    hud_items: list[dict],
+    kenburns_direction: int,
+) -> Path:
+    """快切版单页：先编码底图+标注+推镜+字幕，再单独叠 HUD，避免一条滤镜链撑爆内存。"""
+    chains: list[str] = []
+    if pointer_fc:
+        chains.append(pointer_fc)
+    else:
+        chains.append(f"[0:v]{_kenburns_filter(kenburns_direction, duration)}[ann]")
+    cur = "ann"
+    # 推镜用 crop(t) 会在 ffmpeg 初始化时 t=nan 直接失败；标注箭头已有运动，先不做 crop。
+    print(f"  [punch] 跳过 crop 推镜（{len(steps)} 个要点仍有箭头）", file=sys.stderr)
+
+    burn_drawtext = not (os.name == "nt" and subtitle_entries)
+    body: list[str] = []
+    if burn_drawtext:
+        font = font_path()
+        for idx, (phrase, (start, end)) in enumerate(zip(phrases, spans)):
+            tf = _make_phrase_textfile(phrase, work_dir / f"phrase_{idx:02d}.txt", fontsize=SUBTITLE_FONT_SIZE)
+            body.append(
+                _drawtext_filter(
+                    textfile=tf, font=font, fontsize=SUBTITLE_FONT_SIZE,
+                    y=SUBTITLE_Y, start=start, end=end,
+                )
+            )
+    body.append("format=yuv420p")
+    chains.append(f"[{cur}]{','.join(body)}[vout]")
+    fc = ";".join(chains)
+
+    need_hud = bool(hud_items or steps)
+    pass1 = work_dir / "_pass1_fast.mp4" if need_hud else out_path
+    _encode_pointer_clip(
+        base_image=base_image, audio_path=audio_path, extra_inputs=extra_inputs,
+        filter_complex=fc, out_path=pass1, work_dir=work_dir,
+        duration=duration, audio_start_s=audio_start_s,
+    )
+
+    pops = fast_cut.number_pops(steps, work_dir) if steps else []
+    if pops:
+        print(f"  [pop] 数字弹出 {len(pops)} 个", file=sys.stderr)
+    items = list(hud_items) + pops
+    if not items:
+        return out_path
+
+    sheet = fast_cut.build_hud_sheet(items, work_dir / "hud_sheet.png")
+    if not sheet:
+        if pass1 != out_path:
+            shutil.move(str(pass1), str(out_path))
+        return out_path
+    hud_chains = fast_cut.hud_overlays(
+        items, sheet_input_index=1, in_label="0:v", out_label="hud",
+    )
+    hud_fc = ";".join(hud_chains + ["[hud]format=yuv420p[vout]"])
+    hud_script = work_dir / "ffmpeg_hud.txt"
+    hud_script.write_text(hud_fc, encoding="utf-8")
+    cmd = [
+        ffmpeg_executable(), "-y",
+        "-i", str(pass1),
+        "-loop", "1", "-framerate", "30", "-i", str(sheet),
+        "-filter_complex_threads", "1",
+        "-filter_complex_script", str(hud_script.resolve()).replace("\\", "/"),
+        "-map", "[vout]", "-map", "0:a:0",
+        "-r", "30",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-threads", "2",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
+        "-shortest",
+        "-t", f"{duration:.3f}",
+        str(out_path),
+    ]
+    _run_ffmpeg(
+        cmd,
+        log_path=work_dir / "ffmpeg_hud.log",
+        timeout=_ffmpeg_timeout(duration),
+        err_label="ffmpeg HUD 叠层失败",
+    )
+    try:
+        pass1.unlink()
+    except OSError:
+        pass
+    return out_path
+
+
+def compose_cold_open_two_beats(
+    *,
+    hook_number: str,
+    cold_open_text: str,
+    hero_image: Path | None,
+    audio_path: Path,
+    out_path: Path,
+    work_dir: Path,
+    cover_out: Path,
+) -> float:
+    """两拍冷开场：满屏数字卡（首帧=封面）→ 物体图 + 两行钩子。无底栏字幕（字已在画面上）。"""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    duration = cold_open_duration_s(cold_open_text, audio_path)
+    lines = fast_cut.hook_lines(cold_open_text)
+    if len(lines) >= 2:
+        t_a = allocate_phrase_times(lines, duration)[0][1]
+    else:
+        t_a = duration * 0.45
+    t_a = min(max(t_a, 1.0), max(1.0, duration - 0.8))
+    t_b = max(0.6, duration - t_a)
+
+    beat_a = fast_cut.render_hook_number_card(
+        hook_number=hook_number, cold_open=cold_open_text, out_path=work_dir / "beat_a.png",
+    )
+    shutil.copyfile(beat_a, cover_out)
+    beat_b = fast_cut.render_hook_hero_frame(
+        cold_open=cold_open_text, hero_image=hero_image, out_path=work_dir / "beat_b.png",
+    )
+    a_mp4 = work_dir / "cold_a.mp4"
+    b_mp4 = work_dir / "cold_b.mp4"
+    _encode_still_with_audio(
+        image_path=beat_a, audio_path=audio_path, out_path=a_mp4,
+        vf_chain=f"scale={CANVAS_W}:{CANVAS_H}:flags=fast_bilinear,setsar=1", duration=t_a,
+    )
+    _encode_still_with_audio(
+        image_path=beat_b, audio_path=audio_path, out_path=b_mp4,
+        vf_chain=f"scale={CANVAS_W}:{CANVAS_H}:flags=fast_bilinear,setsar=1", duration=t_b, audio_start_s=t_a,
+    )
+    _concat_clips_hardcut([a_mp4, b_mp4], out_path, work_dir)
+    print(f"  两拍：数字卡 {t_a:.2f}s → 物体图 {t_b:.2f}s", file=sys.stderr)
+    return t_a + t_b
 
 
 def compose_clip(
@@ -1366,6 +1597,8 @@ def compose_clip(
     audio_start_s: float = 0.0,
     labels: list[str] | None = None,
     pointer_delay_s: float = 0.0,
+    myth: str = "",
+    truth: str = "",
 ) -> Path:
     if audio_start_s > 0:
         duration = max(0.05, ffprobe_duration(audio_path) - audio_start_s)
@@ -1380,8 +1613,20 @@ def compose_clip(
     subtitle_entries = _collect_subtitle_entries(phrases, spans)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # 快切版：页首「以为 → 叉掉 → 其实」卡，期间不推镜不画箭头
+    fast = fast_cut.enabled()
+    hud_items: list[dict] = []
+    if fast and myth.strip() and truth.strip():
+        ritual = fast_cut.ritual_duration(duration)
+        hud_items = fast_cut.render_myth_assets(
+            myth=myth, truth=truth, work_dir=work_dir, ritual_end=ritual + 0.3,
+        )
+        pointer_delay_s = max(pointer_delay_s, ritual)
+        print(f"  [myth] 以为「{myth}」→ 叉掉 → 其实「{truth}」（{ritual:.1f}s）", file=sys.stderr)
+
     pointer_fc: str | None = None
     extra_inputs: list[Path] = []
+    steps: list[dict] = []
     label_list = [str(t).strip() for t in (labels or []) if str(t).strip()]
     if lecture_pointer.enabled() and label_list:
         try:
@@ -1393,13 +1638,33 @@ def compose_clip(
                 duration=duration,
                 work_dir=work_dir,
                 delay_s=pointer_delay_s,
+                compact=fast,
             )
             if built:
-                pointer_fc, extra_inputs = built
+                pointer_fc, extra_inputs, steps = built
         except Exception as exc:  # noqa: BLE001
             print(f"  [pointer] 生成失败，回退推镜：{exc}", file=sys.stderr)
             pointer_fc = None
             extra_inputs = []
+            steps = []
+
+    if fast:
+        return _compose_clip_fast(
+            base_image=base_image,
+            audio_path=audio_path,
+            out_path=out_path,
+            work_dir=work_dir,
+            duration=duration,
+            audio_start_s=audio_start_s,
+            phrases=phrases,
+            spans=spans,
+            subtitle_entries=subtitle_entries,
+            pointer_fc=pointer_fc,
+            extra_inputs=extra_inputs,
+            steps=steps,
+            hud_items=hud_items,
+            kenburns_direction=kenburns_direction,
+        )
 
     if pointer_fc:
         burn_drawtext = not (os.name == "nt" and subtitle_entries)
@@ -1550,11 +1815,13 @@ def concat_audio_files(parts: list[Path], out_path: Path) -> Path:
 
 
 def concat_clips(clips: list[Path], out_path: Path, work_dir: Path) -> Path:
-    """先尝试 xfade + acrossfade 软转场；失败则回退到硬切 concat。"""
+    """快切版直接硬切（xfade 会同时解码全部片段，内存峰值过高）。"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if len(clips) == 1:
         shutil.copy(clips[0], out_path)
         return out_path
+    if fast_cut.enabled():
+        return _concat_clips_hardcut(clips, out_path, work_dir)
     try:
         return _concat_clips_xfade(clips, out_path)
     except Exception as exc:  # noqa: BLE001
@@ -1634,16 +1901,20 @@ def _concat_clips_hardcut(clips: list[Path], out_path: Path, work_dir: Path) -> 
     cmd = [
         ffmpeg_executable(), "-y", "-f", "concat", "-safe", "0",
         "-i", str(list_file),
-        "-c:v", "libx264", "-preset", "medium",
+        "-c:v", "libx264", "-preset", "veryfast",
+        "-threads", "2",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k", "-ar", str(TTS_SAMPLE_RATE), "-ac", "2",
         "-movflags", "+faststart",
         *_output_jitter_args(),
         str(out_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg concat 失败:\n{proc.stderr[-1500:]}")
+    _run_ffmpeg(
+        cmd,
+        log_path=work_dir / "ffmpeg_concat.log",
+        timeout=180.0,
+        err_label="ffmpeg concat 失败",
+    )
     return out_path
 
 
@@ -1719,15 +1990,17 @@ def mix_bgm(
         "-shortest",
         str(out_path),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120,
+    )
     if proc.returncode != 0:
-        raise RuntimeError(f"BGM 混音失败:\n{proc.stderr[-1800:]}")
+        raise RuntimeError("BGM 混音失败")
     return out_path
 
 
 
 def host_intro_enabled() -> bool:
-    """中文默认开数字人片头；英文流水线不开。AIVIDEO_HOST_INTRO=0 可关。"""
+    """中文吉祥物自我介绍片头；默认关。AIVIDEO_HOST_INTRO=1 可开。"""
     return host_intro_in_video()
 
 
@@ -1819,15 +2092,40 @@ def compose_video(
         hero_path = locale_logs_dir() / "images" / script_file.stem / "slide_01.png"
     cover_png = work_dir / "cover.png"
 
-    # 老封面海报放在最前，平台首帧就是这张图
-    if cold_open_text:
+    hook_number = str(script.get("hook_number") or "").strip()
+    hero_for_hook: Path | None = None
+    if ai_cover_path.is_file():
+        hero_for_hook = ai_cover_path
+    elif hero_path.is_file():
+        hero_for_hook = hero_path
+
+    # 快切版两拍冷开场：首帧满屏数字卡（=封面）→ 物体图 + 两行钩子大字
+    if cold_open_text and hook_number and fast_cut.enabled():
+        print(f"[cold_open] 两拍：数字卡「{hook_number}」→ 钩子「{cold_open_text}」", file=sys.stderr)
+        audio_cold = work_dir / "audio_cold_open.mp3"
+        if not skip_tts or not audio_cold.is_file():
+            print("   冷开场 TTS …", file=sys.stderr)
+            tts_synthesize(cold_open_text, out_path=audio_cold)
+        cold_mp4 = work_dir / "clip_00_cold_open.mp4"
+        dur = compose_cold_open_two_beats(
+            hook_number=hook_number,
+            cold_open_text=cold_open_text,
+            hero_image=hero_for_hook,
+            audio_path=audio_cold,
+            out_path=cold_mp4,
+            work_dir=work_dir / "cold_two_beats",
+            cover_out=cover_png,
+        )
+        clips.append(cold_mp4)
+        print(f"  冷开场 {dur:.2f}s", file=sys.stderr)
+    # 旧版首帧：冷开场大字钩子压在物体示意图上（平台封面=这张图）
+    elif cold_open_text:
         print(f"[cold_open] 口播：{cold_open_text}", file=sys.stderr)
-        build_cover_png(
+        render_cold_open_frame(
+            cold_open=cold_open_text,
             out_path=cover_png,
-            title_text=title_text,
-            subtitle_text=subtitle_text,
-            ai_cover_path=ai_cover_path,
-            hero_path=hero_path,
+            hero_image=hero_for_hook,
+            title="",
         )
         subtitle_delay_s = cover_duration_s()
         fx_mode = pick_cold_open_fx_mode(script_file.stem)
@@ -1837,12 +2135,12 @@ def compose_video(
             fx_note = f"动效 {fx_mode}"
         if subtitle_delay_s > 0:
             print(
-                f"  封面保持原标题样式；前 {subtitle_delay_s:.2f}s 画面动效无字幕，"
-                f"之后底部分句字幕跟读（{fx_note}）",
+                f"  开场用大字钩子；前 {subtitle_delay_s:.2f}s 无底栏字幕（钩子已在画面上），"
+                f"之后底部分句跟读（{fx_note}）",
                 file=sys.stderr,
             )
         else:
-            print(f"  封面保持原标题样式，底部分句字幕跟读（{fx_note}）", file=sys.stderr)
+            print(f"  开场用大字钩子，底部分句字幕跟读（{fx_note}）", file=sys.stderr)
         audio_cold = work_dir / "audio_cold_open.mp3"
         cold_phrase_dir = work_dir / "cold_phrases"
         if not skip_tts or not audio_cold.is_file():
@@ -1918,8 +2216,11 @@ def compose_video(
             work_dir=work_dir / f"phrases_{i:02d}",
             kenburns_direction=i - 1,
             labels=labels,
+            myth=str(slide.get("myth") or ""),
+            truth=str(slide.get("truth") or ""),
         )
         clips.append(clip_path)
+        gc.collect()
 
     try:
         outro_clip = ensure_outro_clip(script_stem=script_file.stem)

@@ -167,32 +167,25 @@ def build_cover_prompt(
     subtitle: str = "",
     keyword: str = "",
     doodle_hint: str = "",
+    hook: str = "",
 ) -> str:
-    """开场封面海报：方格纸 + 手写大标题 + 简单装饰；标题字必须照搬。"""
-    lang = "English" if _is_english() else "Chinese"
+    """开场示意图：巨大生活物体 + 黄荧光笔打叉；长标题由合成阶段叠大字，这里不要抄满句。"""
+    visual = (doodle_hint or hook or keyword or title).strip()
     parts: list[str] = [
         comic_style_prefix(kind="cover"),
-        f"Composition: a bold handwritten {lang} title fills the middle-upper portion of the page as the visual focal point.",
-        f'The big handwritten {lang} title text must read EXACTLY: "{title.strip()}". '
-        "Write it large in two lines if needed, with a hand-drawn yellow highlighter swipe underneath the most important keyword.",
+        "Composition: ONE giant everyday object or a two-panel before/after doodle fills the middle of the page.",
+        "Draw a thick yellow highlighter X or slash across the wrong/old idea.",
+        "Examples of objects: phone, electricity bill, paycheck card, gold jewelry, oil drum, grocery basket, apartment key.",
+        "Do NOT write a long question title or paragraph. At most 2-6 handwritten characters as a tiny doodle label on the object.",
+        "Bottom 28% of the canvas must stay empty graph paper (no drawing, no text) for a later caption box.",
+        "Plenty of empty beige graph paper around the object. High contrast ink, instantly readable at a glance.",
     ]
-    if subtitle.strip():
+    if visual:
         parts.append(
-            f'Below the title, a smaller handwritten {lang} subtitle reads EXACTLY: "{subtitle.strip()}". '
-            "Subtitle is roughly 40% the size of the title, in plain pen, no highlight."
+            f"The object/scene should visually match this idea (do not letter the whole sentence): {visual}."
         )
-    parts.append(
-        "Around the title, sparse minimal hand-drawn doodles that hint at the topic — small icons, arrows, "
-        "question marks, simple sketches. Plenty of empty graph paper space to breathe."
-    )
-    if doodle_hint.strip():
-        parts.append(f"Doodle hint: {doodle_hint.strip()}.")
-    elif keyword.strip():
-        parts.append(f"Doodles should loosely reference the topic keyword: {keyword.strip()}.")
-    parts.append(
-        "Do NOT add any other text besides the exact title and subtitle above. "
-        "Spelling must match exactly."
-    )
+    if subtitle.strip() and subtitle.strip() != visual:
+        parts.append(f"(Conceptual theme, do not render as text: {subtitle.strip()})")
     parts.append("No frames, no borders, no watermarks, no signatures, no logos, no photographic elements.")
     return " ".join(p for p in parts if p)
 

@@ -49,8 +49,11 @@ def sau_python() -> Path:
 
 def script_argv(stem: str, *args: str | Path) -> list[str]:
     parts = [str(a) for a in args]
-    if sys.platform == "win32" and stem in _SCRIPT_MAP:
+    if stem in _SCRIPT_MAP:
         module, use_sau = _SCRIPT_MAP[stem]
         py = sau_python() if use_sau else main_python()
         return [str(py), str(ROOT / "src" / module), *parts]
-    return [str(ROOT / "scripts" / f"{stem}.sh"), *parts]
+    sh = ROOT / "scripts" / f"{stem}.sh"
+    if sh.is_file():
+        return [str(sh), *parts]
+    raise FileNotFoundError(f"未知脚本入口: {stem}")

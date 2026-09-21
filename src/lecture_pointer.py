@@ -543,8 +543,12 @@ def overlay_filter(
     duration: float,
     work_dir: Path,
     delay_s: float = 0.0,
-) -> tuple[str, list[Path]] | None:
-    """圈/线贴着文字框；短闪光箭头跟着画。"""
+    compact: bool = False,
+) -> tuple[str, list[Path], list[dict]] | None:
+    """圈/线贴着文字框；短闪光箭头跟着画。返回 (filter_complex 到 [ann], 额外输入图, 要点时段)。
+
+    compact=True：yuv420p、不叠闪光粒子，避免和 HUD 叠在同一条滤镜链里把内存打爆。
+    """
     labels = [str(t).strip() for t in labels if str(t).strip()]
     if not labels:
         return None
@@ -578,7 +582,7 @@ def overlay_filter(
             y = int(round(cy - ay))
             steps.append({
                 "kind": kind, "t0": t0, "t1": t1, "x": x, "y": y,
-                "cx": cx, "cy": cy, "rx": rx, "ry": ry,
+                "cx": cx, "cy": cy, "rx": rx, "ry": ry, "label": text,
             })
         else:
             length = int(min(380, max(48, bw + 12)))
@@ -587,18 +591,21 @@ def overlay_filter(
             y = int(round(cy + bh / 2 + 6 - ay))
             steps.append({
                 "kind": kind, "t0": t0, "t1": t1, "x": x, "y": y,
-                "length": length, "line_y": y + ay,
+                "length": length, "line_y": y + ay, "cx": cx, "cy": cy, "label": text,
             })
         extra.append(mark)
         bits.append(f"{'圈' if kind == 'circle' else '划'}「{text}」")
 
     extra.append(ptr_path)
-    extra.append(spark_path)
+    if not compact:
+        extra.append(spark_path)
     n = len(steps)
     ptr_in = n + 2
     spark_in = n + 3
+    pix = "yuv420p" if compact else "yuv444p"
+    ov = "yuv420" if compact else "auto"
     chains = [
-        f"[0:v]scale={CANVAS_W}:{CANVAS_H}:flags=neighbor,fps=30,setsar=1,format=yuv444p[v0]"
+        f"[0:v]scale={CANVAS_W}:{CANVAS_H}:flags=neighbor,fps=30,setsar=1,format={pix}[v0]"
     ]
     for hi, st in enumerate(steps):
         inp = hi + 2
@@ -614,20 +621,23 @@ def overlay_filter(
         else:
             chains.append(f"[{inp}:v]format=rgba[{src}]")
         chains.append(
-            f"[{prev}][{src}]overlay=x={x}:y={y}:enable='between(t\\,{t0:.3f}\\,{t1:.3f})':format=auto[{nxt}]"
+            f"[{prev}][{src}]overlay=x={x}:y={y}:enable='between(t\\,{t0:.3f}\\,{t1:.3f})':format={ov}[{nxt}]"
         )
 
     marks_out = f"v{n}"
     chains.append(f"[{ptr_in}:v]format=rgba[ptrsrc]")
-    chains.append(sparkle_modulate(f"{spark_in}:v", "spksrc"))
+    if not compact:
+        chains.append(sparkle_modulate(f"{spark_in}:v", "spksrc"))
     if n == 1:
         chains.append("[ptrsrc]format=rgba[p0]")
-        chains.append("[spksrc]format=rgba[s0]")
+        if not compact:
+            chains.append("[spksrc]format=rgba[s0]")
     else:
         plabs = "".join(f"[p{i}]" for i in range(n))
-        slabs = "".join(f"[s{i}]" for i in range(n))
         chains.append(f"[ptrsrc]split={n}{plabs}")
-        chains.append(f"[spksrc]split={n}{slabs}")
+        if not compact:
+            slabs = "".join(f"[s{i}]" for i in range(n))
+            chains.append(f"[spksrc]split={n}{slabs}")
 
     def _tip_xy(st: dict) -> tuple[str, str]:
         t0 = st["t0"]
@@ -646,30 +656,32 @@ def overlay_filter(
 
     for hi, st in enumerate(steps):
         prev = marks_out if hi == 0 else f"a{hi - 1}"
-        nxt = f"a{hi}"
+        last_ptr = compact and hi == n - 1
+        nxt = "ann" if last_ptr else f"a{hi}"
         t0, t1 = st["t0"], st["t1"]
         tx, ty = _tip_xy(st)
         chains.append(
             f"[{prev}][p{hi}]overlay=x='{tx}-{tip_x}+{POINTER_BOB_X}':"
             f"y='{ty}-{tip_y}+{POINTER_BOB_Y}':"
-            f"enable='between(t\\,{t0:.3f}\\,{t1:.3f})':format=auto[{nxt}]"
+            f"enable='between(t\\,{t0:.3f}\\,{t1:.3f})':format={ov}[{nxt}]"
         )
 
-    for hi, st in enumerate(steps):
-        prev = f"a{n - 1}" if hi == 0 else f"k{hi - 1}"
-        nxt = "ann" if hi == n - 1 else f"k{hi}"
-        t0, t1 = st["t0"], st["t1"]
-        tx, ty = _tip_xy(st)
-        chains.append(
-            f"[{prev}][s{hi}]overlay=x='{tx}+{POINTER_BOB_X}-W/2':"
-            f"y='{ty}+{POINTER_BOB_Y}-H/2':"
-            f"enable='between(t\\,{t0:.3f}\\,{t1:.3f})':format=auto[{nxt}]"
-        )
+    if not compact:
+        for hi, st in enumerate(steps):
+            prev = f"a{n - 1}" if hi == 0 else f"k{hi - 1}"
+            nxt = "ann" if hi == n - 1 else f"k{hi}"
+            t0, t1 = st["t0"], st["t1"]
+            tx, ty = _tip_xy(st)
+            chains.append(
+                f"[{prev}][s{hi}]overlay=x='{tx}+{POINTER_BOB_X}-W/2':"
+                f"y='{ty}+{POINTER_BOB_Y}-H/2':"
+                f"enable='between(t\\,{t0:.3f}\\,{t1:.3f})':format={ov}[{nxt}]"
+            )
 
     print(f"  [pointer] 闪光箭头：{' '.join(bits)}", flush=True)
     if os.environ.get("AIVIDEO_LECTURE_POINTER_DEBUG", "").strip() in {"1", "true", "yes", "on"}:
         annotate_debug(canvas_png, located, work_dir / "pointer_debug.png")
-    return ";".join(chains), extra
+    return ";".join(chains), extra, steps
 
 
 def annotate_debug(

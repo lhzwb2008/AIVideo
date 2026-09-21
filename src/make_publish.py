@@ -22,6 +22,7 @@ from cursor_daily_topics import (
     SLOT_LABEL,
     build_cursor_topic_research,
     discover_cursor_topics,
+    heat_first_enabled,
 )
 from paths import ROOT
 from publish_pipeline import log, process_topic, recover_missing_forum_packs
@@ -105,6 +106,8 @@ def main() -> int:
         log("调研：Opus 动态选题 + Cursor 科普写稿 | 改编：Opus 深读+短视频脚本")
     else:
         log("调研：Cursor Cloud Agent 联网写稿 | 改编：Opus 深读+短视频脚本")
+        if heat_first_enabled():
+            log("选题：热度优先（钱包/反常/监管过关才做），槽位只作栏目色")
 
     run_start = time.time()
     made: list[dict] = []
@@ -140,6 +143,8 @@ def main() -> int:
                 made.append({"slot": slot, "title_hint": title_hint, "draft": str(out)})
                 continue
 
+            if article.get("category"):
+                topic["category"] = article["category"]
             result = process_topic(
                 index,
                 target=target,

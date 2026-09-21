@@ -101,11 +101,11 @@ def archive_published_dir(date_tag: str, locale: str | None = None) -> Path:
 
 
 def host_intro_in_video() -> bool:
-    """中文成片默认有吉祥物片头；英文没有。AIVIDEO_HOST_INTRO=0 可关。"""
+    """中文吉祥物自我介绍片头；默认关。AIVIDEO_HOST_INTRO=1 可开。"""
     if normalize_locale() == "en":
         return False
-    raw = os.environ.get("AIVIDEO_HOST_INTRO", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    raw = os.environ.get("AIVIDEO_HOST_INTRO", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def latest_output_video(locale: str | None = None) -> Path | None:
