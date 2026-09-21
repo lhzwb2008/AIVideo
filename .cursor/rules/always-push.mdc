@@ -1,0 +1,13 @@
+---
+description: 提交后默认 push 到远程
+alwaysApply: true
+---
+
+# 提交后默认 push
+
+用户要求提交后**默认 push**，不必再问。
+
+- 用户说「提交」时：按仓库规范 commit，然后立刻 `git push origin HEAD`（当前分支已跟踪远程时即可）。
+- 新分支：`git push -u origin HEAD`。
+- 不要 force push 到 `main`/`master`。
+- 不要把 `.env`、凭证、密钥推进远程。
