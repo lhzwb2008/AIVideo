@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""中文流水线：工作日新闻槽位 / 周末科普 → Opus 深读+改编 → 生图合成发布。
+"""中文流水线：工作日五槽位新闻 / 周末三槽位科普 → Opus 深读+改编 → 生图合成发布。
 
 工作日固定顺序（日更默认跳过 A股收盘概述）：
   A股热点板块 → 国内财经 → AI 热点 → 世界财经
@@ -22,7 +22,6 @@ from cursor_daily_topics import (
     active_slot_order,
     build_cursor_topic_research,
     discover_cursor_topics,
-    heat_first_enabled,
 )
 from paths import ROOT
 from publish_pipeline import log, process_topic, recover_missing_forum_packs
@@ -69,7 +68,7 @@ def main() -> int:
     mode_desc = (
         "周末科普教育（基础/量化/估值）"
         if weekend
-        else "工作日新闻槽位"
+        else "工作日五槽位新闻"
     )
     parser = argparse.ArgumentParser(
         description=f"AI财知道：{mode_desc} → Opus 改编 → 发布"
@@ -106,8 +105,6 @@ def main() -> int:
         log("调研：Opus 动态选题 + Cursor 科普写稿 | 改编：Opus 深读+短视频脚本")
     else:
         log("调研：Cursor Cloud Agent 联网写稿 | 改编：Opus 深读+短视频脚本")
-        if heat_first_enabled():
-            log("选题：热度优先（钱包/反常/监管过关才做），槽位只作栏目色")
 
     run_start = time.time()
     made: list[dict] = []
@@ -143,8 +140,6 @@ def main() -> int:
                 made.append({"slot": slot, "title_hint": title_hint, "draft": str(out)})
                 continue
 
-            if article.get("category"):
-                topic["category"] = article["category"]
             result = process_topic(
                 index,
                 target=target,

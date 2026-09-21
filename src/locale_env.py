@@ -79,9 +79,9 @@ def archive_published_dir(date_tag: str, locale: str | None = None) -> Path:
 
 
 def host_intro_in_video() -> bool:
-    """吉祥物自我介绍片头；默认关。"""
-    raw = os.environ.get("AIVIDEO_HOST_INTRO", "0").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    """吉祥物自我介绍片头；默认开，AIVIDEO_HOST_INTRO=0 可关。"""
+    raw = os.environ.get("AIVIDEO_HOST_INTRO", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def latest_output_video(locale: str | None = None) -> Path | None:

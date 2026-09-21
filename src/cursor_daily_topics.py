@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cursor Cloud Agent 工作日新闻槽位：联网调研 → 长文草稿 → Opus 深读 → 短视频改编。
+"""Cursor Cloud Agent 固定五槽位日更：联网调研 → 长文草稿 → Opus 深读 → 短视频改编。
 
 槽位顺序（每天按序，可接昨日进度续排）：
   1. astock_market  — A股收盘概述（指数/成交/结构）【日更自动队列已关闭】
@@ -22,7 +22,7 @@ from cursor_client import create_agent, create_run, model_id, run_with_stream
 from paths import ROOT
 from research import deep_read_article, load_env
 
-# 固定每日顺序；超过可用槽时循环
+# 固定每日顺序；超过 5 条时循环
 CURSOR_SLOT_ORDER = (
     "astock_market",
     "astock_sector",
@@ -37,7 +37,6 @@ SLOT_LABEL: dict[str, str] = {
     "domestic": "国内财经新闻分析",
     "ai": "AI新闻热点分析",
     "world": "世界财经新闻分析",
-    "daily_why": "今天一个财经为什么",
 }
 
 SLOT_TO_CATEGORY: dict[str, str] = {
@@ -46,31 +45,7 @@ SLOT_TO_CATEGORY: dict[str, str] = {
     "domestic": "astock",
     "ai": "ai",
     "world": "hkus",
-    "daily_why": "astock",
 }
-
-DAILY_WHY_SLOT = "daily_why"
-
-_DAILY_WHY_CATEGORY_RE = re.compile(
-    r"栏目[：:]\s*(astock|ai|hkus|domestic|basic)",
-    re.I,
-)
-
-
-def heat_first_enabled() -> bool:
-    """工作日先选「路人会停的一条」，而不是按槽位硬填。默认开。"""
-    raw = os.environ.get("AIVIDEO_HEAT_FIRST", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
-
-
-def _parse_daily_why_category(markdown: str) -> str:
-    m = _DAILY_WHY_CATEGORY_RE.search(markdown or "")
-    if not m:
-        return "astock"
-    raw = m.group(1).strip().lower()
-    if raw == "domestic":
-        return "astock"
-    return raw if raw in ("astock", "ai", "hkus", "basic") else "astock"
 
 _CN_TZ_OFFSET = timedelta(hours=8)
 ASTOCK_MARKET_SLOT = "astock_market"
@@ -449,14 +424,6 @@ def topic_plan_for_slot(slot: str, *, d: date | None = None) -> dict:
             "angle": "只讲指数、成交、涨跌家数与整体结构；行业点到为止，热点留给第二槽位",
             "theme_cluster": "astock_daily_recap",
         }
-    if slot == DAILY_WHY_SLOT:
-        return {
-            "slot": slot,
-            "script_mode": "daily_why",
-            "title_hint": f"{d.isoformat()} 今天一个财经为什么",
-            "angle": "只讲一条主线：钱包/反常/监管，让上班族 3 秒觉得跟自己有关",
-            "theme_cluster": "cursor_daily_why",
-        }
     label = SLOT_LABEL.get(slot, slot)
     plan: dict = {
         "slot": slot,
@@ -486,12 +453,8 @@ _COMMON_RULES = """
 - **有明确主角公司时，标题必须点出公司中文名**（海力士/英伟达/中芯国际等），不要只写板块或纯数字钩子；公司名 ≠ 荐股，有利于搜索与点击
 - **禁止**教材目录式：「X是什么」「X怎么算」「X到底是个啥」
 - **禁止**干巴巴报盘句当主标题：「沪指涨X%」「普涨缩量」等（那是大盘槽位的事）
-- 差例：「功率半导体为什么集体涨价」「氢氟酸为什么突然被抢购」（行业黑话当主角，路人 3 秒划走）
-- 好例：「换手机突然贵了一截是芯片又卡住了吗」「电费变厚跟 AI 抢电有啥关系」「英伟达赚翻了为啥市场反而慌」「黄金又创新高跟买菜的人有关系吗」
-
-【钱包闸门·封面/开场必须过】
-- 30 秒内要能落到工资/房贷/手机/菜价/电费/存款/工作之一
-- 禁止把 MLCC、CPO、HBM、配额、续作、工业气体、氢氟酸当封面主角；若事件本身是这些，标题必须先翻译成生活物
+- 差例：「功率半导体为什么集体涨价」可保留「为什么」但要更具体；更好：「近20家厂商一起涨价，半导体在慌什么」
+- 好例：「海力士利润暴涨557%为啥股价崩了」「一块玻璃怎么把光模块股砸崩了」「国家队600亿增持能救A股吗」「氢氟酸为什么突然被抢购」
 """
 
 _ASTOCK_TRADING_SLOTS = frozenset({ASTOCK_MARKET_SLOT, ASTOCK_SECTOR_SLOT})
@@ -623,30 +586,6 @@ _SLOT_PROMPTS: dict[str, str] = {
 
 只选 **一条** 国际主线写透，不要写成日报列表。
 """ + _COMMON_RULES,
-    "daily_why": """你是「AI财知道」选题编辑兼撰稿人。观众是刷抖音的上班族，不是交易员。
-请联网搜索 **过去 24–48 小时** 全市场最值得做成短视频的 **一条** 财经主线（A股/国内政策/AI/国际都可以），
-写成 **1500–2500 字** 中文 Markdown。不要按栏目凑数，没有过关题材就换一条，禁止用行业黑话硬写。
-
-【选题闸门·必须全部满足】
-1. 28 岁上班族会停下来：30 秒内能说到工资/房贷/手机/菜价/电费/存款/工作
-2. 有反常数字、可感知物体、或监管一刀切（关停/限制/涨价/抢购）
-3. 能写成 **一个为什么**，不是日报、不是指数收评、不是板块轮动名单
-4. 先在心里打分 0–10；**低于 7 分必须换题**，不要用 MLCC/CPO/HBM/配额/续作/氢氟酸当标题主角
-
-【优先】钱包后果、名企财报反差、监管/卡脖子、金价油价电费、宏观急转弯且能传到房贷或菜篮子。
-【禁止】沪指涨跌当主标题、海外模型参数稿、教材目录「X是什么」。
-
-结构：
-1. 正文前单独两行机器标记：
-   `选题分：N`
-   `栏目：astock|ai|hkus`（按主线归类，国内政策用 astock）
-2. **一级标题**：12–28 字故事/后果问句（见通用标题规则），点出中文公司名或生活物
-3. 一句话结论（先说跟普通人有啥关系）
-4. 事件还原
-5. 为什么反常 / 传导到钱包的哪一层
-6. 后续观察点 3 条（客观线索，非买卖）
-7. 结语
-""" + _COMMON_RULES,
 }
 
 
@@ -751,11 +690,6 @@ def discover_cursor_topics(*, target: int = 5) -> list[dict]:
         skip_slots = skip_slots | PRE_CLOSE_SKIP_SLOTS
 
     slots = planned_slots(target, start_offset=start, skip_slots=skip_slots)
-    if heat_first_enabled():
-        rest = [s for s in slots if s != DAILY_WHY_SLOT][: max(0, target - 1)]
-        slots = [DAILY_WHY_SLOT] + rest
-        slots = slots[:target]
-        print("  🎯 热度优先：第一条改为「路人会停的一个为什么」，槽位只作栏目色", flush=True)
     today = china_today().isoformat()
     topics: list[dict] = []
     for i, slot in enumerate(slots, 1):
@@ -867,7 +801,7 @@ def build_cursor_topic_research(
 ) -> tuple[dict, dict, str | None]:
     """Cursor 草稿 → Opus 深读细节。返回 (article, details, agent_id)。"""
     slot = str(topic.get("slot") or topic.get("cursor_slot") or topic.get("direction") or "").strip()
-    if slot not in _SLOT_PROMPTS:
+    if slot not in CURSOR_SLOT_ORDER:
         raise ValueError(f"话题缺少有效 cursor 槽位: {topic}")
 
     markdown, agent_id, status = run_cursor_draft(
@@ -957,11 +891,6 @@ def build_cursor_topic_research(
     elif slot == "astock_sector" and trading_day:
         plan["trading_day"] = trading_day.isoformat()
         print(f"  📅 热点交易日：{trading_day.isoformat()}", flush=True)
-    elif slot == DAILY_WHY_SLOT:
-        cat = _parse_daily_why_category(markdown)
-        topic["category"] = cat
-        plan["category"] = cat
-        print(f"  🏷  热度选题栏目：{cat}", flush=True)
 
     fallback = video_title or str(topic.get("title_hint") or SLOT_LABEL[slot])
     title = video_title or _extract_title(markdown, fallback)
@@ -985,8 +914,6 @@ def build_cursor_topic_research(
         "_compliance_relaxed": True,
         "_topic_plan": plan,
     }
-    if topic.get("category"):
-        article["category"] = topic["category"]
     if video_title:
         article["_suggested_video_title"] = video_title
 

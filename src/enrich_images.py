@@ -37,9 +37,9 @@ def slide_fingerprint(slide: dict) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def cover_fingerprint(title: str, subtitle: str, keyword: str, hook: str = "") -> str:
+def cover_fingerprint(title: str, subtitle: str, keyword: str) -> str:
     payload = json.dumps(
-        {"title": title, "subtitle": subtitle, "keyword": keyword, "hook": hook, "v": 2},
+        {"title": title, "subtitle": subtitle, "keyword": keyword},
         ensure_ascii=False, sort_keys=True,
     )
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
@@ -50,17 +50,10 @@ def _generate_cover(
     title: str,
     subtitle: str,
     keyword: str,
-    hook: str,
     out_path: Path,
     fp: str,
 ) -> dict:
-    prompt = build_cover_prompt(
-        title=title,
-        subtitle=subtitle,
-        keyword=keyword,
-        hook=hook,
-        doodle_hint=hook or keyword,
-    )
+    prompt = build_cover_prompt(title=title, subtitle=subtitle, keyword=keyword)
     print(f"  [cover] 生图中… {prompt[:90]}…", file=sys.stderr)
     result = generate_image(prompt)
     if result.get("b64_json"):
@@ -170,9 +163,8 @@ def enrich_script_file(
     cover_slide = slides[0] if slides else {}
     subtitle = str(cover_slide.get("subtitle") or "").strip()
     keyword = str(script.get("keyword") or "").strip()
-    hook = str(script.get("cold_open") or "").strip()
     cover_path = out_dir / "cover.png"
-    cover_fp = cover_fingerprint(title, subtitle, keyword, hook)
+    cover_fp = cover_fingerprint(title, subtitle, keyword)
     prev_cover_fp: str | None = None
     for entry in prev_image_meta.get("slides") or []:
         if isinstance(entry, dict) and entry.get("is_cover"):
@@ -239,7 +231,7 @@ def enrich_script_file(
             if cover_task_needed:
                 futures[ex.submit(
                     _generate_cover,
-                    title=title, subtitle=subtitle, keyword=keyword, hook=hook,
+                    title=title, subtitle=subtitle, keyword=keyword,
                     out_path=cover_path, fp=cover_fp,
                 )] = 0  # cover 标记为 index 0
             for fut in as_completed(futures):
