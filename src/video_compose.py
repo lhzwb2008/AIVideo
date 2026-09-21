@@ -44,10 +44,6 @@ IMAGE_TOP_SAFE_Y = int(os.environ.get("AIVIDEO_IMAGE_TOP_SAFE_Y", "150"))
 TTS_SAMPLE_RATE = 24000        # 与 DASHSCOPE_TTS_SAMPLE_RATE 保持一致
 
 
-def _locale_en() -> bool:
-    return os.environ.get("AIVIDEO_LOCALE", "zh").strip().lower() in ("en", "english")
-
-
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -69,15 +65,14 @@ def _env_int(name: str, default: int) -> int:
 
 
 def max_video_duration_s() -> float:
-    """成片最长时长（秒）；英文频道默认 3 分钟。"""
-    default = 180.0 if _locale_en() else 0.0
-    raw = os.environ.get("AIVIDEO_MAX_VIDEO_DURATION_S", str(default) if default else "").strip()
+    """成片最长时长（秒）；未设置则不截断。"""
+    raw = os.environ.get("AIVIDEO_MAX_VIDEO_DURATION_S", "").strip()
     if not raw:
         return 0.0
     try:
         return max(0.0, float(raw))
     except ValueError:
-        return default
+        return 0.0
 
 
 def cover_duration_s() -> float:
@@ -132,7 +127,7 @@ def pick_cold_open_fx_mode(script_stem: str = "") -> str:
 
 
 # ============================================================
-# 栏目品牌 / 尾页（zh 默认；locale=en 时用英文池）
+# 栏目品牌 / 尾页
 # ============================================================
 _ZH_OUTRO_NARRATION = (
     "我是AI财知道，每天用大白话讲清一个AI和股市热点，A股美股港股都聊。"
@@ -145,14 +140,6 @@ _ZH_OUTRO_VARIANTS = [
     "AI财知道陪你看懂AI和钱的事，A股美股港股都聊。收藏好这条，点关注每天一条不掉队。",
     "就到这。如果这条让你多懂一点，收藏下来有空再看，也欢迎关注我们继续每天更新。",
     "我是AI财知道，专挑值得解释的AI和股市热点。收藏加关注，明天继续陪你看世界。",
-]
-_EN_OUTRO_VARIANTS = [
-    "That's the sketch for today. Save it if useful — and tell me what you'd watch next.",
-    "Quick market sketch. Save this for later and follow for the next one.",
-    "That's today's sketch. Bookmark it if it helped — follow for daily updates.",
-    "Market Sketch signing off. Save this episode and follow for the next move.",
-    "That's the wrap. If this clarified anything, save it — tell us what to cover next.",
-    "Plain-English markets, one sketch at a time. Save, follow, see you tomorrow.",
 ]
 
 BRAND_NAME = "AI财知道"
@@ -188,24 +175,15 @@ def _env_text(name: str, default: str) -> str:
 
 
 def _load_brand_outro_config() -> None:
-    """按 locale / 环境变量刷新品牌与尾页文案（main 入口在 load_env 后再调一次）。"""
+    """按环境变量刷新品牌与尾页文案（main 入口在 load_env 后再调一次）。"""
     global BRAND_NAME, BRAND_TAGLINE, OUTRO_NARRATION, OUTRO_HEADLINE, OUTRO_SUBLINE
     global OUTRO_NARRATION_VARIANTS
-    en = _locale_en()
-    if en:
-        brand_default = "Market Sketch"
-        tagline_default = "US markets in plain English"
-        outro_default = _EN_OUTRO_VARIANTS[0]
-        headline_default = "Like · Save · Follow"
-        subline_default = "US markets in plain English"
-        pool_default = _EN_OUTRO_VARIANTS
-    else:
-        brand_default = "AI财知道"
-        tagline_default = "每天一个 AI 和股市的为什么"
-        outro_default = _ZH_OUTRO_NARRATION
-        headline_default = "点赞 · 收藏 · 关注"
-        subline_default = "看懂 AI 和股市的事"
-        pool_default = _ZH_OUTRO_VARIANTS
+    brand_default = "AI财知道"
+    tagline_default = "每天一个 AI 和股市的为什么"
+    outro_default = _ZH_OUTRO_NARRATION
+    headline_default = "点赞 · 收藏 · 关注"
+    subline_default = "看懂 AI 和股市的事"
+    pool_default = _ZH_OUTRO_VARIANTS
 
     BRAND_NAME = _env_text("AIVIDEO_BRAND_NAME", brand_default)
     BRAND_TAGLINE = _env_text("AIVIDEO_BRAND_TAGLINE", tagline_default)
@@ -393,35 +371,14 @@ def _wrap_chinese(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[s
     return lines
 
 
-def _wrap_english_words(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
-    """英文按词折行，避免在单词中间断开。"""
-    words = (text or "").split()
-    if not words:
-        return []
-    lines: list[str] = []
-    cur = words[0]
-    for word in words[1:]:
-        candidate = f"{cur} {word}"
-        if font.getbbox(candidate)[2] <= max_w:
-            cur = candidate
-        else:
-            lines.append(cur)
-            cur = word
-    lines.append(cur)
-    return lines
-
-
 def _wrap_subtitle_lines(text: str, *, fontsize: int | None = None) -> list[str]:
-    """底部分句字幕折行：中文逐字、英文按词，宽度不超过 SUBTITLE_MAX_WIDTH。"""
+    """底部分句字幕折行：中文逐字，宽度不超过 SUBTITLE_MAX_WIDTH。"""
     phrase = (text or "").strip()
     if not phrase:
         return []
     size = fontsize or SUBTITLE_FONT_SIZE
     font = load_font(size)
-    max_w = SUBTITLE_MAX_WIDTH
-    if _locale_en():
-        return _wrap_english_words(phrase, font, max_w)
-    return _wrap_chinese(phrase, font, max_w)
+    return _wrap_chinese(phrase, font, SUBTITLE_MAX_WIDTH)
 
 
 def render_full_cover(image_path: Path, *, out_path: Path) -> Path:
@@ -941,19 +898,8 @@ _PHRASE_SPLIT = re.compile(r"[，。！？；,!?;\n]+")
 
 
 def _subtitle_phrase_max_chars() -> int:
-    """口播分句上限：中文按字数；英文按字幕单行像素宽度估算（避免 ffmpeg drawtext 溢出）。"""
-    if not _locale_en():
-        return 18
-    font = load_font(SUBTITLE_FONT_SIZE)
-    probe = "The quick brown fox jumps over the lazy dog and "
-    lo, hi = 16, len(probe)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if font.getbbox(probe[:mid])[2] <= SUBTITLE_MAX_WIDTH:
-            lo = mid
-        else:
-            hi = mid - 1
-    return max(24, lo)
+    """口播分句上限（中文字数）。"""
+    return 18
 
 
 def split_narration(text: str, max_chars: int | None = None) -> list[str]:
@@ -965,7 +911,7 @@ def split_narration(text: str, max_chars: int | None = None) -> list[str]:
         return []
     raw = [p.strip() for p in _PHRASE_SPLIT.split(text) if p.strip()]
     out: list[str] = []
-    break_chars = " ,-" if _locale_en() else " 、的了"
+    break_chars = " 、的了"
     for phrase in raw:
         while len(phrase) > max_chars:
             cut = max_chars
@@ -2046,28 +1992,14 @@ def compose_video(
 
     load_env()
     _load_brand_outro_config()
-    if _locale_en():
-        try:
-            from us_voice import apply_voice_env, resolve_voice
-
-            vid = apply_voice_env()
-            _, vcfg = resolve_voice(vid)
-            print(
-                f"[compose] TTS: doubao {os.environ.get('VOLCENGINE_TTS_RESOURCE_ID', '')} "
-                f"音色: {os.environ.get('VOLCENGINE_TTS_SPEAKER', '')} ({vcfg.get('name', vid)})",
-                file=sys.stderr,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[compose] US 音色配置失败: {exc}", file=sys.stderr)
     set_theme(categories.resolve_category(script, os.environ.get("AIVIDEO_CATEGORY")))
 
-    if not _locale_en():
-        try:
-            from research import print_douyin_pre_publish_scan
+    try:
+        from research import print_douyin_pre_publish_scan
 
-            print_douyin_pre_publish_scan(script)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[douyin预审] 跳过：{exc}", file=sys.stderr)
+        print_douyin_pre_publish_scan(script)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[douyin预审] 跳过：{exc}", file=sys.stderr)
 
     work_dir = (work_dir or locale_logs_dir() / "compose" / script_file.stem)
     work_dir.mkdir(parents=True, exist_ok=True)

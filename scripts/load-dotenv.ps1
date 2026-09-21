@@ -1,7 +1,6 @@
-# Load env vars from .env by locale section (Windows).
-# Usage: . .\scripts\load-dotenv.ps1 zh
+# Load env vars from .env (shared + zh). Windows daily pipeline.
+# Usage: . .\scripts\load-dotenv.ps1
 param(
-    [ValidateSet('zh', 'en')]
     [string]$Locale = 'zh'
 )
 

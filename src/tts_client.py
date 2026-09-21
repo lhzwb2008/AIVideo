@@ -28,24 +28,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _locale_en() -> bool:
-    return _env("AIVIDEO_LOCALE", "zh").lower() in ("en", "english")
-
-
-def _ensure_us_voice_env() -> None:
-    """US 流水线：合成子进程可能被 .env 克隆音色覆盖，此处强制回写云舟等内置音色。"""
-    if not _locale_en():
-        return
-    try:
-        from us_voice import apply_voice_env
-
-        apply_voice_env()
-    except Exception as exc:  # noqa: BLE001
-        print(f"[tts] US 音色配置失败: {exc}", file=sys.stderr)
-
-
 def provider() -> str:
-    _ensure_us_voice_env()
     return _env("TTS_PROVIDER", "doubao").lower()
 
 
@@ -130,23 +113,10 @@ def doubao_endpoint() -> str:
 
 
 def doubao_resource_id() -> str:
-    _ensure_us_voice_env()
-    default = "seed-tts-2.0" if _locale_en() else "seed-icl-2.0"
-    return _env("VOLCENGINE_TTS_RESOURCE_ID", default)
+    return _env("VOLCENGINE_TTS_RESOURCE_ID", "seed-icl-2.0")
 
 
 def doubao_speaker() -> str:
-    _ensure_us_voice_env()
-    if _locale_en():
-        try:
-            from us_voice import resolve_voice
-
-            _, cfg = resolve_voice()
-            sp = str(cfg.get("speaker") or "").strip()
-            if sp:
-                return sp
-        except Exception:
-            pass
     return _env("VOLCENGINE_TTS_SPEAKER", "S_6uN8A8f22")
 
 
@@ -216,15 +186,6 @@ _TTS_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[，。！？；])")
-_EN_SENTENCE_SPLIT = re.compile(r"(?<=[.!?;])")
-
-
-def locale() -> str:
-    return _env("AIVIDEO_LOCALE", "zh").lower()
-
-
-def is_english_locale() -> bool:
-    return locale() in ("en", "english")
 
 
 def preprocess_tts_text(text: str) -> str:
@@ -239,13 +200,10 @@ def preprocess_tts_text(text: str) -> str:
 
 
 def split_sentences(text: str) -> list[str]:
-    """按标点切句；英文 locale 用 .!? 断句。"""
+    """按中文标点切句。"""
     text = (text or "").strip()
     if not text:
         return []
-    if is_english_locale():
-        parts = [p.strip() for p in _EN_SENTENCE_SPLIT.split(text) if p.strip()]
-        return parts or [text]
     parts = [p.strip() for p in _SENTENCE_SPLIT.split(text) if p.strip()]
     return parts or [text]
 
@@ -271,7 +229,7 @@ def text_to_ssml(text: str) -> str:
     buf: list[str] = []
     for ch in t:
         buf.append(ch)
-        if ch in "，。！？；" or (is_english_locale() and ch in ".!?;,"):
+        if ch in "，。！？；":
             chunk = "".join(buf).strip()
             if chunk:
                 ms = _break_ms_for_char(ch)

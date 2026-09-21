@@ -9,8 +9,6 @@ from pathlib import Path
 from douyin_caption import build_sau_fields
 from paths import ROOT
 from publish_resolve import load_script
-from tiktok_caption import build_tiktok_fields
-from youtube_caption import build_youtube_fields
 
 # 主流程不会自动发的视频站（始终需要你手动上传）
 _VIDEO_MANUAL_PLATFORMS: list[tuple[str, str, str]] = [
@@ -45,6 +43,7 @@ def _video_manual_platforms() -> list[tuple[str, str, str]]:
         platforms.append(_VIDEO_MANUAL_SHIPINHAO)
     return platforms
 
+
 BILIBILI_VIDEO_UPLOAD_URL = (
     "https://member.bilibili.com/platform/upload/video/frame"
 )
@@ -64,15 +63,6 @@ def _load_script_dict(script_path: Path) -> dict | None:
 
 
 def build_publish_fields(script: dict | None) -> dict[str, str]:
-    if _locale_en():
-        yt = build_youtube_fields(script)
-        tk = build_tiktok_fields(script)
-        tags = ", ".join(yt.get("tags") or [])
-        return {
-            "title": yt["title"],
-            "desc": (tk.get("title") or yt.get("description") or "")[:1000],
-            "tags": tags,
-        }
     return build_sau_fields(script)
 
 
@@ -80,8 +70,6 @@ def print_manual_publish_pack(
     script_path: Path,
     video_path: Path | None = None,
     *,
-    youtube_url: str = "",
-    tiktok_url: str = "",
     bilibili_title: str = "",
     eastmoney_title: str = "",
     xueqiu_title: str = "",
@@ -114,10 +102,7 @@ def print_manual_publish_pack(
                 forum_rel = str(forum_dir)
 
     print("\n" + "═" * 58, flush=True)
-    if _locale_en():
-        print("📋 发布文案（YouTube + TikTok）", flush=True)
-    else:
-        print("📋 发布文案（各平台通用，复制后按需微调）", flush=True)
+    print("📋 发布文案（各平台通用，复制后按需微调）", flush=True)
     if video_rel:
         print(f"视频: {video_rel}", flush=True)
     if forum_rel:
@@ -130,34 +115,11 @@ def print_manual_publish_pack(
         desc_block = f"{desc_block}\n\n{hashtags}"
     print(f"\n简介+话题（整段复制）:\n{desc_block}", flush=True)
 
-    if _locale_en():
-        yt_fields = build_youtube_fields(script)
-        tk_fields = build_tiktok_fields(script)
-        yt_hashtags = " ".join(f"#{t}" for t in yt_fields.get("tags") or [])
-        print("\n【YouTube 自动发布】", flush=True)
-        print(f"标题: {yt_fields['title']}", flush=True)
-        print(f"标签: {', '.join(yt_fields.get('tags') or [])}", flush=True)
-        if yt_hashtags:
-            print(f"话题: {yt_hashtags}", flush=True)
-
-        print("\n【TikTok】", flush=True)
-        tk_ready, tk_reason = _tiktok_direct_post_ready()
-        if not tiktok_enabled():
-            print("（未开启 AIVIDEO_PUBLISH_TIKTOK）", flush=True)
-        elif tk_ready:
-            print("（Direct Post 自动发布，下方为 caption 预览）", flush=True)
-        else:
-            print(f"（已跳过自动发布：{tk_reason}）", flush=True)
-            print("下方文案仅供参考；过审后 ./tiktok-login.sh --force 重新授权即可自动发。", flush=True)
-        print(tk_fields["title"], flush=True)
-
     todo_kwargs = dict(
         script=script,
         video_rel=video_rel,
         forum_rel=forum_rel,
         has_forum=has_forum,
-        youtube_url=youtube_url,
-        tiktok_url=tiktok_url,
         bilibili_title=bilibili_title,
         eastmoney_title=eastmoney_title,
         xueqiu_title=xueqiu_title,
@@ -203,10 +165,6 @@ def _read_last_log_field(log_name: str, *keys: str) -> str:
 README_TODO_HEADING = "## 发布 TODO 清单"
 
 
-def _locale_en() -> bool:
-    return os.environ.get("AIVIDEO_LOCALE", "zh").strip().lower() in ("en", "english")
-
-
 def _env_enabled(name: str, *, default: str = "0") -> bool:
     value = os.environ.get(name)
     if value is None or value.strip() == "":
@@ -240,16 +198,6 @@ def bilibili_video_manual_needed() -> bool:
 def _todo_config_summary() -> str:
     """当前 .env 中与待办相关的开关摘要。"""
     from publish_llm_browser import llm_browser_default
-
-    if _locale_en():
-        bits: list[str] = []
-        if youtube_enabled():
-            bits.append("YouTube=自动")
-        if tiktok_enabled():
-            label = _tiktok_config_label()
-            if label:
-                bits.append(label)
-        return " · ".join(bits) if bits else "（未开启 YouTube/TikTok）"
 
     bits = []
     if douyin_enabled() and llm_browser_default():
@@ -296,8 +244,6 @@ def _llm_publish_cmd(platform: str) -> str:
 
 def _auto_publish_summary(
     *,
-    youtube_url: str,
-    tiktok_url: str,
     bilibili_title: str,
     eastmoney_title: str,
     xueqiu_title: str,
@@ -326,10 +272,6 @@ def _auto_publish_summary(
         names.append("东财")
     if xueqiu_enabled() and xueqiu_title:
         names.append("雪球")
-    if _locale_en() and youtube_enabled() and youtube_url:
-        names.append("YouTube")
-    if _locale_en() and tiktok_enabled() and tiktok_url:
-        names.append("TikTok")
     if wechat_enabled() and wechat_title:
         if _read_last_log_bool("last_wechat_publish.json", "published"):
             names.append("公众号")
@@ -348,8 +290,6 @@ def build_todo_checklist_items(
     video_rel: str,
     forum_rel: str,
     has_forum: bool,
-    youtube_url: str,
-    tiktok_url: str,
     bilibili_title: str,
     eastmoney_title: str,
     xueqiu_title: str,
@@ -373,7 +313,7 @@ def build_todo_checklist_items(
             headline="本次未执行自动发布（--no-publish / --dry-run）",
         )
 
-    if video_rel and not _locale_en():
+    if video_rel:
         for name, url, tip in _video_manual_platforms():
             sublines = [tip, f"成片: {video_rel}"]
             _append_todo_items(
@@ -443,13 +383,6 @@ def build_todo_checklist_items(
             headline="雪球: 自动发布失败 — ./scripts/publish-xueqiu.sh",
         )
 
-    if _locale_en() and youtube_enabled() and not skip_auto_note and not youtube_url:
-        _append_todo_items(
-            manual,
-            mark="!",
-            headline="YouTube: 自动发布失败 — https://studio.youtube.com/",
-        )
-
     if zhihu_enabled():
         published = _read_last_log_bool("last_zhihu_publish.json", "published")
         url = _read_last_log_field("last_zhihu_publish.json", "url") or ZHIHU_DRAFTS_URL
@@ -513,36 +446,6 @@ def build_todo_checklist_items(
                 headline="微信公众号: 失败 — ./scripts/publish-wechat.sh",
             )
 
-    if _locale_en() and tiktok_enabled():
-        tk_ready, tk_reason = _tiktok_direct_post_ready()
-        if skip_auto_note:
-            if tk_ready:
-                _append_todo_items(
-                    notes,
-                    mark="·",
-                    headline="TikTok: 将 Direct Post 自动发布",
-                )
-            else:
-                _append_todo_items(
-                    notes,
-                    mark="·",
-                    headline=f"TikTok: 将跳过自动发布（{tk_reason}）",
-                )
-        elif tiktok_url:
-            pass
-        elif not tk_ready:
-            _append_todo_items(
-                notes,
-                mark="·",
-                headline=f"TikTok: 已跳过自动发布（{tk_reason}）",
-            )
-        else:
-            _append_todo_items(
-                manual,
-                mark="!",
-                headline="TikTok: 自动发布失败 — ./scripts/publish-tiktok.sh",
-            )
-
     if forum_rel and not has_forum and (
         eastmoney_enabled()
         or xueqiu_enabled()
@@ -568,8 +471,6 @@ def format_todo_checklist_markdown(
     video_rel: str,
     forum_rel: str,
     has_forum: bool,
-    youtube_url: str = "",
-    tiktok_url: str = "",
     bilibili_title: str = "",
     eastmoney_title: str = "",
     xueqiu_title: str = "",
@@ -583,8 +484,6 @@ def format_todo_checklist_markdown(
 ) -> str:
     del script  # 预审仅终端输出
     auto_line = _auto_publish_summary(
-        youtube_url=youtube_url,
-        tiktok_url=tiktok_url,
         bilibili_title=bilibili_title,
         eastmoney_title=eastmoney_title,
         xueqiu_title=xueqiu_title,
@@ -613,8 +512,6 @@ def format_todo_checklist_markdown(
         video_rel=video_rel,
         forum_rel=forum_rel,
         has_forum=has_forum,
-        youtube_url=youtube_url,
-        tiktok_url=tiktok_url,
         bilibili_title=bilibili_title,
         eastmoney_title=eastmoney_title,
         xueqiu_title=xueqiu_title,
@@ -633,12 +530,9 @@ def format_todo_checklist_markdown(
             for sub in sublines:
                 lines.append(f"  - {sub}")
         lines.append("")
-    if _locale_en():
-        lines.append("> For education only. Not investment advice.")
-    else:
-        lines.append(
-            "> 提示：财经平台风控严，简介勿出现「荐股/收益/带单」等字眼。"
-        )
+    lines.append(
+        "> 提示：财经平台风控严，简介勿出现「荐股/收益/带单」等字眼。"
+    )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -663,8 +557,6 @@ def _print_todo_checklist(
     video_rel: str,
     forum_rel: str,
     has_forum: bool,
-    youtube_url: str,
-    tiktok_url: str,
     bilibili_title: str,
     eastmoney_title: str,
     xueqiu_title: str,
@@ -680,8 +572,6 @@ def _print_todo_checklist(
         video_rel=video_rel,
         forum_rel=forum_rel,
         has_forum=has_forum,
-        youtube_url=youtube_url,
-        tiktok_url=tiktok_url,
         bilibili_title=bilibili_title,
         eastmoney_title=eastmoney_title,
         xueqiu_title=xueqiu_title,
@@ -698,8 +588,6 @@ def _print_todo_checklist(
             manual_n = len(items)
 
     auto_line = _auto_publish_summary(
-        youtube_url=youtube_url,
-        tiktok_url=tiktok_url,
         bilibili_title=bilibili_title,
         eastmoney_title=eastmoney_title,
         xueqiu_title=xueqiu_title,
@@ -720,7 +608,7 @@ def _print_todo_checklist(
 
     for title, items in sections:
         print(f"\n— {title} —", flush=True)
-        if title.startswith("待你亲手发布") and not _locale_en():
+        if title.startswith("待你亲手发布"):
             print("  复制上面「标题 / 简介 / 话题」，按链接上传后发布：", flush=True)
         for mark, headline, sublines in items:
             bracket = f"[{mark}]" if mark.strip() else "[ ]"
@@ -729,58 +617,15 @@ def _print_todo_checklist(
                 print(f"        {sub}", flush=True)
 
     print("\n" + "─" * 58, flush=True)
-    if _locale_en():
-        print("提示: For education only. Not investment advice.", flush=True)
-    else:
-        print("提示: 财经平台风控严，简介勿出现「荐股/收益/带单」等字眼。", flush=True)
-        if script:
-            try:
-                from research import print_douyin_pre_publish_scan
+    print("提示: 财经平台风控严，简介勿出现「荐股/收益/带单」等字眼。", flush=True)
+    if script:
+        try:
+            from research import print_douyin_pre_publish_scan
 
-                print_douyin_pre_publish_scan(script)
-            except Exception:
-                pass
+            print_douyin_pre_publish_scan(script)
+        except Exception:
+            pass
     print("─" * 58 + "\n", flush=True)
-
-
-def youtube_enabled() -> bool:
-    return _env_enabled("AIVIDEO_PUBLISH_YOUTUBE", default="0")
-
-
-def tiktok_enabled() -> bool:
-    return _env_enabled("AIVIDEO_PUBLISH_TIKTOK", default="0")
-
-
-def _tiktok_direct_post_ready() -> tuple[bool, str]:
-    try:
-        from tiktok_auth import tiktok_direct_post_ready
-
-        return tiktok_direct_post_ready()
-    except Exception as exc:  # noqa: BLE001
-        return False, str(exc)
-
-
-def _tiktok_config_label() -> str:
-    if not tiktok_enabled():
-        return ""
-    ready, _ = _tiktok_direct_post_ready()
-    return "TikTok=自动" if ready else "TikTok=跳过"
-
-
-def instagram_enabled() -> bool:
-    return _env_enabled("AIVIDEO_PUBLISH_INSTAGRAM", default="0")
-
-
-def facebook_enabled() -> bool:
-    return _env_enabled("AIVIDEO_PUBLISH_FACEBOOK", default="0")
-
-
-def linkedin_enabled() -> bool:
-    return _env_enabled("AIVIDEO_PUBLISH_LINKEDIN", default="0")
-
-
-def us_social_enabled() -> bool:
-    return instagram_enabled() or facebook_enabled() or linkedin_enabled()
 
 
 def eastmoney_enabled() -> bool:

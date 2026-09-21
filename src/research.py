@@ -21,7 +21,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import exa_client
-import feed_client
 from paths import ROOT
 from text_client import chat_complete, text_model
 
@@ -445,55 +444,9 @@ def find_articles(
     agent_id: str | None = None,
     per_lang: int = 3,
     recent_topics: list[str] | None = None,
-    source: str = "exa",
-    fresh_hours: int = 24,
     focus_directions: list[str] | tuple[str, ...] | None = None,
 ) -> tuple[list[dict], str | None]:
-    """获取候选文章。默认固定信息源最近 24h；Exa 保留为兜底。"""
-    if source == "feeds":
-        excl = {u.strip() for u in (exclude_urls or []) if u.strip()}
-        candidates = [
-            c for c in feed_client.fetch_feed_candidates(hours=fresh_hours)
-            if str(c.get("url") or "").strip() not in excl
-        ]
-        try:
-            finance_pool = _exa_search_pool(
-                days=max(1, days),
-                exclude_urls=exclude_urls,
-                queries=EXA_QUERIES_FINANCE,
-            )
-            finance_candidates = [
-                _exa_result_to_candidate(r, language="en")
-                for r in finance_pool
-                if str(r.get("url") or "").strip() not in excl
-            ][:30]
-            if finance_candidates:
-                print(f"  ✓ Exa 财经补源：{len(finance_candidates)} 篇")
-                candidates.extend(finance_candidates)
-        except Exception as exc:  # noqa: BLE001
-            print(f"  ⚠️  Exa 财经补源失败：{exc}", file=sys.stderr)
-        try:
-            astock_pool = _exa_search_pool(
-                days=max(1, min(days, 3)),
-                exclude_urls=exclude_urls,
-                queries=EXA_QUERIES_ASTOCK,
-            )
-            astock_candidates = [
-                _exa_result_to_candidate(r, language="zh", source_type="exa:astock")
-                for r in astock_pool
-                if str(r.get("url") or "").strip() not in excl
-            ][:30]
-            if astock_candidates:
-                print(f"  ✓ Exa A股爆点补源：{len(astock_candidates)} 篇")
-                candidates.extend(astock_candidates)
-        except Exception as exc:  # noqa: BLE001
-            print(f"  ⚠️  Exa A股补源失败：{exc}", file=sys.stderr)
-        candidates = _dedup_results(candidates)
-        if not candidates:
-            raise RuntimeError("固定信息源没有抓到候选")
-        print(f"  ✓ 固定信息源候选：{len(candidates)} 篇（近 {fresh_hours} 小时，含财经补源）")
-        return candidates, agent_id
-
+    """获取候选文章（Exa 搜索）。"""
     focus = [str(x).strip().lower() for x in (focus_directions or []) if str(x).strip()]
     templates = [
         EXA_TOPIC_SEARCH_TEMPLATES[key]
@@ -555,7 +508,7 @@ def find_articles(
 def _print_candidates(candidates: list[dict]) -> None:
     print()
     print("=" * 72)
-    print(f"  候选长文（{len(candidates)} 篇，中英混合）")
+    print(f"  候选长文（{len(candidates)} 篇）")
     print("=" * 72)
     for i, c in enumerate(candidates, 1):
         lang = (c.get('language') or '?').upper()
@@ -2170,8 +2123,6 @@ def run_article_research(
     use_selection: bool = False,
     auto_pick: bool = False,
     recent_topics: list[str] | None = None,
-    source: str = "feeds",
-    fresh_hours: int = 24,
     preselected_article: dict | None = None,
     preselected_details: dict | None = None,
     category: str | None = None,
@@ -2205,13 +2156,10 @@ def run_article_research(
         article = saved
         print("[1a] 跳过找文章，复用 logs/last_article.json")
     else:
-        if source == "feeds":
-            print(f"[1a] 抓取固定信息源近 {fresh_hours} 小时 AI/财经热点…")
-        else:
-            print(f"[1a] 搜索过去 {days} 天 AI/财经热点长文（中英文各 3 候选）…")
+        print(f"[1a] 搜索过去 {days} 天 AI/财经热点长文…")
         candidates, agent_id = find_articles(
             days=days, exclude_urls=exclude_urls, agent_id=agent_id,
-            recent_topics=recent_topics, source=source, fresh_hours=fresh_hours,
+            recent_topics=recent_topics,
         )
         candidate_pool = list(candidates)
         (logs_dir / "last_article_candidates.json").write_text(
@@ -2341,10 +2289,6 @@ def main() -> int:
     )
     parser.add_argument("-o", "--output", default=str(ROOT / "logs" / "last_script.json"))
     parser.add_argument("--days", type=int, default=7, help="搜索时间窗（天），默认 7")
-    parser.add_argument("--source", choices=("feeds", "exa"), default=os.environ.get("AIVIDEO_SOURCE", "exa"),
-                        help="候选来源：exa=Exa Search；feeds=旧固定信息源兜底")
-    parser.add_argument("--fresh-hours", type=int, default=int(os.environ.get("AIVIDEO_FRESH_HOURS", "24")),
-                        help="固定信息源新鲜度窗口，默认 24 小时")
     parser.add_argument("--exclude-urls", help="已制作过的 URL，逗号分隔")
     parser.add_argument("--agent-id")
     parser.add_argument("--use-selection", action="store_true",
@@ -2357,7 +2301,7 @@ def main() -> int:
     logs_dir = ROOT / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    src_desc = f"固定信息源近 {args.fresh_hours} 小时" if args.source == "feeds" else f"Exa 近 {args.days} 天"
+    src_desc = f"Exa 近 {args.days} 天"
     print(f"[research] 文章驱动 | 候选={src_desc} | 评审/深读/改编={text_model()} (effort=low)")
 
     try:
@@ -2369,8 +2313,6 @@ def main() -> int:
             logs_dir=logs_dir,
             use_selection=args.use_selection,
             auto_pick=args.auto_pick,
-            source=args.source,
-            fresh_hours=args.fresh_hours,
         )
     except (ValueError, json.JSONDecodeError, RuntimeError) as e:
         import traceback

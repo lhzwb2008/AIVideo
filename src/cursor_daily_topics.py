@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cursor Cloud Agent 固定五槽位日更：联网调研 → 长文草稿 → Opus 深读 → 短视频改编。
+"""Cursor Cloud Agent 工作日新闻槽位：联网调研 → 长文草稿 → Opus 深读 → 短视频改编。
 
 槽位顺序（每天按序，可接昨日进度续排）：
   1. astock_market  — A股收盘概述（指数/成交/结构）【日更自动队列已关闭】
@@ -22,7 +22,7 @@ from cursor_client import create_agent, create_run, model_id, run_with_stream
 from paths import ROOT
 from research import deep_read_article, load_env
 
-# 固定每日顺序；超过 5 条时循环
+# 固定每日顺序；超过可用槽时循环
 CURSOR_SLOT_ORDER = (
     "astock_market",
     "astock_sector",
@@ -79,6 +79,11 @@ OFFDAY_SKIP_SLOTS = frozenset({ASTOCK_MARKET_SLOT, ASTOCK_SECTOR_SLOT})
 PRE_CLOSE_SKIP_SLOTS = frozenset({ASTOCK_MARKET_SLOT})
 # 日更自动队列永久跳过的槽位
 DAILY_DISABLED_SLOTS = frozenset({ASTOCK_MARKET_SLOT})
+
+
+def active_slot_order() -> tuple[str, ...]:
+    """日更实际会跑的槽（去掉永久关闭的大盘概述）。"""
+    return tuple(s for s in CURSOR_SLOT_ORDER if s not in DAILY_DISABLED_SLOTS)
 
 
 def china_now() -> datetime:

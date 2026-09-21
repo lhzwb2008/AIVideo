@@ -17,8 +17,6 @@ _SCRIPT_MAP: dict[str, tuple[str, bool]] = {
     "publish-wechat": ("publish_wechat.py", True),
     "publish-zhihu": ("publish_zhihu.py", True),
     "publish-llm-browser": ("llm_browser_publish.py", True),
-    "publish-youtube": ("publish_youtube.py", False),
-    "publish-tiktok": ("publish_tiktok.py", False),
     "publish-shipinhao": ("social_publisher.py", True),
     "publish-shipinhao-pcwechat": ("publish_shipinhao_pcwechat.py", False),
 }

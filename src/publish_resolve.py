@@ -20,11 +20,7 @@ def load_script(path: Path | None) -> dict | None:
 
 
 def _guess_locale_from_video(video_path: Path) -> str:
-    parts = video_path.resolve().parts
-    if "en" in parts:
-        return "en"
-    if "zh" in parts:
-        return "zh"
+    del video_path
     return normalize_locale()
 
 
@@ -130,7 +126,7 @@ def _render_cover_like_video(script_path: Path, script: dict) -> Path | None:
 
     loc = normalize_locale()
     stem = script_path.stem
-    cache = locale_logs_dir(loc) / "youtube_thumbs" / f"{stem}_composed_cover.png"
+    cache = locale_logs_dir(loc) / "covers" / f"{stem}_composed_cover.png"
     rel = script.get("cover_image")
     if rel:
         ai = Path(rel)
@@ -183,7 +179,7 @@ def resolve_cover_image(script_path: Path | None, video_path: Path) -> Path | No
             if ai.is_file():
                 from video_compose import render_full_cover
 
-                cache = logs / "youtube_thumbs" / f"{script_path.stem}_composed_cover.png"
+                cache = logs / "covers" / f"{script_path.stem}_composed_cover.png"
                 render_full_cover(ai, out_path=cache)
                 if cache.is_file():
                     return cache
@@ -202,7 +198,7 @@ def extract_first_frame(video_path: Path) -> Path | None:
     if not video_path.is_file():
         return None
     loc = _guess_locale_from_video(video_path)
-    out_dir = locale_logs_dir(loc) / "youtube_thumbs"
+    out_dir = locale_logs_dir(loc) / "covers"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{video_path.stem}_frame0.jpg"
     cmd = [

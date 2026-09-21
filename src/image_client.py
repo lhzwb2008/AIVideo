@@ -17,14 +17,6 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
-def _locale() -> str:
-    return _env("AIVIDEO_LOCALE", "zh").lower()
-
-
-def _is_english() -> bool:
-    return _locale() in ("en", "english")
-
-
 def api_key() -> str:
     key = _env("AIHUBMIX_API_KEY")
     if not key:
@@ -125,8 +117,8 @@ def build_prompt(
     page_index: int = 0,
     total_pages: int = 5,
 ) -> str:
-    """白板手绘漫画口播风：方格纸 + 黑色钢笔线 + 手写注释（中/英由 locale 决定）。"""
-    lang = "English" if _is_english() else "Chinese"
+    """白板手绘漫画口播风：方格纸 + 黑色钢笔线 + 手写中文注释。"""
+    lang = "Chinese"
     parts: list[str] = [
         comic_style_prefix(),
         "Important safe area for Douyin/TikTok UI: keep all meaningful text, logos, page numbers, and icons away from the top 18% of the canvas, the leftmost 8%, the rightmost 12%, and the bottom 25%. Use the middle 58% as the main information area, leaving generous empty graph-paper space above.",

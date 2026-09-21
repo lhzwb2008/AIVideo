@@ -983,7 +983,7 @@ def resolve_playwright_python() -> Path | None:
 
 
 def main() -> int:
-    load_locale_env(os.environ.get("AIVIDEO_LOCALE", "zh"))
+    load_locale_env()
 
     parser = argparse.ArgumentParser(
         description="大模型视觉浏览器发布（抖音/视频号/小红书/B站/知乎）"

@@ -1,4 +1,4 @@
-"""中英文流水线隔离：环境变量分层加载 + logs/output/archive 分目录。"""
+"""中文流水线环境：加载 .env（shared + zh 分块）+ logs/output/archive 目录。"""
 
 from __future__ import annotations
 
@@ -8,27 +8,12 @@ from pathlib import Path
 
 from paths import ROOT
 
-LOCALES = ("zh", "en")
-
-
-def normalize_locale(raw: str | None = None) -> str:
-    v = (raw or os.environ.get("AIVIDEO_LOCALE", "zh")).strip().lower()
-    if v in ("en", "english"):
-        return "en"
-    return "zh"
-
-
 _SECTION_RE = re.compile(r"^#==\s*section:\s*(\w+)\s*==")
 
-# 仅在某 locale 分块里定义；切换语言时需清掉，避免从另一套流水线残留
-_LOCALE_SCOPED_KEYS = (
-    "AIVIDEO_BRAND_NAME",
-    "AIVIDEO_BRAND_TAGLINE",
-    "AIVIDEO_OUTRO_HEADLINE",
-    "AIVIDEO_OUTRO_SUBLINE",
-    "AIVIDEO_OUTRO_NARRATION",
-    "AIVIDEO_OUTRO_NARRATION_VARIANTS",
-)
+
+def normalize_locale(_raw: str | None = None) -> str:
+    """只保留中文流水线。"""
+    return "zh"
 
 
 def _parse_env_line(line: str) -> tuple[str, str] | None:
@@ -43,8 +28,7 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
     return key, val
 
 
-def _apply_env_sections(path: Path, want_locale: str, *, force_overlay: bool) -> None:
-    """按 .env 分块加载，行为与 scripts/load-dotenv.sh 一致。"""
+def _apply_env_sections(path: Path, *, force_overlay: bool) -> None:
     if not path.is_file():
         return
     section = "shared"
@@ -60,57 +44,49 @@ def _apply_env_sections(path: Path, want_locale: str, *, force_overlay: bool) ->
         if section == "shared":
             if key not in os.environ:
                 os.environ[key] = val
-        elif section == want_locale:
+        elif section == "zh":
             if force_overlay or key not in os.environ:
                 os.environ[key] = val
 
 
 def load_locale_env(locale: str | None = None, *, force_overlay: bool = True) -> str:
-    """加载 .env 分块：shared + 当前 locale（与 load-dotenv.sh 一致）。"""
-    loc = normalize_locale(locale)
-    os.environ["AIVIDEO_LOCALE"] = loc
-    for key in _LOCALE_SCOPED_KEYS:
-        os.environ.pop(key, None)
-    _apply_env_sections(ROOT / ".env", loc, force_overlay=force_overlay)
-    # 兼容旧版独立文件 .env.zh / .env.en
-    _apply_env_sections(ROOT / f".env.{loc}", loc, force_overlay=True)
-    if loc == "zh":
-        # 中文流水线走国内平台；YouTube/TikTok 仅 make-us-publish.sh（.env.en）
-        os.environ["AIVIDEO_PUBLISH_YOUTUBE"] = "0"
-        os.environ["AIVIDEO_PUBLISH_TIKTOK"] = "0"
-    return loc
+    """加载 .env：shared + zh。忽略 locale 参数。"""
+    del locale
+    os.environ["AIVIDEO_LOCALE"] = "zh"
+    _apply_env_sections(ROOT / ".env", force_overlay=force_overlay)
+    return "zh"
 
 
 def locale_logs_dir(locale: str | None = None) -> Path:
-    p = ROOT / "logs" / normalize_locale(locale)
+    del locale
+    p = ROOT / "logs" / "zh"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def locale_output_dir(locale: str | None = None) -> Path:
-    p = ROOT / "output" / normalize_locale(locale)
+    del locale
+    p = ROOT / "output" / "zh"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def archive_published_dir(date_tag: str, locale: str | None = None) -> Path:
-    """archive/published/YYYYMMDD/zh|en/"""
-    p = ROOT / "archive" / "published" / date_tag / normalize_locale(locale)
+    del locale
+    p = ROOT / "archive" / "published" / date_tag / "zh"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def host_intro_in_video() -> bool:
-    """中文吉祥物自我介绍片头；默认关。AIVIDEO_HOST_INTRO=1 可开。"""
-    if normalize_locale() == "en":
-        return False
+    """吉祥物自我介绍片头；默认关。"""
     raw = os.environ.get("AIVIDEO_HOST_INTRO", "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
 def latest_output_video(locale: str | None = None) -> Path | None:
-    """当前 locale 的 output/{locale}/ 下最新 mp4；兼容旧版 output/ 根目录。"""
-    loc_dir = locale_output_dir(locale)
+    del locale
+    loc_dir = locale_output_dir()
     candidates = sorted(loc_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
     if candidates:
         return candidates[0]
@@ -123,7 +99,6 @@ def latest_output_video(locale: str | None = None) -> Path | None:
 
 
 def iter_script_json_paths() -> list[Path]:
-    """当前 locale 的脚本 + 兼容旧版 logs/ 根目录。"""
     loc_dir = locale_logs_dir()
     patterns = [
         loc_dir.glob("last_script_*.json"),

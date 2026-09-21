@@ -12,23 +12,16 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from locale_env import normalize_locale
 from paths import ROOT
 from publish_caption import (
     bilibili_enabled,
     douyin_enabled,
     eastmoney_enabled,
-    facebook_enabled,
-    instagram_enabled,
-    linkedin_enabled,
     print_manual_publish_pack,
     shipinhao_enabled,
-    tiktok_enabled,
-    us_social_enabled,
     wechat_enabled,
     xhs_video_enabled,
     xueqiu_enabled,
-    youtube_enabled,
     zhihu_enabled,
 )
 from publish_llm_browser import (
@@ -39,17 +32,6 @@ from publish_llm_browser import (
 from forum_auth import is_login_error
 from invoke_script import script_argv
 from research import run_article_research
-
-
-def _locale_en() -> bool:
-    return normalize_locale() == "en"
-
-
-def _intl_video_publish_enabled() -> bool:
-    """YouTube/TikTok/IG/FB/LinkedIn 仅英文 US 流水线使用。"""
-    return _locale_en() and (
-        youtube_enabled() or tiktok_enabled() or us_social_enabled()
-    )
 
 
 def log(message: str) -> None:
@@ -74,17 +56,6 @@ def _publish_skipped(label: str) -> bool:
 
 def _auto_publish_platforms_label() -> str:
     names: list[str] = []
-    if _locale_en():
-        if youtube_enabled():
-            names.append("YouTube")
-        if tiktok_enabled():
-            names.append("TikTok")
-        if instagram_enabled():
-            names.append("Instagram")
-        if facebook_enabled():
-            names.append("Facebook")
-        if linkedin_enabled():
-            names.append("LinkedIn")
     if bilibili_enabled():
         names.append("B站视频")
     if douyin_enabled() and llm_browser_default():
@@ -183,21 +154,6 @@ def _read_last_publish_url(log_name: str, *keys: str) -> str:
     return ""
 
 
-def publish_youtube_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
-    cmd = script_argv(
-        "publish-youtube",
-        rel(video),
-        "--script",
-        rel(script_path),
-    )
-    if dry_run:
-        cmd.append("--dry-run")
-    run(cmd, label="发布YouTube")
-    if dry_run:
-        return ""
-    return _read_last_publish_url("last_youtube_publish.json", "shorts_url", "url")
-
-
 def _bilibili_skip_video() -> bool:
     raw = os.environ.get("BILIBILI_SKIP_VIDEO", "").strip().lower()
     return raw in ("1", "true", "yes", "on")
@@ -270,21 +226,6 @@ def publish_douyin_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
 
 def publish_xiaohongshu_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
     return publish_llm_browser("xiaohongshu", video, script_path, dry_run=dry_run)
-
-
-def publish_tiktok_api(video: Path, script_path: Path, *, dry_run: bool) -> str:
-    cmd = script_argv(
-        "publish-tiktok",
-        rel(video),
-        "--script",
-        rel(script_path),
-    )
-    if dry_run:
-        cmd.append("--dry-run")
-    run(cmd, label="发布TikTok")
-    if dry_run:
-        return ""
-    return _read_last_publish_url("last_tiktok_publish.json", "url")
 
 
 def publish_eastmoney_api(forum_dir: Path, *, dry_run: bool) -> str:
@@ -440,95 +381,6 @@ def _wait_or_skip(sleep_s: int) -> bool:
         return False
     line = sys.stdin.readline().strip().lower()
     return line == "s"
-
-
-def publish_youtube(video: Path, script_path: Path, *, dry_run: bool) -> str:
-    if not youtube_enabled():
-        return ""
-
-    def _do() -> str:
-        url = publish_youtube_api(video, script_path, dry_run=dry_run)
-        if url:
-            log(f"  [YouTube] {url}")
-        return url
-
-    return _publish_with_retry(_do, label="YouTube", dry_run=dry_run)
-
-
-def publish_tiktok(video: Path, script_path: Path, *, dry_run: bool) -> str:
-    if not tiktok_enabled():
-        return ""
-
-    def _do() -> str:
-        from tiktok_auth import tiktok_direct_post_ready
-
-        ready, reason = tiktok_direct_post_ready()
-        if not ready:
-            log(f"  ↳ [TikTok] 跳过自动发布：{reason}")
-            return ""
-        if dry_run:
-            log(f"  ↳ [TikTok] Direct Post 就绪（{reason}），dry-run 不上传")
-            return ""
-        url = publish_tiktok_api(video, script_path, dry_run=False)
-        if url:
-            log(f"  [TikTok] {url}")
-        else:
-            log(f"  [TikTok] 直发完成（{reason}）")
-        return url
-
-    return _publish_with_retry(_do, label="TikTok", dry_run=dry_run)
-
-
-def _us_social_headless() -> bool:
-    raw = os.environ.get("US_SOCIAL_HEADLESS", "1").strip().lower()
-    return raw not in ("0", "false", "no", "off")
-
-
-def publish_us_social_platform(
-    platform: str,
-    video: Path,
-    script_path: Path,
-    *,
-    dry_run: bool,
-) -> str:
-    from publish_caption import facebook_enabled, instagram_enabled, linkedin_enabled
-    from us_social_publish import PLATFORM_LABEL, publish_us_social
-
-    enabled = {
-        "instagram": instagram_enabled,
-        "facebook": facebook_enabled,
-        "linkedin": linkedin_enabled,
-    }
-    if platform not in enabled or not enabled[platform]():
-        return ""
-
-    label = PLATFORM_LABEL[platform]
-
-    def _do() -> str:
-        result = publish_us_social(
-            platform,
-            video,
-            script_path,
-            dry_run=dry_run,
-            headless=_us_social_headless(),
-        )
-        if result:
-            log(f"  [{label}] 发布成功")
-        return result
-
-    return _publish_with_retry(_do, label=label, dry_run=dry_run)
-
-
-def publish_instagram(video: Path, script_path: Path, *, dry_run: bool) -> str:
-    return publish_us_social_platform("instagram", video, script_path, dry_run=dry_run)
-
-
-def publish_facebook_reels(video: Path, script_path: Path, *, dry_run: bool) -> str:
-    return publish_us_social_platform("facebook", video, script_path, dry_run=dry_run)
-
-
-def publish_linkedin(video: Path, script_path: Path, *, dry_run: bool) -> str:
-    return publish_us_social_platform("linkedin", video, script_path, dry_run=dry_run)
 
 
 def publish_bilibili(
@@ -782,7 +634,7 @@ def archive_video(video: Path, *, date_tag: str) -> Path:
 
 
 def archive_publish_bundle(video: Path, *, date_tag: str) -> dict[str, Path | None]:
-    """归档 mp4 + 同名图文文件夹到 archive/published/YYYYMMDD/zh|en/。"""
+    """归档 mp4 + 同名图文文件夹到 archive/published/YYYYMMDD/zh/。"""
     from forum_manual_pack import forum_dir_for_video
     from locale_env import archive_published_dir
 
@@ -798,14 +650,6 @@ def archive_publish_bundle(video: Path, *, date_tag: str) -> dict[str, Path | No
         shutil.move(str(video), str(video_target))
     else:
         shutil.move(str(video), str(video_target))
-    caption_sidecar = video.with_suffix(".tiktok_caption.txt")
-    if caption_sidecar.is_file():
-        caption_target = video_target.with_suffix(".tiktok_caption.txt")
-        try:
-            shutil.move(str(caption_sidecar), str(caption_target))
-        except OSError:
-            pass
-
     forum_target: Path | None = None
     forum_src = forum_dir_for_video(video)
     if forum_src.is_dir():
@@ -927,11 +771,6 @@ def pipeline_after_script(
         print_manual_publish_pack(script_path, video, skip_auto_note=True)
         return {"title": title, "video": rel(video), "script": rel(script_path), "published": False}
 
-    youtube_url = ""
-    tiktok_url = ""
-    instagram_ok = ""
-    facebook_ok = ""
-    linkedin_ok = ""
     bilibili_title = ""
     eastmoney_title = ""
     xueqiu_title = ""
@@ -943,12 +782,6 @@ def pipeline_after_script(
 
     if dry_run:
         log(f"\n=== [{index}/{target}] 预演 API 发布 ===")
-        if _locale_en():
-            youtube_url = publish_youtube(video, script_path, dry_run=True)
-            tiktok_url = publish_tiktok(video, script_path, dry_run=True)
-            instagram_ok = publish_instagram(video, script_path, dry_run=True)
-            facebook_ok = publish_facebook_reels(video, script_path, dry_run=True)
-            linkedin_ok = publish_linkedin(video, script_path, dry_run=True)
         bilibili_title = publish_bilibili(video, script_path, dry_run=True)
         douyin_title = publish_douyin(video, script_path, dry_run=True)
         xiaohongshu_title = publish_xiaohongshu(video, script_path, dry_run=True)
@@ -964,8 +797,6 @@ def pipeline_after_script(
         print_manual_publish_pack(
             script_path,
             video,
-            youtube_url=youtube_url,
-            tiktok_url=tiktok_url,
             bilibili_title=bilibili_title,
             eastmoney_title=eastmoney_title,
             xueqiu_title=xueqiu_title,
@@ -981,11 +812,6 @@ def pipeline_after_script(
             "video": rel(video),
             "script": rel(script_path),
             "published": False,
-            "youtube_url": youtube_url,
-            "tiktok_url": tiktok_url,
-            "instagram": instagram_ok,
-            "facebook": facebook_ok,
-            "linkedin": linkedin_ok,
             "bilibili_title": bilibili_title,
             "douyin_title": douyin_title,
             "xiaohongshu_title": xiaohongshu_title,
@@ -997,8 +823,7 @@ def pipeline_after_script(
         }
 
     if (
-        _intl_video_publish_enabled()
-        or bilibili_enabled()
+        bilibili_enabled()
         or (douyin_enabled() and llm_browser_default())
         or (xhs_video_enabled() and llm_browser_default())
         or shipinhao_enabled()
@@ -1009,12 +834,6 @@ def pipeline_after_script(
     ):
         label = _auto_publish_platforms_label()
         log(f"\n=== [{index}/{target}] API 自动发布（{label}）===")
-    if _locale_en():
-        youtube_url = publish_youtube(video, script_path, dry_run=False)
-        tiktok_url = publish_tiktok(video, script_path, dry_run=False)
-        instagram_ok = publish_instagram(video, script_path, dry_run=False)
-        facebook_ok = publish_facebook_reels(video, script_path, dry_run=False)
-        linkedin_ok = publish_linkedin(video, script_path, dry_run=False)
     bilibili_title = publish_bilibili(video, script_path, dry_run=False)
     douyin_title = publish_douyin(video, script_path, dry_run=False)
     xiaohongshu_title = publish_xiaohongshu(video, script_path, dry_run=False)
@@ -1063,8 +882,6 @@ def pipeline_after_script(
     print_manual_publish_pack(
         script_path,
         archived["video"],
-        youtube_url=youtube_url,
-        tiktok_url=tiktok_url,
         bilibili_title=bilibili_title,
         eastmoney_title=eastmoney_title,
         xueqiu_title=xueqiu_title,
@@ -1081,8 +898,7 @@ def pipeline_after_script(
         "forum": rel(archived["forum"]) if archived.get("forum") else "",
         "script": rel(script_path),
         "published": bool(
-            (_locale_en() and (youtube_url or tiktok_url or instagram_ok or facebook_ok or linkedin_ok))
-            or bilibili_title
+            bilibili_title
             or douyin_title
             or xiaohongshu_title
             or shipinhao_title
@@ -1091,11 +907,6 @@ def pipeline_after_script(
             or xueqiu_title
             or zhihu_title
         ),
-        "youtube_url": youtube_url,
-        "tiktok_url": tiktok_url,
-        "instagram": instagram_ok,
-        "facebook": facebook_ok,
-        "linkedin": linkedin_ok,
         "bilibili_title": bilibili_title,
         "douyin_title": douyin_title,
         "xiaohongshu_title": xiaohongshu_title,
@@ -1165,8 +976,9 @@ def process_topic(
     append_history_fn,
     skip_publish: bool = False,
 ) -> dict:
-    logs_dir = ROOT / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    from locale_env import locale_logs_dir
+
+    logs_dir = locale_logs_dir()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     script_path = logs_dir / f"last_script_{stamp}_topic{index:02d}.json"
 
@@ -1195,7 +1007,6 @@ def process_topic(
     script, _ = run_article_research(
         output=script_path,
         auto_pick=True,
-        source="exa",
         preselected_article=article,
         preselected_details=details,
         category=topic.get("category"),

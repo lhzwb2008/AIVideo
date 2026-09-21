@@ -81,7 +81,7 @@ git clone https://kkgithub.com/dreammis/social-auto-upload.git vendor\social-aut
 
 - [ ] `CURSOR_API_KEY`
 - [ ] `CURSOR_SANDBOX_REPO_URL`（Cloud Agent 沙箱仓库）
-- [ ] `CURSOR_MODEL_ID`（推荐 `grok-4.5`；不行可改 `composer-2.5`）
+- [ ] `CURSOR_MODEL_ID`（推荐 `grok-4.6`）
 - [ ] `AIHUBMIX_API_KEY`
 - [ ] `VOLCENGINE_TTS_API_KEY` + `VOLCENGINE_TTS_SPEAKER`（豆包克隆音色）
 - [ ] `WECHAT_APP_ID` / `WECHAT_APP_SECRET`（若开公众号）
@@ -107,8 +107,8 @@ WECHAT_DRAFT_ONLY=1
 ```
 
 - [ ] 根据实际上线渠道调整开关（未开的渠道不会发布）
-- [ ] 确认 `LLM_BROWSER_MODEL=claude-opus-4-8`（抖音/小红书/视频号 LLM 填表）
-- [ ] 确认 `AIVIDEO_MAX_VIDEOS_PER_RUN`（工作日 5 / 周末 3）
+- [ ] 确认 `LLM_BROWSER_MODEL`（抖音/小红书/视频号 LLM 填表）
+- [ ] 确认 `AIVIDEO_MAX_VIDEOS_PER_RUN`（工作日默认 4 槽 / 周末 3）
 
 ### 4. 登录各平台 Cookie（RDP 桌面内执行）
 
@@ -153,7 +153,7 @@ WECHAT_DRAFT_ONLY=1
 ### 6. 注册每日计划任务
 
 ```powershell
-# 每天 08:00 跑默认条数（工作日 5 / 周末 3）
+# 每天 08:00 跑默认条数（工作日 4 槽 / 周末 3）
 .\register-daily-publish.ps1 -At 08:00
 
 # 或固定 3 条

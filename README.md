@@ -55,7 +55,7 @@
 
 | 步骤 | 服务 | 模型 |
 |------|------|------|
-| 写稿 | Cursor Cloud Agent | `CURSOR_MODEL_ID`（默认 `grok-4.5`） |
+| 写稿 | Cursor Cloud Agent | `CURSOR_MODEL_ID`（默认 `grok-4.6`） |
 | 评审 / 改编 | AiHubMix Chat | `AIHUBMIX_TEXT_MODEL` |
 | 生图 | AiHubMix Images | `AIHUBMIX_IMAGE_MODEL` |
 | TTS | 豆包声音复刻 / DashScope CosyVoice | `TTS_PROVIDER` |

@@ -268,7 +268,7 @@ def _copy_slide_images(script: dict, dest_dir: Path, video: Path, n_slides: int)
         extracted = _extract_video_frames(video, dest_dir, n_slides)
         if extracted:
             return extracted
-    thumb = ROOT / "logs/youtube_thumbs" / f"{video.stem}_frame0.jpg"
+    thumb = ROOT / "logs/zh/covers" / f"{video.stem}_frame0.jpg"
     if thumb.is_file():
         dst = dest_dir / "01.jpg"
         shutil.copy2(thumb, dst)

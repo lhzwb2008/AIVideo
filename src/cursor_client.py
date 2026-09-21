@@ -28,8 +28,8 @@ def base_url() -> str:
 
 
 def model_id() -> str:
-    # Cloud Agents 以 GET /v1/models 为准；Grok 正确 id 为 grok-4.5
-    return _env("CURSOR_MODEL_ID", "grok-4.5")
+    # Cloud Agents 以 GET /v1/models 为准；当前 Grok 为 grok-4.6
+    return _env("CURSOR_MODEL_ID", "grok-4.6")
 
 
 def sandbox_repo_url() -> str:

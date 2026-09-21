@@ -1,4 +1,4 @@
-"""阿里云 OSS 上传 + 签名 URL，对齐 english-test/server/lib/ossUpload.mjs。"""
+"""阿里云 OSS 上传 + 签名 URL。"""
 
 from __future__ import annotations
 

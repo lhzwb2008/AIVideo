@@ -165,7 +165,7 @@ def _audio_data_uri(audio_path: Path) -> str:
 
 
 def _audio_url_for_wan(audio_path: Path) -> str:
-    """优先走 english-test 同款正式 OSS 签名 URL，失败再退 data URI。"""
+    """优先走正式 OSS 签名 URL，失败再退 data URI。"""
     try:
         from oss_client import oss_configured, upload_host_intro_audio
 
