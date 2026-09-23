@@ -127,17 +127,11 @@ def pick_cold_open_fx_mode(script_stem: str = "") -> str:
 # ============================================================
 # 栏目品牌 / 尾页
 # ============================================================
-_ZH_OUTRO_NARRATION = (
-    "我是AI财知道，每天用大白话讲清一个AI和股市热点，A股美股港股都聊。"
-    "觉得有用就收藏下来对照看盘用，也欢迎点个关注，下条更新别错过！"
-)
+_ZH_OUTRO_NARRATION = "有用就收藏。"
 _ZH_OUTRO_VARIANTS = [
-    _ZH_OUTRO_NARRATION,
-    "我是AI财知道，每天用大白话讲一个AI和股市热点。记得收藏对照看盘用，也点个关注，明天同一时间见！",
-    "今天的AI和股市为什么就讲到这。觉得有用就收藏下来，对照看盘用，也欢迎关注我别错过下一条。",
-    "AI财知道陪你看懂AI和钱的事，A股美股港股都聊。收藏好这条，点关注每天一条不掉队。",
-    "就到这。如果这条让你多懂一点，收藏下来有空再看，也欢迎关注我们继续每天更新。",
-    "我是AI财知道，专挑值得解释的AI和股市热点。收藏加关注，明天继续陪你看世界。",
+    "有用就收藏。",
+    "觉得有用就收藏。",
+    "有用的话就收藏。",
 ]
 
 BRAND_NAME = "AI财知道"
@@ -816,8 +810,8 @@ def _compose_audio_image_clip(
     audio_path: Path,
     out_path: Path,
 ) -> Path:
-    """无字幕版的 image+audio 合成（给尾页用，CTA 已经画在图上了）。"""
-    duration = ffprobe_duration(audio_path)
+    """无字幕版的 image+audio 合成（给尾页用）。口播只一句，最长 2.4 秒。"""
+    duration = min(2.4, ffprobe_duration(audio_path) + 0.15)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         ffmpeg_executable(), "-y",

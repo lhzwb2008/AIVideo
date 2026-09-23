@@ -1029,7 +1029,7 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
   - 可按需加 1 个市场词（A股 / 美股 / 港股 / 股市），**不要写 AI、财经、复盘、收盘、行情、投资 等泛标签**，也不要写账号品牌名（如「AI财知道」）；**公司名可以且推荐写**。
   - 例：讲 A股 电力股 → ["A股","电力股"]；讲英伟达财报 → ["英伟达","美股"]；讲海力士 → ["海力士","存储芯片"]；收盘概述 → ["A股","收评"]。
 - slides 3-4 页（最多 4 页）；第 1 页是封面正文页（非冷开场），封面 narration 必须 40-120 字；其余页 narration 50-180 字；最后一页是结论/影响/警示。
-- 最后一页的 narration 收尾时，要**先根据这个话题自然抛出一个开放式问题**引导观众去评论区讨论（结合本期具体内容，不要套「你怎么看」这种空话，要有具体钩子），**再**引导互动：**必须明确提到「收藏」**（财经类收藏权重高），例如「觉得有用就收藏下来，对照看盘用」；可顺带提关注，但**不要只喊点赞**；不要生硬。
+- 最后一页收束本期内容即可，不要再写收藏、关注，也不要写「对照看盘」。片尾会单独说「有用就收藏」。
 - title 必须是问句（6-18 字优先，最多 24 字），**封面点击率优先**：
   - 首选：「X 为什么突然…」「…怎么把…砸崩/带火」「…意味着什么」「…跟你有啥关系」「…能救/拖垮…吗」
   - 尽量带可感知钩子（具体物、大数字、逆势/午后/被抢购等反常）
@@ -1236,39 +1236,7 @@ def soft_sanitize_script(data: dict) -> dict:
         else:
             lead = str(slide.get("lead_in") or slide.get("headline") or "接着看").strip()
             slide["lead_in"] = _trim_to(lead, 14)
-    _ensure_save_cta_on_last_slide(slides)
     return data
-
-
-def _ensure_save_cta_on_last_slide(slides: list) -> None:
-    """最后一页口播缺「收藏」时补一句财经向收藏引导（不破坏字数上限）。"""
-    if not slides:
-        return
-    last = slides[-1]
-    if not isinstance(last, dict):
-        return
-    n = str(last.get("narration") or "").strip()
-    if not n or "收藏" in n:
-        return
-    suffix = _SAVE_CTA_SUFFIX
-    max_len = 220
-    if len(n) + 1 + len(suffix) <= max_len:
-        last["narration"] = n.rstrip("。！？,.!?") + "。" + suffix
-        return
-    # 超长时替换末尾常见的「点赞/关注」套话
-    for old in (
-        "点个关注加点赞，下条更新别错过！",
-        "点个关注，明天同一时间见！",
-        "点赞关注，",
-        "点个赞，",
-    ):
-        if old in n:
-            n = n.replace(old, "收藏下来对照看盘用。")
-            if "收藏" in n and len(n) <= max_len:
-                last["narration"] = n
-                return
-    trimmed = _trim_to(n, max_len - len(suffix) - 1)
-    last["narration"] = trimmed.rstrip("。！？,.!?") + "。" + suffix
 
 
 def _script_all_publish_texts(script: dict) -> list[tuple[str, str]]:
@@ -1306,8 +1274,8 @@ def douyin_pre_publish_scan(script: dict) -> tuple[list[str], list[str]]:
         warnings.append("缺少 cold_open 冷开场字段，成片将退回旧封面逻辑")
     if slides and isinstance(slides[-1], dict):
         last_n = str(slides[-1].get("narration") or "")
-        if "收藏" not in last_n:
-            warnings.append("最后一页口播未提到「收藏」，建议加上「收藏下来对照看盘用」")
+        if "对照看盘" in last_n:
+            warnings.append("最后一页含「对照看盘」，片尾只说「有用就收藏」")
 
     for label, txt in _script_all_publish_texts(script):
         if not txt.strip():
@@ -1479,9 +1447,6 @@ _COLD_OPEN_JARGON_ONLY = re.compile(
     r"(?i)MLCC|CPO|HBM|GPU|EPS|PE\b|硅光|800G|1\.6T|换手率|市盈率|概念股|涨停潮|"
     r"光模块|供给瓶颈|产业链|标的|估值|财报|IPO|龙虎榜"
 )
-_SAVE_CTA_SUFFIX = "觉得有用就收藏下来，对照看盘用。"
-
-
 def _strip_stock_codes(text: str) -> str:
     """从文本里去掉股票代码（合规软修复）。括号内代码连括号一起删。"""
     if not text:
@@ -1690,7 +1655,7 @@ ADAPT_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重�
 - 每页有 chapter_title / concept / headline / narration / image_prompt / on_image_text
 - 必须忠实于已选定文章原文（URL: {url}），不虚构事实
 - 口播必须像「AI财知道」自己的财经解读，不要说「文章认为」「作者指出」「文中提到」「某某的观点」；来源只作内部依据。
-- cold_open 必须生活化入口+反差，禁止纯术语；须输出 theme_cluster + angle；封面 narration 勿重复 cold_open 且控制在 40-120 字；最后一页引导「收藏」。
+- cold_open 必须生活化入口+反差，禁止纯术语；须输出 theme_cluster + angle；封面 narration 勿重复 cold_open 且控制在 40-120 字；最后一页不要写收藏或「对照看盘」。
 - 【合规红线】：标题/口播/上屏文字/hashtags 都严禁出现任何股票代码（A股6位、港股带.HK、美股字母代码等），也严禁荐股、喊单、目标价、买卖点、仓位建议、「稳赚/必涨/翻倍/收益率/内幕/买入/卖出」等字眼，只做客观信息梳理与原理解释。
 """
 
@@ -1706,7 +1671,7 @@ ADAPT_FIX_PROMPT_EDU = """你上一轮输出的 JSON 脚本未通过校验。请
 - 讲解指标时可用「回报率、波动、回撤、性价比」等教学用语；严禁「稳赚、包赚、必涨、跟我买、带你赚、荐股、喊单、内幕」
 - title 保持故事/后果问句，禁止改成「X是什么/怎么算」
 - cold_open 12-28 字，生活场景+反差；封面 narration 40-120 字且不重复 cold_open
-- 最后一页口播须带「收藏」引导
+- 最后一页不要写收藏或「对照看盘」，片尾会说「有用就收藏」
 """
 
 
@@ -1785,7 +1750,7 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
         "面向零基础观众：尽量用大白话，遇到专业术语就借助细节里的 key_terms 白话解释和 everyday_analogies 类比，"
         "用买菜、点外卖、开奶茶店这种生活化例子把它讲活；多打比方、少照搬观点；"
         "必须输出 cold_open / theme_cluster / angle；封面 narration 不要重复 cold_open；"
-        "最后一页口播要带「收藏」引导。\n\n"
+        "最后一页不要再喊收藏，也不要写「对照看盘」，片尾会说「有用就收藏」。\n\n"
         "请输出严格 JSON 对象（不要 markdown，不要解释）。"
     )
 
