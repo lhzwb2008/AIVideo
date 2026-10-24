@@ -446,7 +446,13 @@ function buildCover(pg) {
   pg.write(DATA.kicker || DATA.brand, { x: L, y: 270, size: 40, color: "#3b3830", at: now, cps: 99 });
   let y = 400;
   s.lines.forEach((line, i) => {
-    const size = Math.min(170, Math.floor(CW / Math.max(4, [...line].length * .98)));
+    let size = Math.min(170, Math.floor(CW / Math.max(4, [...line].length)));
+    const probe = document.createElement("span");
+    probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font-family:Marker;font-size:${size}px`;
+    probe.textContent = line;
+    document.body.appendChild(probe);
+    if (probe.offsetWidth > CW - 10) size = Math.floor(size * (CW - 10) / probe.offsetWidth);
+    probe.remove();
     const t = pg.write(line, { x: L, y, size, at: now, cps: 99 });
     if (i === 1 || s.lines.length === 1) pg.marker(L - 10, y + t.h * .62, L + t.width + 14, y + t.h * .62, t.h * .44, YEL, now, .1);
     if (i === 2) pg.path(wavy(r, L, L + t.width, y + t.h + 4, 8, 40), { at: now, dur: .1, stroke: PINK, width: 6, pen: false });
@@ -461,7 +467,7 @@ function buildCover(pg) {
     x += t.width + 50;
   });
   /* 左下角手绘小涂鸦，封面不至于空 */
-  const gx = L + 20, gy = 1330, gw = 420, gh = 300;
+  const gx = L + 20, gy = Math.min(1400, Math.max(1330, y + 90 + 300)), gw = 420, gh = 300;
   if (DATA.doodle === "ball") {
     const cx = gx + 170, cy = gy - 150, rad = 140;
     const ball = document.createElementNS(NS, "circle");
@@ -479,7 +485,7 @@ function buildCover(pg) {
       { at: now, dur: .1, width: 6, stroke: PINK, pen: false });
     pg.path(arrowPath(r, gx + gw * .78, gy - gh * .62, gx + gw * .95, gy - gh * .86), { at: now, dur: .1, width: 6, stroke: PINK, pen: false });
   }
-  if (s.stamp) pg.burst(790, 1150, 150, s.stamp, DATA.hold + .1, s.stamp.length > 2 ? 64 : 84, -10);
+  if (s.stamp) pg.burst(790, gy - 180, 150, s.stamp, DATA.hold + .1, s.stamp.length > 2 ? 64 : 84, -10);
 }
 
 function buildEnd(pg) {
