@@ -11,6 +11,7 @@ from paths import ROOT
 _SCRIPT_MAP: dict[str, tuple[str, bool]] = {
     "run-enrich-images": ("enrich_images.py", False),
     "run-compose": ("video_compose.py", False),
+    "run-explainer": ("explainer_compose.py", False),
     "publish-bilibili": ("publish_bilibili.py", True),
     "publish-eastmoney": ("publish_eastmoney.py", True),
     "publish-xueqiu": ("publish_xueqiu.py", True),

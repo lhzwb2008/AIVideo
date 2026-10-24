@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --paper: #FBF6E4;
+    --ink: #232323;
+    --mute: #5E5A52;
+    --yellow: rgba(255, 221, 87, .88);
+    --purple: rgba(196, 170, 236, .85);
+    --purple-ink: #7B5CC4;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1080px; height: 1920px; overflow: hidden; background: var(--paper); }
+  body { font-family: "Marker", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; color: var(--ink); -webkit-font-smoothing: antialiased; }
+  #grid {
+    position: absolute; inset: -80px;
+    background-image:
+      linear-gradient(rgba(150, 140, 110, .16) 2px, transparent 2px),
+      linear-gradient(90deg, rgba(150, 140, 110, .16) 2px, transparent 2px);
+    background-size: 54px 54px;
+  }
+  .slide { position: absolute; inset: 0; opacity: 0; }
+  .layer { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; }
+  svg.layer { overflow: visible; }
+  svg.hl { mix-blend-mode: multiply; }
+  .tx { position: absolute; line-height: 1.22; white-space: pre-wrap; word-break: break-all; }
+  .tx span { opacity: 0; }
+  .num { position: absolute; white-space: nowrap; line-height: 1; }
+  .badge { position: absolute; left: 0; top: 0; z-index: 900; }
+  #pen { position: absolute; left: 0; top: 0; width: 150px; height: 150px; z-index: 950; opacity: 0;
+         filter: drop-shadow(6px 10px 6px rgba(0,0,0,.18)); transform-origin: 0 0; }
+  #subs { position: absolute; z-index: 1000; left: 0; right: 0; top: 1480px; height: 0; display: flex; align-items: center; justify-content: center; }
+  #subs span {
+    flex: none; background: rgba(0,0,0,.55); color: #fff; display: none;
+    font-family: "Hiragino Sans GB", "SimHei", "Microsoft YaHei", "PingFang SC", sans-serif;
+    font-size: 54px; line-height: 64px; padding: 24px; text-align: center; white-space: nowrap;
+    text-shadow: -3px -3px 0 #000, 3px -3px 0 #000, -3px 3px 0 #000, 3px 3px 0 #000, 0 3px 0 #000, 0 -3px 0 #000, 3px 0 0 #000, -3px 0 0 #000;
+  }
+</style>
+</head>
+<body>
+<div id="grid"></div>
+<div id="stage"></div>
+<img class="badge" id="badge">
+<svg id="pen" viewBox="0 0 150 150">
+  <g transform="rotate(-38 0 150)">
+    <path d="M0 150 L10 128 L22 128 Z" fill="#2a2a2a"/>
+    <rect x="9" y="38" width="14" height="92" rx="3" fill="#3a3f4a"/>
+    <rect x="9" y="38" width="14" height="22" fill="#d9d2c0"/>
+    <rect x="22" y="44" width="4" height="40" rx="2" fill="#c9c2b0"/>
+    <rect x="11" y="20" width="10" height="20" rx="3" fill="#7B5CC4"/>
+  </g>
+</svg>
+<div id="subs"><span></span></div>
+<script>
+const DATA = /*__DATA__*/;
+const NS = "http://www.w3.org/2000/svg";
+const INK = "#232323", YEL = "rgba(255,221,87,.88)", PUR = "rgba(196,170,236,.85)", PINK = "#7B5CC4";
+const L = 76, R = 1004, CW = R - L, TOP = 250, BOTTOM = 1400;
+const clamp = (x) => Math.max(0, Math.min(1, x));
+const ease = {
+  out: (p) => 1 - Math.pow(1 - p, 3),
+  io: (p) => (p < .5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2),
+  back: (p) => { const c = 1.7; return 1 + (c + 1) * Math.pow(p - 1, 3) + c * Math.pow(p - 1, 2); },
+  lin: (p) => p,
+};
+const tracks = [];
+
+function rng(seed) {
+  let s = (seed * 2654435761) >>> 0 || 1;
+  return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return (s % 100000) / 100000; };
+}
+function esc(t) { return String(t).replace(/[&<>]/g, (x) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[x])); }
+
+/* ---------- 手绘几何 ---------- */
+function rline(r, x1, y1, x2, y2, amp = 2.2) {
+  const j = () => (r() - .5) * 2 * amp;
+  const len = Math.hypot(x2 - x1, y2 - y1), nx = -(y2 - y1) / (len || 1), ny = (x2 - x1) / (len || 1);
+  const bow = (r() - .5) * Math.min(14, len * .02);
+  const mx = (x1 + x2) / 2 + nx * bow, my = (y1 + y2) / 2 + ny * bow;
+  return `M${(x1 + j()).toFixed(1)} ${(y1 + j()).toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${(x2 + j()).toFixed(1)} ${(y2 + j()).toFixed(1)}`;
+}
+function rrect(r, x, y, w, h) {
+  const o = () => 4 + r() * 8;
+  return [rline(r, x - o(), y, x + w + o(), y), rline(r, x + w, y - o(), x + w, y + h + o()),
+          rline(r, x + w + o(), y + h, x - o(), y + h), rline(r, x, y + h + o(), x, y - o())].join(" ");
+}
+function rellipse(r, cx, cy, rx, ry, turns = 1.1) {
+  let d = ""; const n = 56, a0 = -2.2 + r() * .6;
+  for (let i = 0; i <= n; i++) {
+    const a = a0 + turns * 6.2832 * i / n, k = 1 + (r() - .5) * .025 + .05 * i / n;
+    d += (i ? "L" : "M") + (cx + Math.cos(a) * rx * k).toFixed(1) + " " + (cy + Math.sin(a) * ry * k).toFixed(1);
+  }
+  return d;
+}
+function starburst(r, cx, cy, r1, r2, n = 15) {
+  let d = "";
+  for (let i = 0; i < n * 2; i++) {
+    const a = Math.PI * i / n - Math.PI / 2, rad = (i % 2 ? r2 : r1) * (1 + (r() - .5) * .12);
+    d += (i ? "L" : "M") + (cx + Math.cos(a) * rad * 1.18).toFixed(1) + " " + (cy + Math.sin(a) * rad).toFixed(1);
+  }
+  return d + "Z";
+}
+function arrowPath(r, x1, y1, x2, y2) {
+  const a = Math.atan2(y2 - y1, x2 - x1), h = 22;
+  return rline(r, x1, y1, x2, y2, 1.5) +
+    ` M${(x2 - h * Math.cos(a - .5)).toFixed(1)} ${(y2 - h * Math.sin(a - .5)).toFixed(1)} L${x2.toFixed(1)} ${y2.toFixed(1)}` +
+    ` L${(x2 - h * Math.cos(a + .5)).toFixed(1)} ${(y2 - h * Math.sin(a + .5)).toFixed(1)}`;
+}
+function wavy(r, x1, x2, y, amp = 6, wl = 34) {
+  let d = `M${x1} ${y}`;
+  for (let x = x1; x < x2; x += wl / 2) d += ` Q${x + wl / 4} ${y + (((x - x1) / (wl / 2)) % 2 ? amp : -amp) * (0.8 + r() * .4)} ${Math.min(x2, x + wl / 2)} ${y}`;
+  return d;
+}
+function brace(x1, x2, y) {
+  const m = (x1 + x2) / 2, d = 22;
+  return `M${x1} ${y - d} Q${x1} ${y} ${x1 + d} ${y} L${m - d} ${y} Q${m} ${y} ${m} ${y + d} Q${m} ${y} ${m + d} ${y} L${x2 - d} ${y} Q${x2} ${y} ${x2} ${y - d}`;
+}
+function checkPath(x, y, s) { return `M${x} ${y + s * .5} L${x + s * .38} ${y + s * .88} L${x + s * 1.05} ${y - s * .1}`; }
+function sparks(r, cx, cy, rad) {
+  let d = "";
+  for (const a of [-2.3, -1.6, -0.9]) {
+    const a2 = a + (r() - .5) * .2;
+    d += ` M${(cx + Math.cos(a2) * rad).toFixed(1)} ${(cy + Math.sin(a2) * rad).toFixed(1)} L${(cx + Math.cos(a2) * (rad + 26)).toFixed(1)} ${(cy + Math.sin(a2) * (rad + 26)).toFixed(1)}`;
+  }
+  return d;
+}
+
+/* ---------- 页面构件 ---------- */
+class Page {
+  constructor(s, i) {
+    this.s = s; this.i = i; this.r = rng(1000 + i * 97);
+    this.root = document.createElement("div"); this.root.className = "slide";
+    this.body = document.createElement("div"); this.body.className = "layer";
+    this.hl = this.svg("layer hl"); this.ink = this.svg("layer");
+    this.text = document.createElement("div"); this.text.className = "layer";
+    this.root.append(this.hl, this.ink, this.text);
+    this.dy = 0;
+    document.getElementById("stage").appendChild(this.root);
+  }
+  svg(cls) { const e = document.createElementNS(NS, "svg"); e.setAttribute("class", cls); e.setAttribute("viewBox", "0 0 1080 1920"); return e; }
+  cue(k) { const c = this.s.cues; return c[Math.max(0, Math.min(k ?? 0, c.length - 1))]; }
+  /* 骨架（框、表头、标签）在页头写完后依次画出，数据等口播说到再填 */
+  skel(k, dataAt) { return Math.min(dataAt ?? Infinity, this.base + k * .35); }
+  track(at, dur, fn, opt = {}) {
+    const k = { page: this, at, dur: Math.max(.05, dur), fn, curve: opt.curve || "out", pen: opt.pen || null, shift: opt.shift ?? true };
+    tracks.push(k); fn(0); return k;
+  }
+  path(d, { at, dur = .6, stroke = INK, width = 4.5, fill = "none", layer = this.ink, pen = true, opacity = 1, cap = "round" }) {
+    const p = document.createElementNS(NS, "path");
+    p.setAttribute("d", d); p.setAttribute("fill", fill); p.setAttribute("stroke", stroke);
+    p.setAttribute("stroke-width", width); p.setAttribute("stroke-linecap", cap); p.setAttribute("stroke-linejoin", "round");
+    p.setAttribute("opacity", opacity);
+    layer.appendChild(p);
+    const len = p.getTotalLength() + 2;
+    p.style.strokeDasharray = `${len} ${len}`;
+    this.track(at, dur, (q) => { p.style.strokeDashoffset = len * (1 - q); }, {
+      curve: "io", pen: pen ? (q) => { const pt = p.getPointAtLength(len * q); return [pt.x, pt.y]; } : null,
+    });
+    return p;
+  }
+  /* 圆珠笔描两遍，像手画的 */
+  sketch(d1, d2, opt) { this.path(d1, opt); if (d2) this.path(d2, { ...opt, width: (opt.width || 4.5) * .55, opacity: .7, pen: false }); }
+  marker(x1, y1, x2, y2, h, color, at, dur = .45) {
+    const r = this.r, j = () => (r() - .5) * 6;
+    return this.path(`M${x1} ${y1 + j()} L${x2} ${y2 + j()}`, { at, dur, stroke: color, width: h, layer: this.hl, cap: "butt", pen: true });
+  }
+  write(text, { x, y, w = CW, size = 52, color = INK, align = "left", at, cps = 14, weight = 400, maxDur = 1.4 }) {
+    const e = document.createElement("div");
+    e.className = "tx";
+    Object.assign(e.style, { left: x + "px", top: y + "px", width: w + "px", fontSize: size + "px", color, textAlign: align, fontWeight: weight });
+    const chars = [...String(text)];
+    e.innerHTML = chars.map((c) => `<span>${esc(c)}</span>`).join("");
+    this.text.appendChild(e);
+    const spans = [...e.children];
+    const pts = spans.map((sp) => [sp.offsetLeft + x + sp.offsetWidth, sp.offsetTop + y + sp.offsetHeight * .82]);
+    const dur = Math.min(maxDur, Math.max(.3, chars.length / cps));
+    this.track(at, dur, (q) => {
+      const k = q * spans.length;
+      spans.forEach((sp, i) => { sp.style.opacity = clamp(k - i); });
+    }, { curve: "lin", pen: (q) => pts[Math.min(pts.length - 1, Math.floor(q * pts.length))] });
+    const lines = [...new Set(spans.map((sp) => sp.offsetTop))];
+    let right = x;
+    spans.forEach((sp) => { if (sp.offsetTop === lines[lines.length - 1] || lines.length === 1) right = Math.max(right, x + sp.offsetLeft + sp.offsetWidth); });
+    return { el: e, h: e.offsetHeight, end: at + dur, right, width: Math.max(...spans.map((sp) => sp.offsetLeft + sp.offsetWidth), 0), lines: lines.length };
+  }
+  counter(value, unit, { x, y, size, color = INK, at, dur = .9, align = "left", unitSize }) {
+    const e = document.createElement("div");
+    e.className = "num";
+    e.style.fontSize = size + "px"; e.style.color = color; e.style.top = y + "px";
+    const m = String(value).match(/^(\d+)(?:\.(\d+))?$/);
+    const target = m ? parseFloat(value) : null, dec = m && m[2] ? m[2].length : 0;
+    const u = unit ? `<span style="font-size:${unitSize || Math.round(size * .36)}px;margin-left:8px">${esc(unit)}</span>` : "";
+    e.innerHTML = `<b style="font-weight:400">${esc(value)}</b>${u}`;
+    this.text.appendChild(e);
+    const w = e.offsetWidth;
+    e.style.left = (align === "center" ? x - w / 2 : align === "right" ? x - w : x) + "px";
+    const b = e.querySelector("b");
+    this.track(at, dur, (q) => {
+      e.style.opacity = clamp(q * 4);
+      e.style.transform = `scale(${.6 + .4 * ease.back(clamp(q * 1.6))})`;
+      if (target !== null) b.textContent = (target * ease.out(q)).toFixed(dec);
+    }, { curve: "lin" });
+    e.style.transformOrigin = "left bottom";
+    if (align === "center") e.style.transformOrigin = "center bottom";
+    return { el: e, w, h: e.offsetHeight, left: parseFloat(e.style.left) };
+  }
+  pop(node, at, dur = .4, cx, cy, rot = 0) {
+    node.style.transformOrigin = `${cx}px ${cy}px`;
+    this.track(at, dur, (q) => {
+      node.style.opacity = clamp(q * 3);
+      node.style.transform = `rotate(${rot}deg) scale(${q <= 0 ? 0 : ease.back(q)})`;
+    }, { curve: "lin" });
+  }
+  burst(cx, cy, r1, text, at, size = 52, rot = -8) {
+    const g = document.createElementNS(NS, "g");
+    const p = document.createElementNS(NS, "path");
+    p.setAttribute("d", starburst(this.r, cx, cy, r1, r1 * .78));
+    p.setAttribute("fill", "#FFE066"); p.setAttribute("stroke", INK); p.setAttribute("stroke-width", 4); p.setAttribute("stroke-linejoin", "round");
+    g.appendChild(p);
+    const t = document.createElementNS(NS, "text");
+    t.setAttribute("x", cx); t.setAttribute("y", cy + size * .36); t.setAttribute("text-anchor", "middle");
+    t.setAttribute("font-size", size); t.setAttribute("font-family", "Marker"); t.setAttribute("fill", INK);
+    t.textContent = text;
+    g.appendChild(t);
+    this.ink.appendChild(g);
+    this.pop(g, at, .45, cx, cy, rot);
+    this.path(sparks(this.r, cx, cy, r1 * 1.25), { at: at + .3, dur: .3, width: 4, pen: false });
+  }
+}
+
+/* ---------- 页头 ---------- */
+function header(pg) {
+  const s = pg.s, at = s.start + .15;
+  const pn = `${String(s.idx).padStart(2, "0")}/${String(s.count).padStart(2, "0")}`;
+  const n = pg.write(pn, { x: R - 140, y: 112, w: 140, size: 40, align: "right", at: s.start, cps: 30 });
+  pg.path(wavy(pg.r, R - 120, R, 168, 4, 26), { at: s.start + .2, dur: .3, stroke: PINK, width: 4, pen: false });
+  const size = s.title.length > 10 ? 64 : 74;
+  const t = pg.write(s.title, { x: L, y: TOP, size, at, cps: 12 });
+  pg.marker(L - 10, TOP + t.h * .62, Math.min(R, t.width + L + 14), TOP + t.h * .62, t.h * .42 * (t.lines > 1 ? 1 : 1), YEL, t.end, .4);
+  let y = TOP + t.h + 26;
+  pg.base = t.end + .5;
+  if (s.visual.lead) {
+    const k = pg.write(s.visual.lead, { x: L + 6, y, size: 42, color: "#3b3830", at: Math.max(t.end + .2, pg.cue(0)), cps: 16 });
+    pg.path(wavy(pg.r, L + 6, L + Math.min(CW, k.width) + 6, y + k.h + 6, 4, 30), { at: k.end, dur: .35, stroke: PINK, width: 4, pen: false });
+    y += k.h + 30;
+    pg.base = k.end + .4;
+  }
+  pg.headCount = { hl: pg.hl.childNodes.length, ink: pg.ink.childNodes.length, text: pg.text.childNodes.length };
+  return y + 34;
+}
+
+/* ---------- 各版式 ---------- */
+const LAYOUT = {};
+
+LAYOUT.bignum = (pg, y0) => {
+  const v = pg.s.visual, at = pg.cue(v.cue);
+  const size = String(v.value).length > 5 ? 200 : 260;
+  const c = pg.counter(v.value, v.unit, { x: 540, y: y0 + 40, size, at, dur: 1.0, align: "center", unitSize: 90 });
+  const cx = 540, cy = y0 + 40 + c.h * .55;
+  pg.path(rellipse(pg.r, cx, cy, c.w * .62 + 40, c.h * .62 + 20), { at: at + .7, dur: .7, width: 5 });
+  pg.path(sparks(pg.r, cx + c.w * .5 + 40, cy - c.h * .3, 30), { at: at + 1.3, dur: .3, width: 4, pen: false });
+  let y = y0 + 40 + c.h + 70;
+  if (v.label) {
+    const lb = pg.write(v.label, { x: L, y, w: CW, size: 54, align: "center", at: pg.skel(0, at + .9), cps: 14 });
+    const lw = Math.min(CW, lb.width);
+    pg.marker(540 - lw / 2 - 14, y + lb.h * .6, 540 + lw / 2 + 14, y + lb.h * .6, lb.h * .45, PUR, lb.end, .35);
+    y += lb.h + 60;
+  }
+  for (const nt of v.notes || []) {
+    const a = pg.cue(nt.cue);
+    pg.path(arrowPath(pg.r, L + 10, y + 32, L + 70, y + 32), { at: a, dur: .3, width: 4.5 });
+    const w = pg.write(nt.text, { x: L + 96, y, w: CW - 96, size: 46, at: a + .25, cps: 15 });
+    y += w.h + 34;
+  }
+  return y;
+};
+
+LAYOUT.compare = (pg, y0) => {
+  const items = pg.s.visual.items, n = items.length, gap = n === 2 ? 70 : 34;
+  const cw = (CW - gap * (n - 1)) / n, ch = 520;
+  let maxY = y0;
+  items.forEach((it, i) => {
+    const x = L + i * (cw + gap), y = y0 + 30, at = pg.cue(it.cue), sk = pg.skel(i * 3, at);
+    pg.sketch(rrect(pg.r, x, y, cw, ch), rrect(pg.r, x, y, cw, ch), { at: sk, dur: .6 });
+    const lb = pg.write(it.label, { x: x + 10, y: y + 34, w: cw - 20, size: n === 2 ? 50 : 42, align: "center", at: sk + .5, cps: 14 });
+    pg.marker(x + 30, y + 34 + lb.h * .62, x + cw - 30, y + 34 + lb.h * .62, lb.h * .4, PUR, lb.end, .3);
+    const vs = String(it.value).length, size = n === 2 ? (vs > 5 ? 120 : 160) : (vs > 4 ? 90 : 120);
+    const vy = y + 60 + lb.h + 40;
+    const va = Math.max(at, lb.end + .3);
+    if (it.hot) pg.burst(x + cw / 2, vy + size * .5, Math.min(cw * .36, size * .78), "", va + .2, 1, -6);
+    pg.counter(it.value, it.unit, { x: x + cw / 2, y: vy, size, at: va + .3, dur: .9, align: "center" });
+    if (it.note) pg.write(it.note, { x: x + 16, y: y + ch - 150, w: cw - 32, size: n === 2 ? 38 : 32, color: "#3b3830", align: "center", at: va + .9, cps: 16 });
+    maxY = Math.max(maxY, y + ch);
+  });
+  if (n === 2) {
+    const a = pg.skel(3, pg.cue(items[1].cue)) - .1;
+    pg.write("VS", { x: 540 - 35, y: y0 + 30 + ch / 2 - 36, w: 70, size: 52, align: "center", at: a, cps: 8, color: PINK });
+  }
+  return maxY + 40;
+};
+
+LAYOUT.bars = (pg, y0) => {
+  const v = pg.s.visual, bars = v.bars, max = Math.max(...bars.map((b) => b.value));
+  const rowH = bars.length > 4 ? 180 : 215, barH = bars.length > 4 ? 80 : 100, full = CW - 250;
+  let y = y0 + 20;
+  pg.path(rline(pg.r, L + 4, y - 10, L + 4, y + rowH * bars.length, 1.5), { at: pg.skel(0, pg.cue(bars[0].cue) - .4), dur: .4, width: 5 });
+  bars.forEach((b, i) => {
+    const w = Math.max(40, full * b.value / max);
+    const lb = pg.write(b.label, { x: L + 24, y, w: CW, size: 50, at: pg.skel(1 + i * 2, pg.cue(b.cue)), cps: 16 });
+    const at = Math.max(pg.cue(b.cue), lb.end - .2);
+    const by = y + 74;
+    const clip = document.createElementNS(NS, "clipPath"); const cid = "c" + Math.round(pg.r() * 1e9);
+    clip.setAttribute("id", cid);
+    const cr = document.createElementNS(NS, "rect"); cr.setAttribute("x", L + 4); cr.setAttribute("y", by - 6); cr.setAttribute("height", barH + 12);
+    clip.appendChild(cr); pg.ink.appendChild(clip);
+    const g = document.createElementNS(NS, "g"); g.setAttribute("clip-path", `url(#${cid})`);
+    const fill = document.createElementNS(NS, "path");
+    fill.setAttribute("d", `M${L + 4} ${by} h${w} v${barH} h${-w} Z`); fill.setAttribute("fill", b.hot ? "#FFE066" : "rgba(196,170,236,.55)");
+    g.appendChild(fill);
+    let hatch = "";
+    for (let hx = L + 4 - barH; hx < L + 4 + w; hx += 22) {
+      const x1 = Math.max(L + 4, hx), x2 = Math.min(L + 4 + w, hx + barH);
+      hatch += `M${x1} ${by + barH - (x1 - hx)} L${x2} ${by + barH - (x2 - hx)} `;
+    }
+    const hp = document.createElementNS(NS, "path"); hp.setAttribute("d", hatch); hp.setAttribute("stroke", INK); hp.setAttribute("stroke-width", 2.5); hp.setAttribute("opacity", .55);
+    g.appendChild(hp);
+    const ol = document.createElementNS(NS, "path"); ol.setAttribute("d", rrect(pg.r, L + 4, by, w, barH)); ol.setAttribute("stroke", INK); ol.setAttribute("stroke-width", 4.5); ol.setAttribute("fill", "none"); ol.setAttribute("stroke-linecap", "round");
+    g.appendChild(ol);
+    pg.ink.appendChild(g);
+    const grow = .9;
+    pg.track(at + .35, grow, (q) => { cr.setAttribute("width", (w + 14) * q); }, { curve: "out", pen: (q) => [L + 4 + w * ease.out(q), by + barH] });
+    pg.counter(b.text, v.unit, { x: L + 4 + w + 26, y: by + barH / 2 - 42, size: 84, at: at + .35 + grow * .6, dur: .6, unitSize: 38 });
+    y += rowH;
+  });
+  return y + 10;
+};
+
+LAYOUT.table = (pg, y0) => {
+  const v = pg.s.visual, cols = v.cols, nc = cols.length, rows = v.rows;
+  const first = nc === 3 ? 300 : 380, cw = [first, ...Array(nc - 1).fill((CW - first) / (nc - 1))];
+  const xs = [L]; cw.forEach((w) => xs.push(xs[xs.length - 1] + w));
+  const headH = 96, rowH = rows.length > 3 ? 118 : 136, at0 = pg.skel(0, pg.cue(rows[0].cue) - 1.2);
+  let y = y0 + 10;
+  pg.marker(L, y + headH / 2, R, y + headH / 2, headH * .8, PUR, at0, .5);
+  cols.forEach((c, k) => pg.write(c, { x: xs[k] + 18, y: y + 22, w: cw[k] - 30, size: 42, at: at0 + .3 + k * .25, cps: 14 }));
+  pg.path(rline(pg.r, L - 10, y + headH, R + 10, y + headH), { at: at0 + .4, dur: .35, width: 5, pen: false });
+  y += headH;
+  rows.forEach((row, i) => {
+    const sk = pg.skel(3 + nc * .7 + i, pg.cue(row.cue));
+    const k0 = pg.write(row.cells[0], { x: xs[0] + 18, y: y + (rowH - 56) / 2, w: cw[0] - 30, size: 44, at: sk, cps: 14 });
+    pg.path(rline(pg.r, L - 6, y + rowH, R + 6, y + rowH, 1.5), { at: sk + .2, dur: .3, width: 2.5, pen: false, opacity: .7 });
+    const at = Math.max(pg.cue(row.cue), k0.end);
+    if (row.hot) pg.marker(L, y + rowH / 2, R, y + rowH / 2, rowH * .62, YEL, at, .4);
+    row.cells.slice(1).forEach((cell, k) => pg.write(cell, { x: xs[k + 1] + 18, y: y + (rowH - 56) / 2, w: cw[k + 1] - 30, size: 48, at: at + (row.hot ? .35 : 0) + k * .3, cps: 14 }));
+    y += rowH;
+  });
+  for (let k = 1; k < nc; k++) pg.path(rline(pg.r, xs[k], y0 + 14, xs[k], y, 1.5), { at: at0 + .5, dur: .4, width: 3, pen: false, opacity: .7 });
+  return y + 30;
+};
+
+LAYOUT.timeline = (pg, y0) => {
+  const items = pg.s.visual.items, x0 = L + 30, gapY = items.length > 3 ? 190 : 230;
+  let y = y0 + 20;
+  items.forEach((it, i) => {
+    const sk = pg.skel(i * 2, pg.cue(it.cue));
+    if (i > 0) pg.path(rline(pg.r, x0, y - gapY + 52, x0, y - 6, 1.2), { at: sk - .3, dur: .3, width: 5 });
+    pg.path(rellipse(pg.r, x0, y + 26, 20, 20, 1.15), { at: sk, dur: .3, width: 5, stroke: PINK });
+    const wn = pg.write(it.when, { x: x0 + 52, y: y - 6, w: CW - 90, size: 42, color: "#3b3830", at: sk + .25, cps: 16 });
+    const at = Math.max(pg.cue(it.cue), wn.end + .1);
+    pg.marker(x0 + 46, y - 6 + wn.h * .62, x0 + 58 + wn.width, y - 6 + wn.h * .62, wn.h * .5, PUR, at, .3);
+    pg.write(it.text, { x: x0 + 52, y: y + wn.h + 10, w: CW - 90, size: 50, at: at + .25, cps: 15 });
+    y += gapY;
+  });
+  return y - gapY + 150;
+};
+
+LAYOUT.flow = (pg, y0) => {
+  const steps = pg.s.visual.steps, bh = 132, gap = steps.length > 3 ? 92 : 120, bw = CW - 120, x = L + 60;
+  let y = y0 + 10;
+  steps.forEach((st, i) => {
+    const sk = pg.skel(i * 1.6, pg.cue(st.cue)), last = i === steps.length - 1;
+    if (i > 0) pg.path(arrowPath(pg.r, 540, y - gap + 16, 540, y - 16), { at: sk - .3, dur: .3, width: 5 });
+    pg.sketch(rrect(pg.r, x, y, bw, bh), last ? rrect(pg.r, x, y, bw, bh) : null, { at: sk, dur: .5 });
+    const at = Math.max(pg.cue(st.cue), sk + .5);
+    if (last) pg.marker(x + 6, y + bh / 2, x + bw - 6, y + bh / 2, bh * .8, YEL, at, .4);
+    pg.write(st.text, { x: x + 20, y: y + (bh - 62) / 2, w: bw - 40, size: 52, align: "center", at: at + (last ? .35 : 0), cps: 14 });
+    y += bh + gap;
+  });
+  return y - gap + 30;
+};
+
+LAYOUT.points = (pg, y0) => {
+  const items = pg.s.visual.items;
+  let y = y0 + 20;
+  items.forEach((it, i) => {
+    const sk = pg.skel(i, pg.cue(it.cue));
+    pg.path(rrect(pg.r, L + 10, y + 6, 56, 56), { at: sk, dur: .35, width: 4.5 });
+    const at = Math.max(pg.cue(it.cue), sk + .35);
+    const w = pg.write(it.text, { x: L + 104, y, w: CW - 104, size: 52, at, cps: 14 });
+    pg.path(checkPath(L + 18, y + 22, 50), { at: w.end + .05, dur: .25, width: 7, stroke: PINK });
+    y += Math.max(80, w.h) + 64;
+  });
+  return y;
+};
+
+LAYOUT.quote = (pg, y0) => {
+  const v = pg.s.visual, sk = pg.skel(0, pg.cue(v.cue)), at = Math.max(pg.cue(v.cue), sk + 1.1);
+  const x = L + 20, w = CW - 40;
+  const tmp = pg.write(v.quote, { x: x + 50, y: y0 + 90, w: w - 100, size: 58, at, cps: 13, maxDur: 2.6 });
+  const h = tmp.h + 150;
+  pg.sketch(rrect(pg.r, x, y0 + 30, w, h), null, { at: sk, dur: .7 });
+  pg.path(`M${x + 120} ${y0 + 30 + h} L${x + 150} ${y0 + 30 + h + 70} L${x + 220} ${y0 + 30 + h}`, { at: sk + .7, dur: .3, width: 4.5 });
+  pg.write("“", { x: x - 10, y: y0 - 30, w: 120, size: 150, color: PINK, at: sk + .9, cps: 4 });
+  let y = y0 + 30 + h + 100;
+  if (v.by) {
+    const b = pg.write("—— " + v.by, { x: x + 240, y: y - 40, w: w - 240, size: 42, color: "#3b3830", at: tmp.end + .2, cps: 16 });
+    y += b.h;
+  }
+  return y;
+};
+
+function footer(pg, y) {
+  const v = pg.s.visual;
+  if (v.after) {
+    const at = pg.cue(v.after.cue);
+    pg.path(brace(L + 140, R - 140, y + 10), { at, dur: .45, width: 4.5 });
+    const t = pg.write(v.after.text, { x: L, y: y + 56, w: CW, size: 54, align: "center", at: at + .4, cps: 13 });
+    const tw = Math.min(CW, t.width);
+    pg.marker(540 - tw / 2 - 20, y + 56 + t.h * .55, 540 + tw / 2 + 20, y + 56 + t.h * .55, t.h * .78, YEL, at + .3, .4);
+    y += 56 + t.h + 30;
+  }
+  if (v.stamp) {
+    const at = pg.cue(v.stamp.cue);
+    pg.burst(R - 130, y + 90, 92, v.stamp.text, at, v.stamp.text.length > 2 ? 40 : 52, 10);
+    y += 200;
+  }
+  return y;
+}
+
+/* ---------- 封面 / 尾页 ---------- */
+function buildCover(pg) {
+  const s = pg.s, r = pg.r, now = -1;
+  pg.write(DATA.kicker || DATA.brand, { x: L, y: 270, size: 40, color: "#3b3830", at: now, cps: 99 });
+  let y = 400;
+  s.lines.forEach((line, i) => {
+    const size = Math.min(170, Math.floor(CW / Math.max(4, [...line].length * .98)));
+    const t = pg.write(line, { x: L, y, size, at: now, cps: 99 });
+    if (i === 1 || s.lines.length === 1) pg.marker(L - 10, y + t.h * .62, L + t.width + 14, y + t.h * .62, t.h * .44, YEL, now, .1);
+    if (i === 2) pg.path(wavy(r, L, L + t.width, y + t.h + 4, 8, 40), { at: now, dur: .1, stroke: PINK, width: 6, pen: false });
+    y += t.h + 26;
+  });
+  y += 50;
+  let x = L;
+  (s.tags || []).forEach((tag) => {
+    if (x > L && x + 50 * ([...tag].length + 1) > R) { x = L; y += 90; }
+    const t = pg.write("#" + tag, { x, y, w: 520, size: 46, color: INK, at: now, cps: 99 });
+    pg.marker(x - 8, y + t.h * .55, x + t.width + 8, y + t.h * .55, t.h * .7, PUR, now, .1);
+    x += t.width + 50;
+  });
+  /* 左下角手绘小涂鸦，封面不至于空 */
+  const gx = L + 20, gy = 1330, gw = 420, gh = 300;
+  if (DATA.doodle === "ball") {
+    const cx = gx + 170, cy = gy - 150, rad = 140;
+    const ball = document.createElementNS(NS, "circle");
+    ball.setAttribute("cx", cx); ball.setAttribute("cy", cy); ball.setAttribute("r", rad - 4); ball.setAttribute("fill", "#F5A85A");
+    pg.hl.appendChild(ball);
+    pg.path(rellipse(r, cx, cy, rad, rad, 1.08), { at: now, dur: .1, width: 6, pen: false });
+    pg.path(rline(r, cx - rad, cy, cx + rad, cy, 1) + " " + rline(r, cx, cy - rad, cx, cy + rad, 1), { at: now, dur: .1, width: 5, pen: false });
+    pg.path(`M${cx - rad * .72} ${cy - rad * .7} Q${cx - rad * .25} ${cy} ${cx - rad * .72} ${cy + rad * .7} M${cx + rad * .72} ${cy - rad * .7} Q${cx + rad * .25} ${cy} ${cx + rad * .72} ${cy + rad * .7}`,
+      { at: now, dur: .1, width: 5, pen: false });
+    pg.path(`M${cx + rad + 30} ${cy - 40} l50 -10 M${cx + rad + 26} ${cy + 10} l60 0 M${cx + rad + 30} ${cy + 60} l50 10`, { at: now, dur: .1, width: 5, stroke: PINK, pen: false });
+  } else {
+    pg.path(rline(r, gx, gy - gh, gx, gy, 1.5) + " " + rline(r, gx, gy, gx + gw, gy, 1.5), { at: now, dur: .1, width: 5, pen: false });
+    const pts = [[0, .25], [.18, .45], [.34, .38], [.52, .62], [.7, .55], [.9, .9]];
+    pg.path(pts.map(([px, py], k) => (k ? "L" : "M") + (gx + 20 + px * (gw - 40)).toFixed(1) + " " + (gy - 20 - py * (gh - 60)).toFixed(1)).join(" "),
+      { at: now, dur: .1, width: 6, stroke: PINK, pen: false });
+    pg.path(arrowPath(r, gx + gw * .78, gy - gh * .62, gx + gw * .95, gy - gh * .86), { at: now, dur: .1, width: 6, stroke: PINK, pen: false });
+  }
+  if (s.stamp) pg.burst(790, 1150, 150, s.stamp, DATA.hold + .1, s.stamp.length > 2 ? 64 : 84, -10);
+}
+
+function buildEnd(pg) {
+  const at = pg.s.start + .1;
+  const b = pg.write(DATA.brand, { x: L, y: 520, w: CW, size: 76, align: "center", color: PINK, at: -1, cps: 99 });
+  pg.path(wavy(pg.r, 540 - b.width / 2, 540 + b.width / 2, 520 + b.h + 6, 6, 34), { at: -1, dur: .1, stroke: PINK, width: 5, pen: false });
+  pg.write(DATA.tagline, { x: L, y: 650, w: CW, size: 40, align: "center", color: "#3b3830", at: -1, cps: 99 });
+  const h = pg.write(DATA.outro_headline, { x: L, y: 860, w: CW, size: 96, align: "center", at, cps: 22 });
+  const hw = Math.min(CW, h.width);
+  pg.marker(540 - hw / 2 - 20, 860 + h.h * .62, 540 + hw / 2 + 20, 860 + h.h * .62, h.h * .45, YEL, h.end, .3);
+  pg.write(DATA.outro_subline, { x: L, y: 1040, w: CW, size: 54, align: "center", color: "#3b3830", at: h.end + .1, cps: 24 });
+  if (DATA.disclaimer) pg.write(DATA.disclaimer, { x: L, y: 1290, w: CW, size: 34, align: "center", color: "#8a847a", at: pg.s.start, cps: 99 });
+}
+
+/* ---------- 组装 ---------- */
+let pages = [];
+async function build() {
+  const ff = new FontFace("Marker", `url(${DATA.font})`);
+  try { document.fonts.add(await ff.load()); } catch (e) { console.warn("font", e); }
+  await document.fonts.ready;
+  document.getElementById("badge").src = DATA.badge;
+  await new Promise((ok) => { const b = document.getElementById("badge"); b.complete ? ok() : (b.onload = b.onerror = ok); });
+  pages = DATA.slides.map((s, i) => {
+    const pg = new Page(s, i);
+    if (s.type === "cover") buildCover(pg);
+    else if (s.type === "end") buildEnd(pg);
+    else {
+      const y0 = header(pg);
+      const bodyStart = tracks.length;
+      const y1 = footer(pg, (LAYOUT[s.visual.layout] || LAYOUT.points)(pg, y0));
+      const room = BOTTOM - y0, used = y1 - y0;
+      const dy = used < room ? Math.round((room - used) * .3) : 0;
+      const k = used > room ? room / used : 1;
+      pg.fit = { from: bodyStart, dy, k, y0 };
+    }
+    return pg;
+  });
+  /* 内容偏少时正文下移、太多时等比缩小；标题和页码不动 */
+  for (const pg of pages) {
+    if (!pg.fit) continue;
+    const { dy, k, y0 } = pg.fit;
+    if (!dy && k === 1) continue;
+    pg.bodyMap = (x, y) => [540 + (x - 540) * k, y0 + (y - y0) * k + dy];
+    splitBody(pg);
+  }
+}
+
+function splitBody(pg) {
+  for (const name of ["hl", "ink", "text"]) {
+    const layer = pg[name], keep = pg.headCount[name];
+    const isSvg = name !== "text";
+    const g = isSvg ? document.createElementNS(NS, "g") : document.createElement("div");
+    if (!isSvg) { g.className = "layer"; }
+    [...layer.childNodes].slice(keep).forEach((n) => g.appendChild(n));
+    if (isSvg) {
+      const k = pg.fit.k, dy = pg.fit.dy, y0 = pg.fit.y0;
+      g.setAttribute("transform", `translate(0 ${dy}) translate(540 ${y0}) scale(${k}) translate(-540 ${-y0})`);
+    } else {
+      g.style.transformOrigin = `540px ${pg.fit.y0}px`;
+      g.style.transform = `translateY(${pg.fit.dy}px) scale(${pg.fit.k})`;
+    }
+    layer.appendChild(g);
+  }
+}
+
+const subs = document.querySelector("#subs span");
+const pen = document.getElementById("pen");
+const grid = document.getElementById("grid");
+const FADE = .4;
+window.__hideSubs = false;
+window.setHideSubs = (v) => { window.__hideSubs = v; };
+
+window.seek = (t) => {
+  for (const k of tracks) k.fn(ease[k.curve](clamp((t - k.at) / k.dur)));
+  let cur = 0;
+  pages.forEach((pg, i) => {
+    const s = pg.s;
+    if (t >= s.start) cur = i;
+    const pin = i === 0 ? 1 : clamp((t - s.start) / FADE);
+    const pout = i === pages.length - 1 ? 1 : clamp((pages[i + 1].s.start - t) / FADE + 1);
+    const vis = t < s.start ? 0 : Math.min(pin, pout);
+    pg.root.style.opacity = vis;
+    const slideIn = (1 - ease.out(pin)) * 90, slideOut = (1 - pout) * -60;
+    pg.root.style.transform = `translateX(${slideIn + slideOut}px)`;
+    pg.root.style.display = vis > 0 ? "block" : "none";
+  });
+  let best = null;
+  for (const k of tracks) {
+    if (!k.pen || k.page !== pages[cur]) continue;
+    if (t >= k.at && t < k.at + k.dur && (!best || k.at >= best.at)) best = k;
+  }
+  if (best) {
+    let [x, y] = best.pen(ease[best.curve](clamp((t - best.at) / best.dur)));
+    const pg = best.page;
+    if (pg.bodyMap && tracks.indexOf(best) >= pg.fit.from) [x, y] = pg.bodyMap(x, y);
+    pen.style.opacity = 1;
+    pen.style.transform = `translate(${x}px, ${y - 150}px)`;
+  } else pen.style.opacity = 0;
+  grid.style.transform = `translate(${-(t * 5) % 54}px, ${-(t * 2.5) % 54}px)`;
+  let lines = null;
+  if (!window.__hideSubs && t >= DATA.hold) for (const c of DATA.subs) if (t >= c.t0 && t < c.t1) lines = c.lines;
+  subs.innerHTML = lines ? lines.map(esc).join("<br>") : "";
+  subs.style.display = lines ? "block" : "none";
+};
+
+build().then(() => {
+  window.seek(0);
+  window.__ready = true;
+});
+</script>
+</body>
+</html>

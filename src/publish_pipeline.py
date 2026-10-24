@@ -724,6 +724,24 @@ def generate_forum_pack(script_path: Path, video: Path) -> Path | None:
     return None
 
 
+def visual_mode() -> str:
+    """comic = 生图 + 漫画静态合成；explainer = 漫画配色的动态 PPT 动画，不再生图。"""
+    return os.environ.get("AIVIDEO_VISUAL_MODE", "explainer").strip().lower() or "explainer"
+
+
+def make_video(script_path: Path) -> None:
+    if visual_mode() == "explainer":
+        try:
+            run(script_argv("run-explainer", str(script_path)), label="动画合成")
+            return
+        except Exception as exc:  # noqa: BLE001
+            if os.environ.get("AIVIDEO_EXPLAINER_FALLBACK", "1").strip().lower() in {"0", "false", "no", "off"}:
+                raise
+            log(f"  ⚠️ 动画合成失败，退回生图 + 漫画合成：{exc}")
+    run(script_argv("run-enrich-images", str(script_path)), label="生图")
+    run(script_argv("run-compose", str(script_path)), label="合成")
+
+
 def pipeline_after_script(
     script_path: Path,
     title: str,
@@ -750,8 +768,7 @@ def pipeline_after_script(
         log(f"\n=== [{index}/{target}] 跳过生图/合成，使用已有视频 ===")
         log(f"  视频: {rel(video)}")
     else:
-        run(script_argv("run-enrich-images", str(script_path)), label="生图")
-        run(script_argv("run-compose", str(script_path)), label="合成")
+        make_video(script_path)
         video = latest_video()
 
     forum_dir = video.parent / video.stem

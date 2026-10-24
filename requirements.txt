@@ -1,3 +1,5 @@
 # 主项目 .venv（make-and-publish / video_compose / research 等）
 Pillow>=10.0.0
 requests>=2.31.0
+# 动态 PPT 动画（AIVIDEO_VISUAL_MODE=explainer）；用系统 Chrome，无需 playwright install
+playwright>=1.40

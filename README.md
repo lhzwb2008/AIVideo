@@ -41,13 +41,17 @@
 
 ## 视觉风格
 
-- **白板手绘** 方格纸底，黑色钢笔线 + 黄/紫荧光笔点缀
-- **9:16 竖版**：图片占顶部 78%，底部 22% 留给字幕
-- 中文短语（`on_image_text`）作为手写注释画进图里
+默认 `AIVIDEO_VISUAL_MODE=explainer`：动态 PPT 动画，不生图。
+
+- **白板手绘** 方格纸底，圆珠笔线条 + 黄/紫荧光笔，手写体（`assets/fonts` 霞鹜漫黑）
+- 每页由文本模型从 8 种版式（大数字/对比/柱状/表格/时间线/因果链/要点/引言）里挑，数字必须出自口播或原文
+- 先画骨架，口播说到哪个数据再填数、长柱子；字幕、品牌角标、数字人片头与旧版一致
+- 用系统 Chrome（`LOCAL_CHROME_PATH`）逐帧渲染，失败自动退回 `comic`（gpt-image-2 漫画图 + 静态合成）
+- 单独预览：`.venv\Scripts\python.exe src\explainer_compose.py logs\zh\last_script_xxx.json --preview`
 
 ## 流程
 
-`make-and-publish.ps1` → `src/make_publish.py`：选题写稿 → Opus 深读改编 → 生图 → TTS/ffmpeg 合成 → 各平台发布 → 归档。
+`make-and-publish.ps1` → `src/make_publish.py`：选题写稿 → Opus 深读改编 → 动画合成（explainer）→ 各平台发布 → 归档。
 
 中间产物在 `logs/zh/`（如 `last_script_*.json`、`article_history.json`）；成片在 `output/zh/`，成功后归档到 `archive/published/YYYYMMDD/zh/`。
 
