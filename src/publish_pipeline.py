@@ -691,7 +691,7 @@ def recover_missing_forum_packs(made: list[dict]) -> None:
 
 
 def generate_forum_pack(script_path: Path, video: Path) -> Path | None:
-    if os.environ.get("AIVIDEO_FORUM_POST", "1").strip().lower() in ("0", "false", "no"):
+    if os.environ.get("AIVIDEO_FORUM_POST", "0").strip().lower() in ("0", "false", "no"):
         return None
     from forum_manual_pack import build_forum_pack, forum_dir_for_video
 

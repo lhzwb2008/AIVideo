@@ -87,7 +87,7 @@ git clone https://kkgithub.com/dreammis/social-auto-upload.git vendor\social-aut
 - [ ] `SAU_BIN`
 - [ ] `WECHAT_APP_ID` / `WECHAT_APP_SECRET`（若开公众号）
 
-**发布开关**默认只开抖音、东财、雪球。要开全渠道，在 `.env` 里加这些行覆盖默认值：
+**发布开关**默认只开抖音。要开其他平台，在 `.env` 里加对应行覆盖默认值：
 
 ```ini
 # 视频平台
