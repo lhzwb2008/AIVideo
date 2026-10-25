@@ -32,7 +32,8 @@ function Apply-EnvLine {
 function Load-EnvSections {
     param(
         [string]$FilePath,
-        [string]$WantLocale
+        [string]$WantLocale,
+        [bool]$LocaleForce = $true
     )
     if (-not (Test-Path $FilePath)) { return }
     $section = 'shared'
@@ -47,7 +48,7 @@ function Load-EnvSections {
         }
         switch ($section) {
             'shared' { Apply-EnvLine -Line $line -Force $false }
-            { $_ -eq $WantLocale } { Apply-EnvLine -Line $line -Force $true }
+            { $_ -eq $WantLocale } { Apply-EnvLine -Line $line -Force $LocaleForce }
             default { }
         }
     }
@@ -62,5 +63,7 @@ foreach ($key in @(
 }
 
 Load-EnvSections -FilePath (Join-Path $Root '.env') -WantLocale $Locale
+# 默认配置随代码走；.env 里已有的项不覆盖
+Load-EnvSections -FilePath (Join-Path $Root 'config\defaults.env') -WantLocale $Locale -LocaleForce $false
 $env:AIVIDEO_LOCALE = $Locale
 $env:ROOT = $Root

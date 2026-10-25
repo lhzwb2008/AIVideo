@@ -77,16 +77,17 @@ git clone https://kkgithub.com/dreammis/social-auto-upload.git vendor\social-aut
 
 ### 3. 填写 `.env`
 
-从 `.env.example` 复制（安装脚本已自动复制则跳过）。**必改 shared 段：**
+从 `.env.example` 复制（安装脚本已自动复制则跳过）。`.env` 只填密钥和账号，其余默认值在 `config/defaults.env`，随 `git pull` 更新：
 
 - [ ] `CURSOR_API_KEY`
 - [ ] `CURSOR_SANDBOX_REPO_URL`（Cloud Agent 沙箱仓库）
-- [ ] `CURSOR_MODEL_ID`（推荐 `grok-4.6`）
 - [ ] `AIHUBMIX_API_KEY`
-- [ ] `VOLCENGINE_TTS_API_KEY` + `VOLCENGINE_TTS_SPEAKER`（豆包克隆音色）
+- [ ] `VOLCENGINE_TTS_API_KEY`
+- [ ] `DASHSCOPE_API_KEY`、`EXA_API_KEY`
+- [ ] `SAU_BIN`
 - [ ] `WECHAT_APP_ID` / `WECHAT_APP_SECRET`（若开公众号）
 
-**`#== section: zh ==` 发布开关（全渠道自动发布推荐配置）：**
+**发布开关**默认只开抖音、东财、雪球。要开全渠道，在 `.env` 里加这些行覆盖默认值：
 
 ```ini
 # 视频平台

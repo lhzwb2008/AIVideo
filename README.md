@@ -135,7 +135,7 @@ src/
 | `AIVIDEO_CURSOR_REUSE_AGENT` | 同次日更复用 Cloud Agent |
 | `AIVIDEO_PUBLISH_*` | 各平台发布开关 |
 
-完整列表见 `.env.example`。
+默认值都在 `config/defaults.env`，随 `git pull` 更新；`.env` 只放密钥、账号标识和本机路径（模板见 `.env.example`）。优先级：进程环境变量 > `.env` > `config/defaults.env`，要改某项就在 `.env` 写同名一行。旧的完整 `.env` 可用 `.\scripts\slim-env.ps1` 对比后加 `-Apply` 精简。
 
 TTS 默认豆包声音复刻：
 

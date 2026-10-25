@@ -49,11 +49,20 @@ def _apply_env_sections(path: Path, *, force_overlay: bool) -> None:
                 os.environ[key] = val
 
 
+DEFAULTS_FILE = ROOT / "config" / "defaults.env"
+
+
+def apply_defaults() -> None:
+    """config/defaults.env 兜底：.env 和进程环境里没有的项才补上。"""
+    _apply_env_sections(DEFAULTS_FILE, force_overlay=False)
+
+
 def load_locale_env(locale: str | None = None, *, force_overlay: bool = True) -> str:
-    """加载 .env：shared + zh。忽略 locale 参数。"""
+    """加载 .env：shared + zh，再用 config/defaults.env 补齐。忽略 locale 参数。"""
     del locale
     os.environ["AIVIDEO_LOCALE"] = "zh"
     _apply_env_sections(ROOT / ".env", force_overlay=force_overlay)
+    apply_defaults()
     return "zh"
 
 
