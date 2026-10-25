@@ -55,7 +55,7 @@ def _workers() -> int:
 def _plan(data: dict, script: dict, work: Path, *, replan: bool) -> dict:
     key = hashlib.sha1(
         json.dumps(
-            ["v3", planner_model(), script.get("title"), script.get("cold_open"),
+            ["v5", planner_model(), script.get("title"), script.get("hook_line"), script.get("cold_open"),
              [s.get("narration") for s in script.get("slides") or []]],
             ensure_ascii=False,
         ).encode("utf-8")
@@ -103,10 +103,13 @@ def _has_audio(path: Path) -> bool:
     return "Audio:" in text
 
 
-def _voice_dirs(texts: list[str], plan: dict) -> list[dict]:
-    """导演给的配音语气：[冷开场, 第1页, …, 片尾]；marks 的分句编号换成原文分句。"""
-    out = [{"tone": plan["cover"].get("tone", "")}]
-    for text, vis in zip(texts[1:-1], plan["slides"]):
+def _voice_dirs(texts: list[str], plan: dict, hooked: bool) -> list[dict]:
+    """导演给的配音语气：[钩子句, 冷开场, 第1页, …, 片尾]（没有钩子时从冷开场起）；marks 的分句编号换成原文分句。"""
+    out = []
+    if hooked:
+        out.append({"tone": (plan.get("hook") or {}).get("tone") or "像刚发现一件离谱的事，又快又冲，难以置信"})
+    out.append({"tone": plan["cover"].get("tone", "")})
+    for text, vis in zip(texts[len(out):-1], plan["slides"]):
         ph = _phrases(text)
         marks = [(ph[m["cue"]], m["tag"]) for m in vis.get("marks") or [] if m["cue"] < len(ph)]
         out.append({"tone": vis.get("tone", ""), "marks": marks})
@@ -155,6 +158,11 @@ def art_enabled() -> bool:
     return _flag("AIVIDEO_EXPLAINER_ART")
 
 
+def hook_first_enabled() -> bool:
+    """高光前置：第 0 秒先放全片最炸的一页和钩子句，再进封面。"""
+    return _flag("AIVIDEO_HOOK_FIRST")
+
+
 def score_enabled() -> bool:
     """自动配乐；关掉时退回 assets 里的 BGM。"""
     return _flag("AIVIDEO_EXPLAINER_SCORE")
@@ -197,11 +205,11 @@ def _art(prompt: str, out: Path) -> Path | None:
         return None
 
 
-def _arts(script: dict, script_file: Path, plan: dict) -> list[Path | None]:
-    """[封面, 第1页, 第2页, …]；画面描述优先用导演稿，没有就用脚本里的 image_prompt。关掉插图时全为 None。"""
+def _arts(script: dict, script_file: Path, plan: dict) -> tuple[list[Path | None], Path | None]:
+    """([封面, 第1页, 第2页, …], 高光反应特写)；画面描述优先用导演稿，没有就用脚本里的 image_prompt。关掉插图时全为 None。"""
     slides = script.get("slides") or []
     if not art_enabled():
-        return [None] * (len(slides) + 1)
+        return [None] * (len(slides) + 1), None
     d = locale_logs_dir() / "images" / script_file.stem
     d.mkdir(parents=True, exist_ok=True)
     first = slides[0].get("image_prompt") if slides else ""
@@ -210,8 +218,13 @@ def _arts(script: dict, script_file: Path, plan: dict) -> list[Path | None]:
     jobs += [str((v.get("art") or {}).get("scene") or s.get("image_prompt") or s.get("headline") or "")
              for s, v in zip(slides, plan["slides"])]
     outs = [d / "art_cover.png"] + [d / f"art_{i:02d}.png" for i in range(1, len(slides) + 1)]
+    hook_scene = ((plan.get("hook") or {}).get("art") or {}).get("scene")
+    if hook_scene:
+        jobs.append(str(hook_scene))
+        outs.append(d / "art_hook.png")
     with ThreadPoolExecutor(max_workers=3) as pool:
-        return list(pool.map(_art, jobs, outs))
+        res = list(pool.map(_art, jobs, outs))
+    return res[: len(slides) + 1], (res[-1] if hook_scene else None)
 
 
 def _prepare(script_file: Path, *, replan: bool = False):
@@ -242,30 +255,58 @@ def _prepare(script_file: Path, *, replan: bool = False):
     seed = hashlib.sha1(f"{datetime.now():%Y%m%d}|{script_file.stem}".encode("utf-8")).digest()
     variants = vc.OUTRO_NARRATION_VARIANTS or [vc.OUTRO_NARRATION]
     outro_text = variants[seed[0] % len(variants)]
-    texts = [cold] + [str(s.get("narration") or "") for s in slides] + [outro_text]
+    hook_line = str(script.get("hook_line") or "").strip()
+    hook = plan.get("hook") if hook_line and hook_first_enabled() else None
+    lead = [hook_line, cold] if hook else [cold]
+    texts = lead + [str(s.get("narration") or "") for s in slides] + [outro_text]
     _log("[explainer] 配音")
-    audios = _narrate(texts, ex, _voice_dirs(texts, plan))
-    arts = _arts(script, script_file, plan)
+    audios = _narrate(texts, ex, _voice_dirs(texts, plan, bool(hook)))
+    arts, hook_art = _arts(script, script_file, plan)
 
     pages: list[dict] = []
     voices: list[tuple[Path, float]] = []
     subs: list[dict] = []
 
-    adur = _duration(audios[0])
+    t = 0.0
+    if hook:
+        hold = 0.0
+        k, at = hook["page"], 0.05
+        hdur = _duration(audios[0])
+        ph = _phrases(hook_line)
+        spans = vc.allocate_phrase_times(ph, hdur)
+        art, art_dir = (hook_art, hook["art"]) if hook_art else (arts[k], plan["slides"][k - 1].get("art") or {})
+        pages.append({
+            "type": "hook", "text": hook["text"], "stamp": hook["stamp"],
+            "art": art.as_uri() if art else "", "art_dir": art_dir,
+            "energy": 5, "cues": [round(at + a, 3) for a, _ in spans],
+            "start": 0.0, "end": round(max(2.2, at + hdur + 0.3), 3),
+        })
+        subs += _subs(ph, spans, at)
+        voices.append((audios[0], at))
+        t = pages[-1]["end"]
+
+    ci = len(lead) - 1
+    adur = _duration(audios[ci])
     lo = max(1.5, vc._env_float("AIVIDEO_COLD_OPEN_MIN_S", 2.5))
     hi = max(lo, vc._env_float("AIVIDEO_COLD_OPEN_MAX_S", 4.5), vc._env_float("AIVIDEO_COLD_OPEN_AUDIO_MAX_S", 8.0))
-    cover_end = max(lo, hold + 0.6, min(hi, adur + 0.25))
+    if hook:
+        voice_at = t + 0.5
+        cover_end = voice_at + max(1.3, min(hi, adur + 0.25))
+    else:
+        voice_at = 0.0
+        cover_end = max(lo, hold + 0.6, min(hi, adur + 0.25))
     ph = _phrases(cold)
-    subs += _subs(ph, vc.allocate_phrase_times(ph, adur), 0.0, floor=hold)
-    voices.append((audios[0], 0.0))
+    subs += _subs(ph, vc.allocate_phrase_times(ph, adur), voice_at, floor=max(hold, voice_at))
+    voices.append((audios[ci], voice_at))
     pages.append({
         "type": "cover", **plan["cover"], "art_dir": plan["cover"].get("art") or {},
-        "art": arts[0].as_uri() if arts[0] else "", "energy": 2, "start": 0.0, "end": round(cover_end, 3),
+        "art": arts[0].as_uri() if arts[0] else "", "energy": 2,
+        "start": round(t, 3), "end": round(cover_end, 3), "voice_at": round(voice_at if hook else hold, 3),
     })
 
     t = cover_end
     for i, (slide, vis) in enumerate(zip(slides, plan["slides"]), start=1):
-        dur = _duration(audios[i])
+        dur = _duration(audios[ci + i])
         ph = _phrases(str(slide.get("narration") or ""))
         spans = vc.allocate_phrase_times(ph, dur)
         audio_at = t + LEAD
@@ -282,7 +323,7 @@ def _prepare(script_file: Path, *, replan: bool = False):
             "end": round(audio_at + dur + TAIL, 3),
         })
         subs += _subs(ph, spans, audio_at)
-        voices.append((audios[i], audio_at))
+        voices.append((audios[ci + i], audio_at))
         t = pages[-1]["end"]
 
     odur = _duration(audios[-1])
@@ -318,9 +359,11 @@ def _prepare(script_file: Path, *, replan: bool = False):
 def _stills(pages: list[dict], script_file: Path, work: Path) -> list[tuple[float, Path]]:
     """封面 + 每页定格（不带字幕），给发布封面和论坛图文用。"""
     img_dir = locale_logs_dir() / "images" / script_file.stem
-    out = [(0.0, work / "cover.png")]
-    for p in pages[1:-1]:
-        out.append((p["end"] - 0.45, img_dir / f"slide_{p['idx']:02d}.png"))
+    cover = next(p for p in pages if p["type"] == "cover")
+    out = [(cover["start"] + 0.45 if cover["start"] else 0.0, work / "cover.png")]
+    for p in pages:
+        if p["type"] == "content":
+            out.append((p["end"] - 0.45, img_dir / f"slide_{p['idx']:02d}.png"))
     return out
 
 
@@ -470,7 +513,10 @@ def compose(script_file: Path, *, output: Path | None = None, replan: bool = Fal
         voiced = _mix_voice(voices, silent, total, ex / "explainer_voice.mp4")
 
     title = str(script.get("title") or "").strip()
-    if getattr(vc, "host_intro_enabled", lambda: False)() and title:
+    hooked = any(p["type"] == "hook" for p in pages)
+    if hooked:
+        _log("[explainer] 已高光前置，跳过数字人片头")
+    elif getattr(vc, "host_intro_enabled", lambda: False)() and title:
         intro = vc._try_host_intro(title, work_dir=work, script=script)
         if intro:
             voiced = _splice_intro(voiced, intro, cover_end, ex / "explainer_intro.mp4")
@@ -486,7 +532,11 @@ def compose(script_file: Path, *, output: Path | None = None, replan: bool = Fal
 
     for s, (_, path) in zip(script.get("slides") or [], stills[1:]):
         s["image_path"] = str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
-    script["explainer"] = {"layouts": [p["visual"]["layout"] for p in pages[1:-1]], "duration": round(total, 2)}
+    script["explainer"] = {
+        "layouts": [p["visual"]["layout"] for p in pages if p["type"] == "content"],
+        "hook": next((p["text"] for p in pages if p["type"] == "hook"), ""),
+        "duration": round(total, 2),
+    }
     script_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     dur_s = _duration(output)

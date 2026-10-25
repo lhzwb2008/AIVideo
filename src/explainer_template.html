@@ -379,7 +379,8 @@ function artPanel(pg, top) {
 /* 金句：气氛点 + 记忆点。白闪、震屏、重低音，横幅砸到屏幕上 */
 function peakBanner(pg, cy, pk, boil, layer = pg.ink, tlayer = pg.text) {
   const at = pg.cue(pk.cue) + .1, land = at + .3;
-  const size = [...pk.text].length > 6 ? 84 : 100;
+  const n = [...pk.text].length;
+  const size = pk.size ? Math.min(pk.size, Math.floor((CW - 220) / n)) : n > 6 ? 84 : 100;
   const tw = Math.min(CW - 160, measure(pk.text, size));
   const bw = tw + 120, bh = size + 64, x0 = 540 - bw / 2, y0 = cy - bh / 2, sk = 26;
   const g = el("g", {}, layer);
@@ -640,9 +641,30 @@ function fitSize(line, max) {
   return w > CW - 10 ? Math.floor(size * (CW - 10) / w) : size;
 }
 
-/* 封面第 0 帧就是完整的发布封面；口播开始后再动起来 */
+/* 高光前置：第 0 帧就是全片最炸那页的插图，大字砸下来，再倒回封面从头讲 */
+function buildHook(pg) {
+  const s = pg.s, end = s.end, dir = s.art_dir || {};
+  const top = 230, h = 1150;
+  let boil = null;
+  if (s.art) {
+    const p = panelBox(pg, s.art, { x: L - 4, y: top, w: CW + 8, h, rot: -1, shadow: YEL, focus: dir.focus });
+    boil = p.boil;
+    pg.track(0, end, (q) => {
+      const u = ease.out(clamp(q * end / .3));
+      p.box.style.transform = `rotate(${(-1 - 3 * (1 - u)).toFixed(3)}deg) scale(${(1.1 - .1 * u).toFixed(4)})`;
+      p.img.style.transform = kenBurns(dir.move || "push", q);
+    }, { curve: "lin" });
+    boil.wins.push([0, 1.2, 1]);
+  }
+  impact(pg, .06, 18);
+  sfx(0, "thump");
+  if (s.stamp) pg.burst(R - 120, top + 30, 96, s.stamp, -1, [...s.stamp].length > 2 ? 40 : 54, 10, { hit: 0 });
+  peakBanner(pg, s.art ? top + h * .62 : 860, { text: s.text, cue: 0, size: 150 }, boil);
+}
+
+/* 封面：放在片头时第 0 帧就是完整的发布封面；放在高光之后时从自己的起点算。口播开始后再动起来 */
 function buildCover(pg) {
-  const s = pg.s, r = pg.r, now = -1, hold = DATA.hold;
+  const s = pg.s, r = pg.r, now = -1, hold = s.voice_at ?? DATA.hold, t0 = s.start;
   pg.write(DATA.kicker || DATA.brand, { x: L, y: 270, size: 40, color: "#3b3830", at: now, cps: 99 });
   let y = 400;
   const titleEls = [];
@@ -665,8 +687,8 @@ function buildCover(pg) {
   if (s.art) {
     const top = y + 100, h = Math.max(520, BOTTOM + 20 - top), dir = s.art_dir || {};
     const { box, img, boil } = panelBox(pg, s.art, { x: L - 4, y: top, w: CW + 8, h, rot: 1.2, shadow: PUR, focus: dir.focus });
-    pg.track(0, end, (q) => {
-      const t = q * end, k = smooth(hold, end, t);
+    pg.track(t0, end - t0, (q) => {
+      const t = t0 + q * (end - t0), k = smooth(hold, end, t);
       img.style.transform = `scale(${(1 + .14 * k).toFixed(4)})`;
       box.style.transform = `rotate(${(1.2 - .6 * k).toFixed(3)}deg) translateY(${(Math.sin(Math.max(0, t - hold) * 1.6) * 4).toFixed(2)}px)`;
     }, { curve: "lin" });
@@ -756,7 +778,8 @@ async function build() {
   await new Promise((ok) => { const b = document.getElementById("badge"); b.complete ? ok() : (b.onload = b.onerror = ok); });
   pages = DATA.slides.map((s, i) => {
     const pg = new Page(s, i);
-    if (s.type === "cover") buildCover(pg);
+    if (s.type === "hook") buildHook(pg);
+    else if (s.type === "cover") buildCover(pg);
     else if (s.type === "end") buildEnd(pg);
     else {
       const y0 = header(pg);
@@ -887,7 +910,8 @@ window.seek = (t) => {
       const { p, kind } = trans, isB = i === trans.i, e = ease.io(p);
       if (kind === "ink") {
         const a = 1500 + (-1500 - BW - 60) * e;
-        if (isB) clip = `polygon(${a + BW}px 0, 1600px 0, 1600px 1920px, ${a + BW - SK}px 1920px)`;
+        clip = isB ? `polygon(${a + BW}px 0, 1600px 0, 1600px 1920px, ${a + BW - SK}px 1920px)`
+                   : `polygon(-600px 0, ${a}px 0, ${a - SK}px 1920px, -600px 1920px)`;
         band.g.setAttribute("opacity", 1);
         band.black.setAttribute("d", para(a - 30, BW + 60));
         band.yel.setAttribute("d", para(a, BW));
@@ -901,7 +925,7 @@ window.seek = (t) => {
         hblurk.setAttribute("stdDeviation", `${(70 * Math.sin(Math.PI * p)).toFixed(1)} 0`);
       } else if (kind === "zoom") {
         tf = isB ? `scale(${(1.4 - .4 * e).toFixed(4)})` : `scale(${(1 + .6 * e).toFixed(4)})`;
-        op = isB ? smooth(.3, .62, p) : 1 - smooth(.38, .7, p);
+        op = isB ? smooth(.5, .78, p) : 1 - smooth(.22, .5, p);
         filter = `blur(${(16 * Math.sin(Math.PI * p)).toFixed(1)}px)`;
       } else if (kind === "flash") {
         const on = isB ? p >= .5 : p < .5;
@@ -947,7 +971,8 @@ window.seek = (t) => {
   } else pen.style.opacity = 0;
   grid.style.transform = `translate(${-(t * 5) % 54}px, ${-(t * 2.5) % 54}px)`;
   /* 浮尘 */
-  const energy = pages[cur].s.type === "content" ? (pages[cur].s.visual.energy || 3) : pages[cur].s.type === "end" ? 3 : 2;
+  const ty = pages[cur].s.type;
+  const energy = ty === "content" ? (pages[cur].s.visual.energy || 3) : ty === "end" ? 3 : ty === "hook" ? 5 : 2;
   const amt = clamp((energy - 1.5) / 3.5) * (t < DATA.hold ? 0 : 1);
   for (const d of dust) {
     const x = ((d.x + d.vx * t) % 1080 + 1080) % 1080, y = ((d.y + d.vy * t) % 1920 + 1920) % 1920;

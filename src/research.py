@@ -822,6 +822,7 @@ def _normalize_deep_read_details(details: dict, article: dict) -> dict:
         "narrative_beats",
         "omit_in_video",
         "everyday_analogies",
+        "hook_candidates",
     ):
         if key in details:
             details[key] = _coerce_str_list(details[key])
@@ -878,6 +879,8 @@ def deep_read_article(
 - `narrative_beats`：作者真实的叙事节奏（5-10 拍：「先...，然后...，转折是...，最后...」），每拍一句。
 - `author_stance`：作者**自己的态度/立场**一句话（不是他描述别人的观点，是他自己怎么想）。
 - `omit_in_video`：你建议改编短视频时**砍掉不讲**的内容（哪些段落对普通观众没意义），3-5 条。
+- `wallet_math`：把文中最关键的那个差距换算成**一个普通人的账**，写清依据，例如「按100万房贷、30年算，利率差0.8个点，每月多还约447元，30年约16万」。只用原文数字和常识做换算，算法要对；原文数字不够算就输出空字符串。
+- `hook_candidates`：3 条候选钩子句（每条 10-24 字），给短视频第 0 秒用，分别从「结果前置 / 个人账 / 反常识 / 人群对立」里选不同类型；必须基于原文事实，带具体数字或强烈对比，路人没听过背景也能立刻懂。
 
 只输出一个 JSON 对象，键名严格按上面列。"""
     print(f"  🤖 {text_model()} 抽取深读细节…")
@@ -927,6 +930,8 @@ SELF_AUTHOR_USER = """【话题】{title_hint}
 - `narrative_beats`：科普讲解的节奏 5-8 拍（「先…然后…最后…」）。
 - `author_stance`：本栏目对这个话题的一句话判断/态度。
 - `omit_in_video`：建议不展开讲的内容 2-4 条。
+- `wallet_math`：把话题里最关键的差距换算成一个普通人的账（写清依据，如本金、年限、利率），算法要对；算不出就输出空字符串。
+- `hook_candidates`：3 条候选钩子句（每条 10-24 字），给短视频第 0 秒用，分别从「结果前置 / 个人账 / 反常识 / 人群对立」里选不同类型，带具体数字或强烈对比。
 """
 
 
@@ -1001,7 +1006,9 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
 {
   "title": "6-18字中文问句标题",
   "keyword": "2-8字关键词",
-  "cold_open": "12-28字冷开场：先生活场景再反差，禁止纯术语",
+  "hook_line": "10-24字钩子句：全片最炸的一句，成片第0秒就播",
+  "hook_type": "result|wallet|myth_bust|conflict",
+  "cold_open": "12-28字冷开场：接在钩子句后，先生活场景再反差，禁止纯术语",
   "cold_open_type": "conflict|number|question|myth_bust",
   "theme_cluster": "optical_module|ai_chip|ev_auto|macro_rates|consumer_platform|general",
   "angle": "10-24字本篇唯一角度",
@@ -1025,14 +1032,19 @@ ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财
 - **大白话优先**：能用日常说法就别用专业术语。专业词第一次出现时用半句话顺手解释（「LPR，也就是房贷利率的基准价」），不要停下来专门讲解。
 - **比喻要省着用**：全片最多 1 个生活比喻，只用在最难懂的那个概念上；能直接说清楚的，不要绕去奶茶店、菜市场。
 - **少念观点、多讲事**：不要把文章里的判断搬运过来念（「文章认为/数据显示……」）。讲具体的人和事：谁、在哪天、做了什么、结果怎样。
-- **冷开场 cold_open（硬性，单独字段）**：12-28 字、一句话说完，**仅作口播+底部字幕**（合成时不会印在封面图上）。**必须让零基础路人 3 秒听懂「跟我有啥关系」**——先用手机/涨价/买菜/工资/家电等生活场景做入口，再抛数字/反问/反常识；禁止「今天讲…」和纯术语开场。封面 slides[0].narration **不要重复 cold_open**，顺着冷开场的悬念往下讲。
+- **个人账（硬性）**：宏观大数（全国几千亿、几个基点、百分之几）观众没感觉。必须挑全片最关键的那个差距，换算成**一个普通人的账**：每月多掏多少、一年少拿多少、一辈子差多少。
+  用一个说得出口的典型情形算（如「按100万房贷、30年算」「按月薪1万算」），算法要对，结果用「大约」「将近」取整；算式依据（本金、年限、利率）必须在口播里说出来，换算结果写进某一页 narration。原文数字不够换算时，退而求其次用最反常的那个对比。
+- **钩子句 hook_line（硬性，单独字段）**：10-24 字，**成片第 0 秒就播**，配大字砸屏，决定观众划不划走。从后面正文里把**全片最炸的那一下**提到最前面，路人没听过任何背景也能立刻懂、立刻想问「凭什么」。
+  四选一（写进 hook_type）：result 结果前置（「同一个小区，你比邻居多还16万」）/ wallet 个人账（「你每月白交400多块利息」）/ myth_bust 反常识（「美国加息了，你的房贷反而没涨」）/ conflict 人群对立（「新买房的人，正在占老业主的便宜」）。
+  必须带具体数字或强烈对比；禁止「今天聊聊」「你知道吗」这类空问句，禁止夸大或编造正文里没有的事实。
+- **冷开场 cold_open（硬性，单独字段）**：12-28 字、一句话说完，**仅作口播+底部字幕**，紧跟在钩子句之后、封面出现时播：钩子抛出了结果，冷开场就把悬念收紧（「差在哪？就差在合同里一行小数点」）。**必须让零基础路人 3 秒听懂「跟我有啥关系」**——先用手机/涨价/买菜/工资/家电等生活场景做入口，再抛数字/反问/反常识；禁止「今天讲…」和纯术语开场，不要重复 hook_line。封面 slides[0].narration **不要重复 cold_open**，顺着冷开场的悬念往下讲。
 - 注意：以上「生动口语」要求不能突破后面的合规红线（不荐股、不喊单、不出现股票代码等），情绪词也不能变成「必涨」「赶紧上车」这类诱导。
 
 规则：
 - hashtags：写 **2-3 个**与本条内容直接相关的话题词（板块名、公司名、事件名等大家会搜的词）。
   - 可按需加 1 个市场词（A股 / 美股 / 港股 / 股市），**不要写 AI、财经、复盘、收盘、行情、投资 等泛标签**，也不要写账号品牌名（如「AI财知道」）；**公司名可以且推荐写**。
   - 例：讲 A股 电力股 → ["A股","电力股"]；讲英伟达财报 → ["英伟达","美股"]；讲海力士 → ["海力士","存储芯片"]；收盘概述 → ["A股","收评"]。
-- slides 3-4 页（最多 4 页）；第 1 页是封面正文页（非冷开场），封面 narration 必须 40-120 字；其余页 narration 50-180 字；最后一页是结论/影响/警示。
+- slides 3-4 页（最多 4 页）；第 1 页是封面正文页（非冷开场），封面 narration 必须 40-120 字；其余页 narration 50-140 字，全片口播合计尽量不超过 450 字（成片 60 秒左右）；最后一页是结论/影响/警示。
 - 最后一页收束本期内容即可，不要再写收藏、关注，也不要写「对照看盘」。片尾会单独说「有用就收藏」。
 - title 必须是问句（6-18 字优先，最多 24 字），**封面点击率优先**：
   - 首选：「X 为什么突然…」「…怎么把…砸崩/带火」「…意味着什么」「…跟你有啥关系」「…能救/拖垮…吗」
@@ -1150,6 +1162,13 @@ def soft_sanitize_script(data: dict) -> dict:
         cold_open = _edu_soft_replace(cold_open)
     if cold_open:
         data["cold_open"] = _trim_to(cold_open, 28)
+    hook_line = _strip_stock_codes(str(data.get("hook_line") or "").strip())
+    if edu:
+        hook_line = _edu_soft_replace(hook_line)
+    if hook_line:
+        data["hook_line"] = _trim_to(hook_line, 26)
+    if data.get("hook_type") not in _HOOK_TYPES:
+        data.pop("hook_type", None)
     data["angle"] = _trim_to(_strip_stock_codes(str(data.get("angle") or "").strip()), 24)
     tc = str(data.get("theme_cluster") or "").strip()
     if not tc:
@@ -1447,6 +1466,10 @@ _COLD_OPEN_LIFE = re.compile(
     r"没想到|其实|就像|好比|家里|日常|生活|用电|充电|追剧|刷视频|工资条|账单|"
     r"账户|钱包|手里|股民|攒钱|满屏|钱去哪|亏|赚"
 )
+_HOOK_TYPES = ("result", "wallet", "myth_bust", "conflict")
+# 钩子句要么有数字，要么有强对比/反常词
+_HOOK_PUNCH = re.compile(r"\d|[一二两三四五六七八九十百千万亿]+[块元倍万亿个]|却|反而|竟|白交|多还|少拿|倒挂|占.*便宜|比你|吃亏|离谱")
+_HOOK_EMPTY = re.compile(r"^(今天|你知道|大家好|咱们来|来聊|说说|聊聊)")
 _COLD_OPEN_JARGON_ONLY = re.compile(
     r"(?i)MLCC|CPO|HBM|GPU|EPS|PE\b|硅光|800G|1\.6T|换手率|市盈率|概念股|涨停潮|"
     r"光模块|供给瓶颈|产业链|标的|估值|财报|IPO|龙虎榜"
@@ -1526,6 +1549,26 @@ def validate_article_script(data: dict, article: dict) -> dict:
         m = pat.search(cold_open)
         if m:
             raise ValueError(f"cold_open 含股票代码「{m.group(0)}」")
+
+    hook_line = str(data.get("hook_line") or "").strip()
+    if not daily_recap:
+        if not hook_line:
+            raise ValueError("缺少 hook_line（10-24 字钩子句：全片最炸的一句，第 0 秒就播）")
+        if not (8 <= len(hook_line) <= 26):
+            raise ValueError(f"hook_line 须 10-24 字，当前 {len(hook_line)}: {hook_line!r}")
+        if _HOOK_EMPTY.match(hook_line):
+            raise ValueError(f"hook_line 禁止空问句开头，要直接抛结果: {hook_line!r}")
+        if not _HOOK_PUNCH.search(hook_line):
+            raise ValueError(f"hook_line 必须带具体数字或强烈对比（个人账/反常/对立）: {hook_line!r}")
+        if hook_line == cold_open:
+            raise ValueError("hook_line 与 cold_open 不能相同：钩子抛结果，冷开场收紧悬念")
+    for p in _reco_banned_for(article=article):
+        if p in hook_line:
+            raise ValueError(f"hook_line 含违规词「{p}」")
+    for pat in _STOCK_CODE_PATTERNS:
+        m = pat.search(hook_line)
+        if m:
+            raise ValueError(f"hook_line 含股票代码「{m.group(0)}」")
 
     title = str(data["title"]).strip()
     if len(title) < 4:
@@ -1660,6 +1703,7 @@ ADAPT_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重�
 - 必须忠实于已选定文章原文（URL: {url}），不虚构事实
 - 口播必须像「AI财知道」自己的财经解读，不要说「文章认为」「作者指出」「文中提到」「某某的观点」；来源只作内部依据。
 - cold_open 必须生活化入口+反差，禁止纯术语；须输出 theme_cluster + angle；封面 narration 勿重复 cold_open 且控制在 40-120 字；最后一页不要写收藏或「对照看盘」。
+- hook_line 10-24 字，全片最炸的一句（结果前置/个人账/反常识/人群对立），必须带数字或强对比，不与 cold_open 重复；同时输出 hook_type。
 - 【合规红线】：标题/口播/上屏文字/hashtags 都严禁出现任何股票代码（A股6位、港股带.HK、美股字母代码等），也严禁荐股、喊单、目标价、买卖点、仓位建议、「稳赚/必涨/翻倍/收益率/内幕/买入/卖出」等字眼，只做客观信息梳理与原理解释。
 """
 
@@ -1675,6 +1719,7 @@ ADAPT_FIX_PROMPT_EDU = """你上一轮输出的 JSON 脚本未通过校验。请
 - 讲解指标时可用「回报率、波动、回撤、性价比」等教学用语；严禁「稳赚、包赚、必涨、跟我买、带你赚、荐股、喊单、内幕」
 - title 保持故事/后果问句，禁止改成「X是什么/怎么算」
 - cold_open 12-28 字，生活场景+反差；封面 narration 40-120 字且不重复 cold_open
+- hook_line 10-24 字，全片最炸的一句（结果前置/个人账/反常识/人群对立），必须带数字或强对比，不与 cold_open 重复；同时输出 hook_type
 - 最后一页不要写收藏或「对照看盘」，片尾会说「有用就收藏」
 """
 
@@ -1744,7 +1789,7 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
         title_rule = "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
     return (
         f"{recap_block}{offday_block}{edu_block}{topic_block}{meta_block}\n\n{details_block}\n{relaxed_note}\n"
-        "请严格根据上面的「原文深读细节」改编。输出字段须含 title / keyword / cold_open / "
+        "请严格根据上面的「原文深读细节」改编。输出字段须含 title / keyword / hook_line / hook_type / cold_open / "
         "cold_open_type / theme_cluster / angle / hashtags / slides；"
         f"{title_rule}"
         "slides 每页只填 headline / narration / image_prompt / on_image_text。"
@@ -1753,7 +1798,9 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
         "来源信息只用于事实依据，不对观众显性提及。\n"
         "面向零基础观众：讲成一个有悬念、有反转的故事，不要讲课；专业术语用 key_terms 半句话带过，"
         "everyday_analogies 里最多挑 1 个用在最难懂的地方；高潮处用短促的情绪词接住（好家伙、你敢信、离谱的是）；"
-        "必须输出 cold_open / theme_cluster / angle；封面 narration 不要重复 cold_open；"
+        "必须输出 hook_line / cold_open / theme_cluster / angle；先把全片最关键的差距算成普通人的个人账"
+        "（可用 wallet_math，先核对算法），再从中挑最炸的一句做 hook_line（可参考 hook_candidates，但要更狠、更短）；"
+        "封面 narration 不要重复 cold_open；"
         "最后一页不要再喊收藏，也不要写「对照看盘」，片尾会说「有用就收藏」。\n\n"
         "请输出严格 JSON 对象（不要 markdown，不要解释）。"
     )
