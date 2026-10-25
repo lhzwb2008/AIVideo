@@ -32,8 +32,10 @@
          filter: drop-shadow(6px 10px 6px rgba(0,0,0,.18)); transform-origin: 0 0; }
   #flash { background: #FFFBEA; opacity: 0; z-index: 800; }
   #leak { z-index: 801; opacity: 0; mix-blend-mode: screen;
-          background: radial-gradient(ellipse 60% 40% at 92% 12%, rgba(255,214,90,.95), transparent 70%),
-                      radial-gradient(ellipse 55% 35% at 6% 62%, rgba(186,150,255,.8), transparent 70%); }
+          background: radial-gradient(ellipse 48% 34% at 92% 10%, rgba(255,214,90,.9), transparent 70%),
+                      radial-gradient(ellipse 40% 28% at 8% 62%, rgba(186,150,255,.72), transparent 70%),
+                      radial-gradient(ellipse 36% 26% at 80% 82%, rgba(242,125,110,.7), transparent 72%),
+                      radial-gradient(ellipse 34% 24% at 16% 24%, rgba(94,186,176,.7), transparent 72%); }
   #vig { z-index: 802; background: radial-gradient(ellipse 75% 62% at 50% 46%, transparent 62%, rgba(70,50,20,.16) 100%); }
   #grain { z-index: 803; opacity: .09; mix-blend-mode: overlay; background-size: 1080px 1920px; image-rendering: pixelated; }
   #fx { z-index: 790; }
@@ -60,7 +62,7 @@
       <rect x="9" y="38" width="14" height="92" rx="3" fill="#3a3f4a"/>
       <rect x="9" y="38" width="14" height="22" fill="#d9d2c0"/>
       <rect x="22" y="44" width="4" height="40" rx="2" fill="#c9c2b0"/>
-      <rect x="11" y="20" width="10" height="20" rx="3" fill="#7B5CC4"/>
+      <rect x="11" y="20" width="10" height="20" rx="3" fill="#E15A4A"/>
     </g>
   </svg>
 </div>
@@ -74,7 +76,14 @@
 <script>
 const DATA = /*__DATA__*/;
 const NS = "http://www.w3.org/2000/svg";
-const INK = "#232323", YEL = "rgba(255,221,87,.88)", PUR = "rgba(196,170,236,.85)", PINK = "#7B5CC4", GOLD = "#FFE066";
+/* 米黄纸 + 黑线是底。四支荧光笔同一明度：黄=要记住的，紫=标注，珊瑚=扎心处，青绿=数据和结构 */
+const INK = "#232323", YEL = "rgba(255,221,87,.88)", PUR = "rgba(196,170,236,.85)";
+const CORAL = "rgba(242,125,110,.86)", TEAL = "rgba(94,186,176,.88)";
+const PINK = "#7B5CC4", CORAL_INK = "#E15A4A", TEAL_INK = "#1F8A80", GOLD = "#FFE066";
+const ACCENT = [YEL, TEAL, CORAL, PUR];
+const ACCENT_INK = [TEAL_INK, CORAL_INK, PINK];
+const BAR_FILL = ["#7ED0C6", "#F4A498", "#FFE066", "#C4AAEC"];
+const accent = (i) => ACCENT[((i % 4) + 4) % 4];
 const L = 76, R = 1004, CW = R - L, TOP = 250, BOTTOM = 1400;
 const clamp = (x) => Math.max(0, Math.min(1, x));
 const smooth = (a, b, x) => { const u = clamp((x - a) / (b - a)); return u * u * (3 - 2 * u); };
@@ -354,7 +363,7 @@ function artPanel(pg, top) {
   pg.minAt = shrink + .75;
   pg.base = shrink + .85;
   const bigH = BOTTOM - top - 30, smallH = 420, x = L - 4, w = CW + 8;
-  const { box, img, boil } = panelBox(pg, s.art, { x, y: top, w, h: bigH, rot: -.8, shadow: YEL, focus: dir.focus });
+  const { box, img, boil } = panelBox(pg, s.art, { x, y: top, w, h: bigH, rot: -.8, shadow: accent((s.idx || 1) - 1), focus: dir.focus });
   const land = s.start + .42, total = s.end - s.start, rot0 = (pg.r() > .5 ? 1 : -1) * 5;
   pg.track(s.start, total, (q) => {
     const t = q * total, u = clamp((t - .12) / .3);
@@ -409,7 +418,7 @@ function header(pg) {
   const s = pg.s, at = s.start + .2;
   const pn = `${String(s.idx).padStart(2, "0")}/${String(s.count).padStart(2, "0")}`;
   pg.write(pn, { x: R - 140, y: 112, w: 140, size: 40, align: "right", at: s.start, cps: 30 });
-  pg.path(wavy(pg.r, R - 120, R, 168, 4, 26), { at: s.start + .2, dur: .3, stroke: PINK, width: 4, pen: false });
+  pg.path(wavy(pg.r, R - 120, R, 168, 4, 26), { at: s.start + .2, dur: .3, stroke: TEAL_INK, width: 4, pen: false });
   const size = s.title.length > 10 ? 64 : 76;
   const t = pg.write(s.title, { x: L, y: TOP, size, at, mode: "pop" });
   pg.marker(L - 10, TOP + t.h * .62, Math.min(R, t.width + L + 14), TOP + t.h * .62, t.h * .42, YEL, t.end - .1, .3);
@@ -420,7 +429,7 @@ function header(pg) {
     if (s.visual.lead) caption(pg, s.visual.lead, TOP + t.h + 36, Math.max(t.end + .1, s.start + .9));
   } else if (s.visual.lead) {
     const k = pg.write(s.visual.lead, { x: L + 6, y, size: 42, color: "#3b3830", at: Math.max(t.end + .2, pg.cue(0)), cps: 16 });
-    pg.path(wavy(pg.r, L + 6, L + Math.min(CW, k.width) + 6, y + k.h + 6, 4, 30), { at: k.end, dur: .35, stroke: PINK, width: 4, pen: false });
+    pg.path(wavy(pg.r, L + 6, L + Math.min(CW, k.width) + 6, y + k.h + 6, 4, 30), { at: k.end, dur: .35, stroke: CORAL_INK, width: 4, pen: false });
     y += k.h + 30;
     pg.base = k.end + .4;
   }
@@ -452,7 +461,7 @@ LAYOUT.bignum = (pg, y0) => {
   if (v.label) {
     const lb = pg.write(v.label, { x: L, y, w: CW, size: 54, align: "center", at: pg.skel(0, at + .9), cps: 14 });
     const lw = Math.min(CW, lb.width);
-    pg.marker(540 - lw / 2 - 14, y + lb.h * .6, 540 + lw / 2 + 14, y + lb.h * .6, lb.h * .45, PUR, lb.end, .35);
+    pg.marker(540 - lw / 2 - 14, y + lb.h * .6, 540 + lw / 2 + 14, y + lb.h * .6, lb.h * .45, TEAL, lb.end, .35);
     y += lb.h + 60 * pg.tight;
   }
   for (const nt of v.notes || []) {
@@ -473,7 +482,7 @@ LAYOUT.compare = (pg, y0) => {
     const x = L + i * (cw + gap), y = y0 + 30, at = pg.cue(it.cue), sk = pg.skel(i * 3, at);
     pg.sketch(rrect(pg.r, x, y, cw, ch), rrect(pg.r, x, y, cw, ch), { at: sk, dur: .6 });
     const lb = pg.write(it.label, { x: x + 10, y: y + 34, w: cw - 20, size: n === 2 ? 50 : 42, align: "center", at: sk + .5, cps: 14 });
-    pg.marker(x + 30, y + 34 + lb.h * .62, x + cw - 30, y + 34 + lb.h * .62, lb.h * .4, PUR, lb.end, .3);
+    pg.marker(x + 30, y + 34 + lb.h * .62, x + cw - 30, y + 34 + lb.h * .62, lb.h * .4, accent(i), lb.end, .3);
     const vs = String(it.value).length, size = n === 2 ? (vs > 5 ? 120 : 160) : (vs > 4 ? 90 : 120);
     const vy = y + 60 + lb.h + 40;
     const va = Math.max(at, lb.end + .3);
@@ -484,7 +493,7 @@ LAYOUT.compare = (pg, y0) => {
   });
   if (n === 2) {
     const a = pg.skel(3, pg.cue(items[1].cue)) - .1;
-    const vs = pg.write("VS", { x: 540 - 45, y: y0 + 30 + ch / 2 - 40, w: 90, size: 60, align: "center", at: a, color: PINK, mode: "pop" });
+    const vs = pg.write("VS", { x: 540 - 45, y: y0 + 30 + ch / 2 - 40, w: 90, size: 60, align: "center", at: a, color: CORAL_INK, mode: "pop" });
     impact(pg, vs.end - .1, 10);
     sfx(vs.end - .1, "thump");
   }
@@ -505,7 +514,7 @@ LAYOUT.bars = (pg, y0) => {
     const clip = el("clipPath", { id: cid }, pg.ink);
     const cr = el("rect", { x: L + 4, y: by - 6, height: barH + 12, width: 0 }, clip);
     const g = el("g", { "clip-path": `url(#${cid})` }, pg.ink);
-    el("path", { d: `M${L + 4} ${by} h${w} v${barH} h${-w} Z`, fill: b.hot ? GOLD : "rgba(196,170,236,.55)" }, g);
+    el("path", { d: `M${L + 4} ${by} h${w} v${barH} h${-w} Z`, fill: b.hot ? GOLD : BAR_FILL[i % BAR_FILL.length] }, g);
     let hatch = "";
     for (let hx = L + 4 - barH; hx < L + 4 + w; hx += 22) {
       const x1 = Math.max(L + 4, hx), x2 = Math.min(L + 4 + w, hx + barH);
@@ -534,7 +543,7 @@ LAYOUT.table = (pg, y0) => {
   const xs = [L]; cw.forEach((w) => xs.push(xs[xs.length - 1] + w));
   const headH = 96 * pg.tight, rowH = (rows.length > 3 ? 118 : 136) * pg.tight, at0 = pg.skel(0, pg.cue(rows[0].cue) - 1.2);
   let y = y0 + 10;
-  pg.marker(L, y + headH / 2, R, y + headH / 2, headH * .8, PUR, at0, .5);
+  pg.marker(L, y + headH / 2, R, y + headH / 2, headH * .8, TEAL, at0, .5);
   cols.forEach((c, k) => pg.write(c, { x: xs[k] + 18, y: y + headH / 2 - 26, w: cw[k] - 30, size: 42, at: at0 + .3 + k * .25, cps: 14 }));
   pg.path(rline(pg.r, L - 10, y + headH, R + 10, y + headH), { at: at0 + .4, dur: .35, width: 5, pen: false });
   y += headH;
@@ -557,11 +566,11 @@ LAYOUT.timeline = (pg, y0) => {
   items.forEach((it, i) => {
     const sk = pg.skel(i * 2, pg.cue(it.cue));
     if (i > 0) pg.path(rline(pg.r, x0, y - gapY + 52, x0, y - 6, 1.2), { at: sk - .3, dur: .3, width: 5 });
-    pg.path(rellipse(pg.r, x0, y + 26, 20, 20, 1.15), { at: sk, dur: .3, width: 5, stroke: PINK });
+    pg.path(rellipse(pg.r, x0, y + 26, 20, 20, 1.15), { at: sk, dur: .3, width: 5, stroke: ACCENT_INK[i % ACCENT_INK.length] });
     sfx(sk, "pop");
     const wn = pg.write(it.when, { x: x0 + 52, y: y - 6, w: CW - 90, size: 42, color: "#3b3830", at: sk + .25, cps: 16 });
     const at = Math.max(pg.cue(it.cue), wn.end + .1);
-    pg.marker(x0 + 46, y - 6 + wn.h * .62, x0 + 58 + wn.width, y - 6 + wn.h * .62, wn.h * .5, PUR, at, .3);
+    pg.marker(x0 + 46, y - 6 + wn.h * .62, x0 + 58 + wn.width, y - 6 + wn.h * .62, wn.h * .5, accent(i + 1), at, .3);
     pg.write(it.text, { x: x0 + 52, y: y + wn.h + 10, w: CW - 90, size: 50, at: at + .25, cps: 15 });
     y += gapY;
   });
@@ -576,7 +585,8 @@ LAYOUT.flow = (pg, y0) => {
     if (i > 0) { pg.path(arrowPath(pg.r, 540, y - gap + 16, 540, y - 16), { at: sk - .3, dur: .3, width: 5 }); sfx(sk - .3, "swish"); }
     pg.sketch(rrect(pg.r, x, y, bw, bh), last ? rrect(pg.r, x, y, bw, bh) : null, { at: sk, dur: .5 });
     const at = Math.max(pg.cue(st.cue), sk + .5);
-    if (last) { pg.marker(x + 6, y + bh / 2, x + bw - 6, y + bh / 2, bh * .8, YEL, at, .4); impact(pg, at + .4, 8); sfx(at + .4, "thump"); }
+    pg.marker(x + 6, y + bh / 2, x + bw - 6, y + bh / 2, bh * .72, last ? CORAL : accent(i), at, .4);
+    if (last) { impact(pg, at + .4, 8); sfx(at + .4, "thump"); }
     pg.write(st.text, { x: x + 20, y: y + (bh - 62) / 2, w: bw - 40, size: 52, align: "center", at: at + (last ? .35 : 0), cps: 14 });
     y += bh + gap;
   });
@@ -591,7 +601,7 @@ LAYOUT.points = (pg, y0) => {
     pg.path(rrect(pg.r, L + 10, y + 6, 56, 56), { at: sk, dur: .35, width: 4.5 });
     const at = Math.max(pg.cue(it.cue), sk + .35);
     const w = pg.write(it.text, { x: L + 104, y, w: CW - 104, size: 52, at, cps: 14 });
-    pg.path(checkPath(L + 18, y + 22, 50), { at: w.end + .05, dur: .25, width: 7, stroke: PINK });
+    pg.path(checkPath(L + 18, y + 22, 50), { at: w.end + .05, dur: .25, width: 7, stroke: ACCENT_INK[i % ACCENT_INK.length] });
     sfx(w.end + .15, "tick");
     y += Math.max(80, w.h) + 64 * pg.tight;
   });
@@ -605,7 +615,7 @@ LAYOUT.quote = (pg, y0) => {
   const h = tmp.h + 150;
   pg.sketch(rrect(pg.r, x, y0 + 30, w, h), null, { at: sk, dur: .7 });
   pg.path(`M${x + 120} ${y0 + 30 + h} L${x + 150} ${y0 + 30 + h + 70} L${x + 220} ${y0 + 30 + h}`, { at: sk + .7, dur: .3, width: 4.5 });
-  pg.write("“", { x: x - 10, y: y0 - 30, w: 120, size: 150, color: PINK, at: sk + .9, mode: "pop" });
+  pg.write("“", { x: x - 10, y: y0 - 30, w: 120, size: 150, color: CORAL_INK, at: sk + .9, mode: "pop" });
   let y = y0 + 30 + h + 100;
   if (v.by) {
     const b = pg.write("—— " + v.by, { x: x + 240, y: y - 40, w: w - 240, size: 42, color: "#3b3830", at: tmp.end + .2, cps: 16 });
@@ -641,30 +651,10 @@ function fitSize(line, max) {
   return w > CW - 10 ? Math.floor(size * (CW - 10) / w) : size;
 }
 
-/* 高光前置：第 0 帧就是全片最炸那页的插图，大字砸下来，再倒回封面从头讲 */
-function buildHook(pg) {
-  const s = pg.s, end = s.end, dir = s.art_dir || {};
-  const top = 230, h = 1150;
-  let boil = null;
-  if (s.art) {
-    const p = panelBox(pg, s.art, { x: L - 4, y: top, w: CW + 8, h, rot: -1, shadow: YEL, focus: dir.focus });
-    boil = p.boil;
-    pg.track(0, end, (q) => {
-      const u = ease.out(clamp(q * end / .3));
-      p.box.style.transform = `rotate(${(-1 - 3 * (1 - u)).toFixed(3)}deg) scale(${(1.1 - .1 * u).toFixed(4)})`;
-      p.img.style.transform = kenBurns(dir.move || "push", q);
-    }, { curve: "lin" });
-    boil.wins.push([0, 1.2, 1]);
-  }
-  impact(pg, .06, 18);
-  sfx(0, "thump");
-  if (s.stamp) pg.burst(R - 120, top + 30, 96, s.stamp, -1, [...s.stamp].length > 2 ? 40 : 54, 10, { hit: 0 });
-  peakBanner(pg, s.art ? top + h * .62 : 860, { text: s.text, cue: 0, size: 150 }, boil);
-}
-
-/* 封面：放在片头时第 0 帧就是完整的发布封面；放在高光之后时从自己的起点算。口播开始后再动起来 */
+/* 封面第 0 帧就是完整的发布封面；口播开始后再动起来，引子那句金句大字砸到插图上 */
 function buildCover(pg) {
   const s = pg.s, r = pg.r, now = -1, hold = s.voice_at ?? DATA.hold, t0 = s.start;
+  let boilRef = null, bannerY = 1100;
   pg.write(DATA.kicker || DATA.brand, { x: L, y: 270, size: 40, color: "#3b3830", at: now, cps: 99 });
   let y = 400;
   const titleEls = [];
@@ -672,27 +662,28 @@ function buildCover(pg) {
     const t = pg.write(line, { x: L, y, size: fitSize(line, 170), at: now, cps: 99 });
     titleEls.push(t.el);
     if (i === 1 || s.lines.length === 1) pg.marker(L - 10, y + t.h * .62, L + t.width + 14, y + t.h * .62, t.h * .44, YEL, now, .1);
-    if (i === 2) pg.path(wavy(r, L, L + t.width, y + t.h + 4, 8, 40), { at: now, dur: .1, stroke: PINK, width: 6, pen: false });
+    if (i === 2) pg.path(wavy(r, L, L + t.width, y + t.h + 4, 8, 40), { at: now, dur: .1, stroke: TEAL_INK, width: 6, pen: false });
     y += t.h + 26;
   });
   y += 50;
   let x = L;
-  (s.tags || []).forEach((tag) => {
+  (s.tags || []).forEach((tag, i) => {
     if (x > L && x + 50 * ([...tag].length + 1) > R) { x = L; y += 90; }
     const t = pg.write("#" + tag, { x, y, w: 520, size: 46, color: INK, at: now, cps: 99 });
-    pg.marker(x - 8, y + t.h * .55, x + t.width + 8, y + t.h * .55, t.h * .7, PUR, now, .1);
+    pg.marker(x - 8, y + t.h * .55, x + t.width + 8, y + t.h * .55, t.h * .7, accent(i + 1), now, .1);
     x += t.width + 50;
   });
   const end = s.end;
   if (s.art) {
     const top = y + 100, h = Math.max(520, BOTTOM + 20 - top), dir = s.art_dir || {};
-    const { box, img, boil } = panelBox(pg, s.art, { x: L - 4, y: top, w: CW + 8, h, rot: 1.2, shadow: PUR, focus: dir.focus });
+    const { box, img, boil } = panelBox(pg, s.art, { x: L - 4, y: top, w: CW + 8, h, rot: 1.2, shadow: CORAL, focus: dir.focus });
     pg.track(t0, end - t0, (q) => {
       const t = t0 + q * (end - t0), k = smooth(hold, end, t);
       img.style.transform = `scale(${(1 + .14 * k).toFixed(4)})`;
       box.style.transform = `rotate(${(1.2 - .6 * k).toFixed(3)}deg) translateY(${(Math.sin(Math.max(0, t - hold) * 1.6) * 4).toFixed(2)}px)`;
     }, { curve: "lin" });
     boil.wins.push([hold, end + .4, .8]);
+    boilRef = boil; bannerY = top + h * .58;
     if (s.stamp) {
       const g = pg.burst(R - 150, top + 10, 140, s.stamp, now, s.stamp.length > 2 ? 60 : 80, -10);
       stampPulse(pg, g, R - 150, top + 10, hold + .05);
@@ -709,6 +700,7 @@ function buildCover(pg) {
   impact(pg, hold + .1, 14);
   leak(hold + .1);
   sfx(hold + .1, "boom");
+  if (s.hook) peakBanner(pg, bannerY, { ...s.hook, size: 140 }, boilRef);
 }
 
 function stampPulse(pg, g, cx, cy, at) {
@@ -722,8 +714,8 @@ function stampPulse(pg, g, cx, cy, at) {
 function buildEnd(pg) {
   const s = pg.s, at = s.start + .15, recap = DATA.recap || [];
   const top = recap.length ? 300 : 520;
-  const b = pg.write(DATA.brand, { x: L, y: top, w: CW, size: 76, align: "center", color: PINK, at: -1, cps: 99 });
-  pg.path(wavy(pg.r, 540 - b.width / 2, 540 + b.width / 2, top + b.h + 6, 6, 34), { at: -1, dur: .1, stroke: PINK, width: 5, pen: false });
+  const b = pg.write(DATA.brand, { x: L, y: top, w: CW, size: 76, align: "center", color: TEAL_INK, at: -1, cps: 99 });
+  pg.path(wavy(pg.r, 540 - b.width / 2, 540 + b.width / 2, top + b.h + 6, 6, 34), { at: -1, dur: .1, stroke: CORAL_INK, width: 5, pen: false });
   pg.write(DATA.tagline, { x: L, y: top + 130, w: CW, size: 40, align: "center", color: "#3b3830", at: -1, cps: 99 });
   let y = recap.length ? 600 : 860, t0 = at;
   if (recap.length) {
@@ -735,7 +727,7 @@ function buildEnd(pg) {
       const w = tw + 90, h = size + 44, x = 540 - w / 2;
       const g = el("g", {}, pg.ink);
       el("path", { d: `M${x + 10} ${y + 10} h${w} v${h} h${-w} Z`, fill: INK }, g);
-      el("path", { d: `M${x} ${y} h${w} v${h} h${-w} Z`, fill: i % 2 ? "#E6DBFA" : GOLD, stroke: INK, "stroke-width": 5 }, g);
+      el("path", { d: `M${x} ${y} h${w} v${h} h${-w} Z`, fill: BAR_FILL[i % BAR_FILL.length], stroke: INK, "stroke-width": 5 }, g);
       const t = el("text", { x: 540, y: y + h / 2 + size * .36, "text-anchor": "middle", "font-size": size, "font-family": "Marker", fill: INK }, g);
       t.textContent = txt;
       pg.pop(g, a, .38, 540, y + h / 2, i % 2 ? 2 : -2);
@@ -760,7 +752,9 @@ const fx = document.getElementById("fx");
 const band = { g: el("g", { opacity: 0 }, fx) };
 band.black = el("path", { fill: INK }, band.g);
 band.yel = el("path", { fill: GOLD }, band.g);
+band.teal = el("path", { fill: "#7ED0C6" }, band.g);
 band.pur = el("path", { fill: "rgba(160,130,230,.95)" }, band.g);
+band.coral = el("path", { fill: "#F4A498" }, band.g);
 band.txt = el("text", { "text-anchor": "middle", "font-size": 150, "font-family": "Marker", fill: INK }, band.g);
 const BW = 1500, SK = 420;
 function para(a, w) { return `M${a} 0 L${a + w} 0 L${a + w - SK} 1920 L${a - SK} 1920 Z`; }
@@ -778,8 +772,7 @@ async function build() {
   await new Promise((ok) => { const b = document.getElementById("badge"); b.complete ? ok() : (b.onload = b.onerror = ok); });
   pages = DATA.slides.map((s, i) => {
     const pg = new Page(s, i);
-    if (s.type === "hook") buildHook(pg);
-    else if (s.type === "cover") buildCover(pg);
+    if (s.type === "cover") buildCover(pg);
     else if (s.type === "end") buildEnd(pg);
     else {
       const y0 = header(pg);
@@ -833,7 +826,8 @@ const dust = [];
 function buildDust() {
   const r = rng(77), svg = document.getElementById("dust");
   for (let i = 0; i < 26; i++) {
-    const c = el("circle", { r: (2 + r() * 6).toFixed(1), fill: r() > .5 ? "rgba(255,206,60,.9)" : "rgba(150,115,225,.8)" }, svg);
+    const dustFill = ["rgba(255,206,60,.9)", "rgba(150,115,225,.8)", "rgba(242,125,110,.85)", "rgba(94,186,176,.85)"];
+    const c = el("circle", { r: (2 + r() * 6).toFixed(1), fill: dustFill[i % 4] }, svg);
     dust.push({ c, x: r() * 1080, y: r() * 1920, vx: (r() - .5) * 20, vy: -12 - r() * 30, ph: r() * 6.3, a: .3 + r() * .5 });
   }
 }
@@ -914,8 +908,10 @@ window.seek = (t) => {
                    : `polygon(-600px 0, ${a}px 0, ${a - SK}px 1920px, -600px 1920px)`;
         band.g.setAttribute("opacity", 1);
         band.black.setAttribute("d", para(a - 30, BW + 60));
-        band.yel.setAttribute("d", para(a, BW));
-        band.pur.setAttribute("d", para(a + BW - 150, 70));
+        band.yel.setAttribute("d", para(a, BW - 140));
+        band.teal.setAttribute("d", para(a + BW - 150, 70));
+        band.pur.setAttribute("d", para(a + BW - 90, 50));
+        band.coral.setAttribute("d", para(a + BW - 48, 40));
         band.txt.setAttribute("x", a + BW / 2 - SK / 2);
         band.txt.setAttribute("y", 1010);
         band.txt.setAttribute("transform", `rotate(-12 ${a + BW / 2 - SK / 2} 960)`);
@@ -971,8 +967,7 @@ window.seek = (t) => {
   } else pen.style.opacity = 0;
   grid.style.transform = `translate(${-(t * 5) % 54}px, ${-(t * 2.5) % 54}px)`;
   /* 浮尘 */
-  const ty = pages[cur].s.type;
-  const energy = ty === "content" ? (pages[cur].s.visual.energy || 3) : ty === "end" ? 3 : ty === "hook" ? 5 : 2;
+  const energy = pages[cur].s.type === "content" ? (pages[cur].s.visual.energy || 3) : pages[cur].s.type === "end" ? 3 : 2;
   const amt = clamp((energy - 1.5) / 3.5) * (t < DATA.hold ? 0 : 1);
   for (const d of dust) {
     const x = ((d.x + d.vx * t) % 1080 + 1080) % 1080, y = ((d.y + d.vy * t) % 1920 + 1920) % 1920;

@@ -822,7 +822,7 @@ def _normalize_deep_read_details(details: dict, article: dict) -> dict:
         "narrative_beats",
         "omit_in_video",
         "everyday_analogies",
-        "hook_candidates",
+        "open_candidates",
     ):
         if key in details:
             details[key] = _coerce_str_list(details[key])
@@ -880,7 +880,7 @@ def deep_read_article(
 - `author_stance`：作者**自己的态度/立场**一句话（不是他描述别人的观点，是他自己怎么想）。
 - `omit_in_video`：你建议改编短视频时**砍掉不讲**的内容（哪些段落对普通观众没意义），3-5 条。
 - `wallet_math`：把文中最关键的那个差距换算成**一个普通人的账**，写清依据，例如「按100万房贷、30年算，利率差0.8个点，每月多还约447元，30年约16万」。只用原文数字和常识做换算，算法要对；原文数字不够算就输出空字符串。
-- `hook_candidates`：3 条候选钩子句（每条 10-24 字），给短视频第 0 秒用，分别从「结果前置 / 个人账 / 反常识 / 人群对立」里选不同类型；必须基于原文事实，带具体数字或强烈对比，路人没听过背景也能立刻懂。
+- `open_candidates`：3 条候选主播开场白（每条 14-44 字，一听就知道聊哪件事）：一条主播转述式（「听说……」），一条直接替观众抛问题式（可连问两句，犀利、像普通人脱口而出），一条个人账式；必须基于原文事实，路人没听过背景也能立刻懂。
 
 只输出一个 JSON 对象，键名严格按上面列。"""
     print(f"  🤖 {text_model()} 抽取深读细节…")
@@ -931,7 +931,7 @@ SELF_AUTHOR_USER = """【话题】{title_hint}
 - `author_stance`：本栏目对这个话题的一句话判断/态度。
 - `omit_in_video`：建议不展开讲的内容 2-4 条。
 - `wallet_math`：把话题里最关键的差距换算成一个普通人的账（写清依据，如本金、年限、利率），算法要对；算不出就输出空字符串。
-- `hook_candidates`：3 条候选钩子句（每条 10-24 字），给短视频第 0 秒用，分别从「结果前置 / 个人账 / 反常识 / 人群对立」里选不同类型，带具体数字或强烈对比。
+- `open_candidates`：3 条候选主播开场白（每条 14-44 字）：一条主播转述式（「听说……」），一条直接替观众抛问题式，一条个人账式，都要一听就知道聊哪件事。
 """
 
 
@@ -991,61 +991,81 @@ def max_slides() -> int:
     """单条视频最多正文页数。默认 4（再加 1 张全屏封面海报 = 总共 5 张图）。
     可用 AIVIDEO_MAX_SLIDES 覆盖。"""
     try:
-        return max(3, int(os.environ.get("AIVIDEO_MAX_SLIDES", "4")))
+        return max(3, int(os.environ.get("AIVIDEO_MAX_SLIDES", "10")))
     except ValueError:
         return 4
 
 
 ADAPT_SCRIPT_PROMPT = """你是抖音栏目「AI财知道 · 每天一个 AI 财经为什么」的短视频编剧。
 
-任务：把用户给出的文章细节改成 3-4 页中文短视频问答脚本（页数宁少勿多，最多 4 页，节奏快）。只讲文章里有依据的事实，不虚构。
+任务：把用户给出的文章细节，写成一期两分钟左右的财经口播节目。只讲文章里有依据的事实，不虚构。略长过两分钟也可以，不要为了压时长把观点和结尾砍掉。
 
-**核心目标：降低观看门槛、提升完播率。** 观众大多是没什么基础的普通人，原文又往往是专业文章。你不是讲课的老师，而是一个**爱讲故事、刚挖到一件离谱事的朋友**：把专业内容讲成一个有悬念、有反转、有情绪的故事，让完全不懂的人也一听就懂、忍不住看到最后。
+**你是一个有态度、有梗、懂行的财经主播，不是新闻播报员，也不是写摘要的。** 同一件事，平庸的稿子是「发生了什么、为什么、有什么影响」挨个念一遍；好主播会挑出这件事里最扎心的那个问题，亮出自己的观点，用故事、比喻和算账把观点讲透，让人听得会心一笑、听完还能把结论复述给别人。
 
 输出必须是单个 JSON 对象，且只需要这些字段：
 {
   "title": "6-18字中文问句标题",
   "keyword": "2-8字关键词",
-  "hook_line": "10-24字钩子句：全片最炸的一句，成片第0秒就播",
-  "hook_type": "result|wallet|myth_bust|conflict",
-  "cold_open": "12-28字冷开场：接在钩子句后，先生活场景再反差，禁止纯术语",
-  "cold_open_type": "conflict|number|question|myth_bust",
+  "open_mode": "news|question",
+  "cold_open": "12-60字开场白：口播稿最开头的一两句，点出话题、抛出问题",
+  "hook_line": "4-12字封面大字：开场白里的原话片段",
+  "hook_type": "wallet|result|myth_bust|conflict",
+  "question": "开场白抛出的核心问题",
+  "answer": "8-40字：结尾对 question 的正面回答，一字不差地出现在最后两页 narration 里",
   "theme_cluster": "optical_module|ai_chip|ev_auto|macro_rates|consumer_platform|general",
   "angle": "10-24字本篇唯一角度",
   "hashtags": ["2-3个内容相关话题词，如板块/公司/事件名，可加A股或股市；禁止写AI、财经、复盘、收盘等泛标签"],
   "slides": [
     {
-      "headline": "6-14字上屏标题",
-      "narration": "口播：第1页40-120字，其余页50-180字",
+      "headline": "4-14字上屏小标题（不念）",
+      "narration": "这一页要念的口播原文，40-200字",
       "image_prompt": "English diagram prompt",
       "on_image_text": ["中文标签1", "中文标签2", "中文标签3"]
     }
   ]
 }
 
-【通俗生动·硬性要求，违反就是失败】：
-- **讲故事，不讲课**：整条按「抛出反常 → 层层追问 → 揭开原因 → 落到你身上」推进，每页结尾留一个钩子把人带进下一页（「问题来了」「更离谱的在后面」「那到底谁在买单？」）。
-  禁止教科书句式：「X 是指…」「你可以理解成…」「简单来说…」「我们来看…」「首先/其次/最后」。
-- **要有情绪起伏**：说到反常数字、反转、扎心的结论时，**真的要有反应**——用一两个短促的情绪词或惊叹接住，例如「好家伙」「你敢信？」「离谱的是」「注意了」「说白了」「这下坏了」「等等」「问题就在这」。
-  全片 4-6 处，放在真正的高潮句前后，别每句都喊；平铺的信息句照常说。惊叹靠语气，不靠夸大事实。
-- **句子短、有停顿**：一句话只放一个信息，多用短句和反问；关键数字单独成句或用逗号隔开（「差了多少？整整半个点。」），方便配音加重。
-- **大白话优先**：能用日常说法就别用专业术语。专业词第一次出现时用半句话顺手解释（「LPR，也就是房贷利率的基准价」），不要停下来专门讲解。
-- **比喻要省着用**：全片最多 1 个生活比喻，只用在最难懂的那个概念上；能直接说清楚的，不要绕去奶茶店、菜市场。
-- **少念观点、多讲事**：不要把文章里的判断搬运过来念（「文章认为/数据显示……」）。讲具体的人和事：谁、在哪天、做了什么、结果怎样。
-- **个人账（硬性）**：宏观大数（全国几千亿、几个基点、百分之几）观众没感觉。必须挑全片最关键的那个差距，换算成**一个普通人的账**：每月多掏多少、一年少拿多少、一辈子差多少。
-  用一个说得出口的典型情形算（如「按100万房贷、30年算」「按月薪1万算」），算法要对，结果用「大约」「将近」取整；算式依据（本金、年限、利率）必须在口播里说出来，换算结果写进某一页 narration。原文数字不够换算时，退而求其次用最反常的那个对比。
-- **钩子句 hook_line（硬性，单独字段）**：10-24 字，**成片第 0 秒就播**，配大字砸屏，决定观众划不划走。从后面正文里把**全片最炸的那一下**提到最前面，路人没听过任何背景也能立刻懂、立刻想问「凭什么」。
-  四选一（写进 hook_type）：result 结果前置（「同一个小区，你比邻居多还16万」）/ wallet 个人账（「你每月白交400多块利息」）/ myth_bust 反常识（「美国加息了，你的房贷反而没涨」）/ conflict 人群对立（「新买房的人，正在占老业主的便宜」）。
-  必须带具体数字或强烈对比；禁止「今天聊聊」「你知道吗」这类空问句，禁止夸大或编造正文里没有的事实。
-- **冷开场 cold_open（硬性，单独字段）**：12-28 字、一句话说完，**仅作口播+底部字幕**，紧跟在钩子句之后、封面出现时播：钩子抛出了结果，冷开场就把悬念收紧（「差在哪？就差在合同里一行小数点」）。**必须让零基础路人 3 秒听懂「跟我有啥关系」**——先用手机/涨价/买菜/工资/家电等生活场景做入口，再抛数字/反问/反常识；禁止「今天讲…」和纯术语开场，不要重复 hook_line。封面 slides[0].narration **不要重复 cold_open**，顺着冷开场的悬念往下讲。
-- 注意：以上「生动口语」要求不能突破后面的合规红线（不荐股、不喊单、不出现股票代码等），情绪词也不能变成「必涨」「赶紧上车」这类诱导。
+【这期节目必须有】：
+- **一个问题**：开场白就把问题抛给观众（直接替观众问出心里那句话，或者像主播转述一条刚听到的消息再追问一句），让人一听就知道聊的是哪件事、而且想知道答案。open_mode 标明是 question（直接问）还是 news（主播转述）。
+- **一个观点**：主播自己的判断，要鲜明、敢下结论，最好跟大多数人的第一反应不一样（「这两拨人，一个没亏，一个也未必赚」）。观点要早亮出来，后面的内容都在给它找证据，不要东一句西一句、换个说法重复。
+- **一个结论**：结尾回到开头的问题正面回答，落到普通人该怎么想、怎么做；最后用一句能被截图、能被复述的话收住。不准「见仁见智」「还要看情况」。
+
+【结构你自己定】：根据这个话题最好讲的方式来安排：可以先讲一个人的故事，可以先下判断再拆解，可以分几拨人各算一笔账，可以层层剥洋葱……不要套固定模板，不要「首先/其次/最后」。
+
+【写法】：
+- **要有人、有场景**：素材里有具体的人（「成都的小陈」）、现场（「金店比菜市场还挤」）、原话（店员说的话），优先用上，比干巴巴的数字有感染力得多。
+- **要有梗、有幽默**：用接地气的比喻、调侃和反讽把道理讲活（「金子不上班、不下蛋，一分利息不生，就像家里一个不挣钱的亲戚」「一口价翻译一下就是：金价可以跌，我这口价不能松」）。每个梗都要让人更懂一点；全片 3-5 处，别油腻，别贬低普通人。
+- **要有态度**：第一人称「我」，对着「你」说话；敢说「我泼盆冷水」「我得替你说句公道话」；把商家的套路、人性的小心思点破。
+- **要有算账**：挑最关键的那个差距，用一个说得出口的典型情形（「三金按50克算」）换算成普通人的账，算法要对，依据说出来。
+- **数字从简**：全片只留真正关键的五六个数字，每个数字都要让观众有感觉；宁可少讲一个数，也要让人听懂。
+- **说人话**：句子短、长短交错，像聊天；专业词第一次出现时半句话顺手解释。禁止「X 是指」「简单来说」「我们来看」「值得注意的是」「综上所述」这类 AI 腔和教科书腔，也别滥用「不是……而是……」。
+
+【怎么填 JSON】：先在心里把整期节目写成一篇连续的口播稿，再切开填进去：
+- cold_open：口播稿最开头的一两句（12-60 字），封面画面上念，必须点出话题、抛出问题。禁止「大家好」「今天聊聊」「你知道吗」这类空开头。
+- slides：把开场白之后的全部口播按意思切成 5-8 页，每页 narration 是口播稿里连续的一段（40-180 字）。**cold_open 加上所有 narration 依次拼起来，就是一字不差要念给观众的完整稿子。** headline 是这页上屏的小标题，不会念出来，所以 narration 里不要写「第一笔账：」这类标题腔。第 1 页 narration 紧接着开场白往下说，不要重复开场白。
+- 开场白加全部 narration 合计尽量不超过 1000 字（两分钟上下）。同一观点只讲透一次，用删重复来控时长，不要砍掉问题、观点或结尾的回答；略超 1000 字也可以，不要为了卡字数把内容写残。
+- question：开场白抛出的核心问题；answer：结尾对它的正面回答（8-40 字），必须一字不差地出现在最后两页的 narration 里。
+- hook_line：从开场白里摘一段原话（4-12 字）做封面大字，观众听到的同时看到，挑最勾人的那一下；hook_type 标明它属于 wallet 个人账 / result 惊人结果 / myth_bust 反常识 / conflict 人群对立。
+
+【风格范例】一期金价节目的完整口播（省略号处有删节）。只学它的口吻、态度、幽默，以及「问题-观点-结论」的那股劲儿，**不要照搬它的结构和句子**，也不要套它的口头禅（「有点扎心」「泼盆冷水」「说句公道话」「翻译一下」等），用这个话题自己的说法：
+「金价一克跌了五百多。年初咬牙买了三金的，是不是亏麻了？现在挤进金店的，是不是赚到了？我的答案可能有点扎心：这两拨人，一个没亏，一个也未必赚。笑得最稳的，可能是金店老板。
+先说个真事。成都有个姑娘叫小陈，年初去金店看结婚三金，看了一眼价签，默默把手缩了回来。那会儿老庙一克1722。这周六再去，牌子换成了1196。一克便宜526，三金按50克算，两万六，就这么省出来了。
+小陈当初这一缩手，价值两万六。于是这两天，金店又热闹起来了。网上有人说，深圳水贝买黄金的人比菜市场还多。区别是，菜市场还能讲价。那年初咬牙买了的人呢？同一套三金，人家晚半年，少花两万六，换谁心里都堵得慌。
+但我得替你说句公道话：只要你不卖，这两万六就只是价签上的落差，不是你兜里少掉的钱。镯子戴在手上，一克没少，该好看还是好看。你觉得亏，是因为你偷偷把它当成了存折，天天拿它跟金价对账。
+首饰要是天天对账，那就别戴了，锁进保险柜里，每天打开心疼一遍吧。再说现在排队的。我泼盆冷水：降的只是金料钱。……一口价这三个字，翻译一下就是：金价可以跌，我这口价不能松。
+金价是全世界定的，工费是金店自己定的。金价往下走的时候，工费就是金店的护城河。……那金价到底为啥跌这么狠？说出来你可能不信，是油价涨的。……金子呢？它不上班，不下蛋，一分利息不生。
+这时候它就像家里一个不挣钱的亲戚，谁都不想养。你看，中东出点事，成都姑娘结婚省了两万六，这只蝴蝶扇得是真远。……所以回到开头那两个问题。年初买的，没亏麻，只要不卖，那是落差，不是损失。
+现在排队的，也别急着觉得赚到了。真正赚到的，只有本来就要买、又按克买足金的人，比如小陈。冲着跌了两个字就进店的，很可能是给工费交了学费。金价是全世界定的，工费是金店定的。
+你唯一能定的，是自己到底需不需要。」
+
+- 注意：以上幽默和态度不能突破后面的合规红线（不荐股、不喊单、不出现股票代码等），情绪词也不能变成「必涨」「赶紧上车」这类诱导。
 
 规则：
 - hashtags：写 **2-3 个**与本条内容直接相关的话题词（板块名、公司名、事件名等大家会搜的词）。
   - 可按需加 1 个市场词（A股 / 美股 / 港股 / 股市），**不要写 AI、财经、复盘、收盘、行情、投资 等泛标签**，也不要写账号品牌名（如「AI财知道」）；**公司名可以且推荐写**。
   - 例：讲 A股 电力股 → ["A股","电力股"]；讲英伟达财报 → ["英伟达","美股"]；讲海力士 → ["海力士","存储芯片"]；收盘概述 → ["A股","收评"]。
-- slides 3-4 页（最多 4 页）；第 1 页是封面正文页（非冷开场），封面 narration 必须 40-120 字；其余页 narration 50-140 字，全片口播合计尽量不超过 450 字（成片 60 秒左右）；最后一页是结论/影响/警示。
-- 最后一页收束本期内容即可，不要再写收藏、关注，也不要写「对照看盘」。片尾会单独说「有用就收藏」。
+- slides 5-8 页，每页 narration 40-180 字；开场白加全部 narration 合计尽量不超过 1000 字。
+- 最后一句金句说完就收住，不要再写收藏、关注，也不要写「对照看盘」。片尾会单独说「有用就收藏」。
 - title 必须是问句（6-18 字优先，最多 24 字），**封面点击率优先**：
   - 首选：「X 为什么突然…」「…怎么把…砸崩/带火」「…意味着什么」「…跟你有啥关系」「…能救/拖垮…吗」
   - 尽量带可感知钩子（具体物、大数字、逆势/午后/被抢购等反常）
@@ -1161,14 +1181,20 @@ def soft_sanitize_script(data: dict) -> dict:
     if edu:
         cold_open = _edu_soft_replace(cold_open)
     if cold_open:
-        data["cold_open"] = _trim_to(cold_open, 28)
+        data["cold_open"] = _trim_to(cold_open, 60)
     hook_line = _strip_stock_codes(str(data.get("hook_line") or "").strip())
     if edu:
         hook_line = _edu_soft_replace(hook_line)
     if hook_line:
-        data["hook_line"] = _trim_to(hook_line, 26)
+        data["hook_line"] = hook_line
     if data.get("hook_type") not in _HOOK_TYPES:
         data.pop("hook_type", None)
+    if data.get("open_mode") not in _OPEN_MODES:
+        data["open_mode"] = "question" if re.search(r"[？?]", cold_open) else "news"
+    for key in ("question", "answer"):
+        val = _strip_stock_codes(str(data.get(key) or "").strip())
+        if val:
+            data[key] = _edu_soft_replace(val) if edu else val
     data["angle"] = _trim_to(_strip_stock_codes(str(data.get("angle") or "").strip()), 24)
     tc = str(data.get("theme_cluster") or "").strip()
     if not tc:
@@ -1186,7 +1212,7 @@ def soft_sanitize_script(data: dict) -> dict:
     plan = data.get("_topic_plan")
     if isinstance(plan, dict):
         if not data.get("cold_open") and plan.get("cold_open"):
-            data["cold_open"] = _trim_to(_strip_stock_codes(str(plan["cold_open"])), 28)
+            data["cold_open"] = _trim_to(_strip_stock_codes(str(plan["cold_open"])), 60)
         if not data.get("angle") and plan.get("angle"):
             data["angle"] = _trim_to(str(plan["angle"]), 24)
         if data.get("theme_cluster") in ("", "general") and plan.get("theme_cluster"):
@@ -1227,11 +1253,7 @@ def soft_sanitize_script(data: dict) -> dict:
                 if edu:
                     slide[_f] = _edu_soft_replace(slide[_f])
         if isinstance(slide.get("narration"), str):
-            slide["narration"] = _trim_narration_to(
-                slide["narration"],
-                120 if i == 0 else 220,
-                min_chars=40 if i == 0 else 50,
-            )
+            slide["narration"] = _trim_narration_to(slide["narration"], 260, min_chars=30)
         headline = str(slide.get("headline") or f"第{i + 1}页").strip()
         slide["headline"] = _trim_to(headline, 14)
         if not str(slide.get("chapter_title") or "").strip():
@@ -1288,13 +1310,13 @@ def douyin_pre_publish_scan(script: dict) -> tuple[list[str], list[str]]:
     cold_open = str(script.get("cold_open") or "").strip()
     if cold_open:
         if _COVER_WEAK_HOOK.match(cold_open):
-            warnings.append(f"冷开场偏平（「{cold_open}」），建议生活场景+反差")
-        elif not _COLD_OPEN_LIFE.search(cold_open):
-            warnings.append(f"冷开场缺生活入口（「{cold_open}」），路人可能听不懂")
-        elif not re.search(r"[\d%％？?！!]|为什么|怎么|难道|居然|其实|别|错|不是", cold_open):
-            warnings.append(f"冷开场可再加数字/反问（「{cold_open}」）")
+            warnings.append(f"开场白偏平（「{cold_open}」），开口就说是哪件事")
+        elif not _names_topic(cold_open, script):
+            warnings.append(f"开场白没点出话题（「{cold_open}」），路人听不出讲什么")
+        if not str(script.get("hook_line") or "").strip():
+            warnings.append("缺少 hook_line 封面大字")
     elif slides and isinstance(slides[0], dict):
-        warnings.append("缺少 cold_open 冷开场字段，成片将退回旧封面逻辑")
+        warnings.append("缺少 cold_open 开场白字段，成片将退回旧封面逻辑")
     if slides and isinstance(slides[-1], dict):
         last_n = str(slides[-1].get("narration") or "")
         if "对照看盘" in last_n:
@@ -1466,10 +1488,27 @@ _COLD_OPEN_LIFE = re.compile(
     r"没想到|其实|就像|好比|家里|日常|生活|用电|充电|追剧|刷视频|工资条|账单|"
     r"账户|钱包|手里|股民|攒钱|满屏|钱去哪|亏|赚"
 )
+def _names_topic(text: str, data: dict) -> bool:
+    """点题句里要出现关键词，或与标题共享一段 3 字以上的主角/事件名。"""
+    kw = str(data.get("keyword") or "").strip()
+    if kw and kw in text:
+        return True
+    title = re.sub(r"[\s，。？！?!、：:“”\"]", "", str(data.get("title") or ""))
+    generic = set("为什么怎么样吗呢了的是到底啥能多少会要让被把在有你我他这那就都还又")
+    return any(
+        title[i:i + 3] in text and not set(title[i:i + 3]) <= generic
+        for i in range(len(title) - 2)
+    )
+
+
 _HOOK_TYPES = ("result", "wallet", "myth_bust", "conflict")
-# 钩子句要么有数字，要么有强对比/反常词
-_HOOK_PUNCH = re.compile(r"\d|[一二两三四五六七八九十百千万亿]+[块元倍万亿个]|却|反而|竟|白交|多还|少拿|倒挂|占.*便宜|比你|吃亏|离谱")
-_HOOK_EMPTY = re.compile(r"^(今天|你知道|大家好|咱们来|来聊|说说|聊聊)")
+_OPEN_MODES = ("news", "question")
+_OPEN_EMPTY = re.compile(r"^(今天|你知道|大家好|咱们来|来聊|说说|聊聊)")
+_VAGUE_ANSWER = re.compile(r"见仁见智|因人而异|还要看情况|不好说|很难说")
+
+
+def _bare(text: str) -> str:
+    return re.sub(r"[\s，。？！?!、：:；;“”\"'‘’…—（）()「」]", "", text or "")
 _COLD_OPEN_JARGON_ONLY = re.compile(
     r"(?i)MLCC|CPO|HBM|GPU|EPS|PE\b|硅光|800G|1\.6T|换手率|市盈率|概念股|涨停潮|"
     r"光模块|供给瓶颈|产业链|标的|估值|财报|IPO|龙虎榜"
@@ -1524,24 +1563,24 @@ def validate_article_script(data: dict, article: dict) -> dict:
     cold_open = str(data.get("cold_open") or "").strip()
     daily_recap = _is_daily_recap(article)
     if not cold_open:
-        raise ValueError("缺少 cold_open（12-28 字冷开场，一句话说完）")
-    if not (12 <= len(cold_open) <= 28):
-        raise ValueError(f"cold_open 须 12-28 字，当前 {len(cold_open)}: {cold_open!r}")
+        raise ValueError("缺少 cold_open（12-60 字开场白，一听就知道聊哪件事）")
+    if not (12 <= len(cold_open) <= 60):
+        raise ValueError(f"cold_open 须 12-60 字，当前 {len(cold_open)}: {cold_open!r}")
     # 报盘槽位（daily_recap）prompt 明确允许「X月X日收评，先看三大指数」平实开场，
-    # 不强制反差悬念/生活化入口，否则与 _daily_recap_adapt_block 的指示矛盾、必然重试失败。
+    # 不强制主播开场/核心问题，否则与 _daily_recap_adapt_block 的指示矛盾、必然重试失败。
     if not daily_recap:
-        if _COVER_WEAK_HOOK.match(cold_open):
-            raise ValueError(f"cold_open 禁止平铺开头: {cold_open!r}")
-        if not _COLD_OPEN_LIFE.search(cold_open):
+        if _COVER_WEAK_HOOK.match(cold_open) or _OPEN_EMPTY.match(cold_open):
+            raise ValueError(f"cold_open 禁止空开头，开口就说是哪件事: {cold_open!r}")
+        if not _names_topic(cold_open, data):
             raise ValueError(
-                f"cold_open 必须含生活化入口（你/手机/涨价/买菜等），让路人 3 秒听懂: {cold_open!r}"
+                f"cold_open 必须点出本期话题（关键词「{data.get('keyword', '')}」或标题里的主角）: {cold_open!r}"
             )
-        if _COLD_OPEN_JARGON_ONLY.search(cold_open) and not re.search(
-            r"手机|电脑|家电|买菜|奶茶|工资|账单|涨价|贵了|便宜", cold_open
-        ):
-            raise ValueError(
-                f"cold_open 勿以纯财经术语开场，请改成生活场景+反差: {cold_open!r}"
-            )
+        if _COLD_OPEN_JARGON_ONLY.search(cold_open) and not _COLD_OPEN_LIFE.search(cold_open):
+            raise ValueError(f"cold_open 勿以纯财经术语开场，请改成大白话: {cold_open!r}")
+        if data.get("open_mode") not in _OPEN_MODES:
+            raise ValueError("open_mode 须为 news（主播转述）或 question（直接抛问题）")
+        if data["open_mode"] == "question" and not re.search(r"[？?]", cold_open):
+            raise ValueError(f"open_mode=question 时开场白必须直接问出来（带问号）: {cold_open!r}")
     for p in _reco_banned_for(article=article):
         if p in cold_open:
             raise ValueError(f"cold_open 含违规词「{p}」")
@@ -1553,22 +1592,39 @@ def validate_article_script(data: dict, article: dict) -> dict:
     hook_line = str(data.get("hook_line") or "").strip()
     if not daily_recap:
         if not hook_line:
-            raise ValueError("缺少 hook_line（10-24 字钩子句：全片最炸的一句，第 0 秒就播）")
-        if not (8 <= len(hook_line) <= 26):
-            raise ValueError(f"hook_line 须 10-24 字，当前 {len(hook_line)}: {hook_line!r}")
-        if _HOOK_EMPTY.match(hook_line):
-            raise ValueError(f"hook_line 禁止空问句开头，要直接抛结果: {hook_line!r}")
-        if not _HOOK_PUNCH.search(hook_line):
-            raise ValueError(f"hook_line 必须带具体数字或强烈对比（个人账/反常/对立）: {hook_line!r}")
-        if hook_line == cold_open:
-            raise ValueError("hook_line 与 cold_open 不能相同：钩子抛结果，冷开场收紧悬念")
+            raise ValueError("缺少 hook_line（4-12 字封面大字，摘自开场白原话）")
+        if not (3 <= len(_bare(hook_line)) <= 12):
+            raise ValueError(f"hook_line 须 4-12 字，当前 {len(_bare(hook_line))}: {hook_line!r}")
+        if _bare(hook_line) not in _bare(cold_open):
+            raise ValueError(f"hook_line 必须是开场白里的原话片段（观众听到的同时看到）: {hook_line!r}")
     for p in _reco_banned_for(article=article):
         if p in hook_line:
             raise ValueError(f"hook_line 含违规词「{p}」")
-    for pat in _STOCK_CODE_PATTERNS:
-        m = pat.search(hook_line)
-        if m:
-            raise ValueError(f"hook_line 含股票代码「{m.group(0)}」")
+
+    if not daily_recap:
+        question = str(data.get("question") or "").strip()
+        answer = str(data.get("answer") or "").strip()
+        if not question:
+            raise ValueError("缺少 question（本期要回答的核心问题）")
+        if not answer:
+            raise ValueError("缺少 answer（对核心问题的一句话正面回答）")
+        if not (8 <= len(answer) <= 44):
+            raise ValueError(f"answer 须 8-40 字，当前 {len(answer)}: {answer!r}")
+        if _VAGUE_ANSWER.search(answer):
+            raise ValueError(f"answer 必须给明确判断，不能说空话: {answer!r}")
+        tail = "".join(str(x.get("narration") or "") for x in (data.get("slides") or [])[-2:])
+        if _bare(answer) not in _bare(tail):
+            raise ValueError(
+                f"开头抛出的问题必须在结尾回收：最后两页 narration 要一字不差地包含 answer「{answer}」"
+            )
+        spoken = len(cold_open) + sum(len(str(x.get("narration") or "")) for x in data.get("slides") or [])
+        if spoken < 500:
+            raise ValueError(f"口播合计只有 {spoken} 字，讲不透观点；开场白加全部 narration 建议 1000 字以内")
+        if spoken > 1200:
+            raise ValueError(f"口播合计 {spoken} 字太长；开场白加全部 narration 尽量不超过 1000 字")
+        first = str((data.get("slides") or [{}])[0].get("narration") or "")
+        if _bare(cold_open)[:10] in _bare(first):
+            raise ValueError("第 1 页 narration 不要重复开场白，接着往下讲")
 
     title = str(data["title"]).strip()
     if len(title) < 4:
@@ -1634,12 +1690,8 @@ def validate_article_script(data: dict, article: dict) -> dict:
 
         n = str(slide["narration"]).strip()
         nlen = len(n)
-        if layout == "cover":
-            if not (40 <= nlen <= 120):
-                raise ValueError(f"cover narration 须 40-120 字，当前 {nlen}")
-        else:
-            if not (50 <= nlen <= 220):
-                raise ValueError(f"第 {page} 页 narration 须 50-220 字，当前 {nlen}")
+        if not (30 <= nlen <= 260):
+            raise ValueError(f"第 {page} 页 narration 须 40-200 字，当前 {nlen}")
 
         oit = slide.get("on_image_text") or []
         if not isinstance(oit, list) or not (3 <= len(oit) <= 12):
@@ -1698,12 +1750,14 @@ ADAPT_FIX_PROMPT = """你上一轮输出的 JSON 脚本未通过校验。请重�
 {errors}
 
 仍按之前要求：
-- slides 长度 3-4（最多 4 页）；第 1 页 layout=cover（含 subtitle），其余 layout=body（含 lead_in）
+- slides 5-8 页；第 1 页 layout=cover（含 subtitle），其余 layout=body（含 lead_in）
 - 每页有 chapter_title / concept / headline / narration / image_prompt / on_image_text
 - 必须忠实于已选定文章原文（URL: {url}），不虚构事实
 - 口播必须像「AI财知道」自己的财经解读，不要说「文章认为」「作者指出」「文中提到」「某某的观点」；来源只作内部依据。
-- cold_open 必须生活化入口+反差，禁止纯术语；须输出 theme_cluster + angle；封面 narration 勿重复 cold_open 且控制在 40-120 字；最后一页不要写收藏或「对照看盘」。
-- hook_line 10-24 字，全片最炸的一句（结果前置/个人账/反常识/人群对立），必须带数字或强对比，不与 cold_open 重复；同时输出 hook_type。
+- cold_open 是 12-60 字主播开场白（open_mode=news 主播转述 / question 直接抛问题），一听就知道聊哪件事（含关键词或标题主角），禁止纯术语；须输出 theme_cluster + angle；第 1 页 narration 不重复开场白，每页 40-180 字，开场白加全部 narration 尽量不超过 1000 字，略超两分钟也可以；最后不要写收藏或「对照看盘」。
+- hook_line 4-12 字封面大字，必须是开场白里的原话片段；同时输出 hook_type。
+- 必须输出 question（核心问题）和 answer（8-40 字明确回答），最后两页 narration 要一字不差地包含 answer，开头的问题结尾必须回收。
+- 仍要有问题、有观点、有结论，有人有场景、有梗有态度；不要因为改错而把稿子改平。
 - 【合规红线】：标题/口播/上屏文字/hashtags 都严禁出现任何股票代码（A股6位、港股带.HK、美股字母代码等），也严禁荐股、喊单、目标价、买卖点、仓位建议、「稳赚/必涨/翻倍/收益率/内幕/买入/卖出」等字眼，只做客观信息梳理与原理解释。
 """
 
@@ -1713,13 +1767,14 @@ ADAPT_FIX_PROMPT_EDU = """你上一轮输出的 JSON 脚本未通过校验。请
 {errors}
 
 仍按之前要求：
-- slides 3-4 页；不要输出 source / article / layout / lead_in / chapter_title / concept
+- slides 5-8 页；不要输出 source / article / layout / lead_in / chapter_title / concept
 - 本篇是**财经概念科普**，只解释原理与公式，不给买卖建议
 - 不要输出 source 字段；无外部链接
 - 讲解指标时可用「回报率、波动、回撤、性价比」等教学用语；严禁「稳赚、包赚、必涨、跟我买、带你赚、荐股、喊单、内幕」
 - title 保持故事/后果问句，禁止改成「X是什么/怎么算」
-- cold_open 12-28 字，生活场景+反差；封面 narration 40-120 字且不重复 cold_open
-- hook_line 10-24 字，全片最炸的一句（结果前置/个人账/反常识/人群对立），必须带数字或强对比，不与 cold_open 重复；同时输出 hook_type
+- cold_open 12-60 字主播开场白（open_mode=news 主播转述 / question 直接抛问题），直接说清讲哪个概念、跟你有啥关系；第 1 页 narration 不重复开场白，每页 40-180 字，合计尽量不超过 1000 字
+- hook_line 4-12 字封面大字，必须是开场白里的原话片段；同时输出 hook_type
+- 必须输出 question 和 answer（8-40 字明确回答），最后两页 narration 要一字不差地包含 answer
 - 最后一页不要写收藏或「对照看盘」，片尾会说「有用就收藏」
 """
 
@@ -1789,19 +1844,19 @@ def _build_adapt_user_message(article: dict, details: dict) -> str:
         title_rule = "如果 metadata 里有「建议问句标题」，优先沿用或小幅润色为最终 title；"
     return (
         f"{recap_block}{offday_block}{edu_block}{topic_block}{meta_block}\n\n{details_block}\n{relaxed_note}\n"
-        "请严格根据上面的「原文深读细节」改编。输出字段须含 title / keyword / hook_line / hook_type / cold_open / "
-        "cold_open_type / theme_cluster / angle / hashtags / slides；"
+        "请严格根据上面的「原文深读细节」改编。输出字段须含 title / keyword / open_mode / cold_open / hook_line / hook_type / "
+        "question / answer / theme_cluster / angle / hashtags / slides；"
         f"{title_rule}"
         "slides 每页只填 headline / narration / image_prompt / on_image_text。"
         "不要输出 source、article、layout、lead_in、chapter_title、concept。"
         "写法上要直接给出本栏目的判断和解释，禁止在口播里说「文章认为」「作者指出」「文中提到」「某某的观点」；"
         "来源信息只用于事实依据，不对观众显性提及。\n"
-        "面向零基础观众：讲成一个有悬念、有反转的故事，不要讲课；专业术语用 key_terms 半句话带过，"
-        "everyday_analogies 里最多挑 1 个用在最难懂的地方；高潮处用短促的情绪词接住（好家伙、你敢信、离谱的是）；"
-        "必须输出 hook_line / cold_open / theme_cluster / angle；先把全片最关键的差距算成普通人的个人账"
-        "（可用 wallet_math，先核对算法），再从中挑最炸的一句做 hook_line（可参考 hook_candidates，但要更狠、更短）；"
-        "封面 narration 不要重复 cold_open；"
-        "最后一页不要再喊收藏，也不要写「对照看盘」，片尾会说「有用就收藏」。\n\n"
+        "面向零基础观众，写成一期有问题、有观点、有结论的主播节目，两分钟左右、合计尽量不超过 1000 字，略长也可以：先想清楚这期最扎心的那个问题和你的观点，"
+        "结构按这个话题最好讲的方式自己定；素材里的人物、现场、原话（concrete_scenes / people / all_quotes）优先用上；"
+        "专业术语用 key_terms 半句话带过；比喻和梗要接地气、为观点服务；"
+        "可参考 open_candidates 写开场白，但要更像人说话；关键差距算成普通人的个人账（可用 wallet_math，先核对算法）；"
+        "answer 必须原样出现在最后两页；第 1 页 narration 不要重复开场白；"
+        "结尾不要喊收藏，也不要写「对照看盘」，片尾会说「有用就收藏」。\n\n"
         "请输出严格 JSON 对象（不要 markdown，不要解释）。"
     )
 
@@ -1871,7 +1926,7 @@ def _offday_astock_ban_block(article: dict) -> str:
     return (
         "【非交易日·禁止 A 股收评化（必须服从）】\n"
         "- title / cold_open / slides 禁止以沪指、4000点、成交额、涨跌家数、板块涨跌为主线\n"
-        "- 深读材料里若有周五收盘数字，**不要写进口播**；短视频 4 页须紧扣本篇宏观/产业/国际主线\n"
+        "- 深读材料里若有周五收盘数字，**不要写进口播**；全片须紧扣本篇宏观/产业/国际主线\n"
         "- 最后一页总结政策/事件对普通人的含义，不要总结盘面\n"
     )
 

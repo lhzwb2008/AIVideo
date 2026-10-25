@@ -31,7 +31,7 @@ _PROMPT = """把下面这条{domain}的每一页口播，配成「动态 PPT」�
 
 硬规则：
 1. 画面上的每个数字都必须原样出现在口播或原文里。不许换算、不许四舍五入、不许编造。拿不准就不用数字，改用 flow/points/quote。
-2. 有 2 个以上可比数字的页，优先用 bars/compare/table/bignum；4 页里至少 2 页是数据版式。
+2. 有 2 个以上可比数字的页，优先用 bars/compare/table/bignum，至少一半的页是数据版式；讲观点、讲梗的页，用 quote/points 把那句金句或原话写上屏。
 3. cue 是口播分句编号（见每页的 [0] [1] …），元素在说到那一句时出场；同一页内 cue 不递减。画面不能长时间空着：大约每 3-4 句就要有一个元素出场；前几句在铺垫时，用 lead 撑住开头。
 4. 板书是提炼，不是照抄口播；每个字段严格守字数上限。
 5. {rule_safe}
@@ -41,35 +41,35 @@ _PROMPT = """把下面这条{domain}的每一页口播，配成「动态 PPT」�
 美术指导（每页和封面都要）：art{{scene, focus, move}}
 - scene：英文，≤45 词，把这页的事讲成一个有戏剧张力的漫画瞬间：谁（普通人、交易员、工程师、老板、银行柜员等虚构角色）在做什么动作、什么表情，
   或者一个夸张的视觉隐喻（巨浪般的K线砸向城市、天平两端的钱袋、被绳子拴住的气球……）；写清镜头角度（低机位/俯拍/特写）和环境光。
+  这页口播里有比喻或梗时，优先把那个梗画出来（如「金子像个不挣钱的亲戚」就画一根金条瘫在沙发上、全家人嫌弃地看着它），让观众看图就笑。
+  口播里反复出现的同一个人（如故事主角）要用同样的外形描述（年龄、发型、衣着），前后几页认得出是同一个人。
   不写真实人名、公司名、商标，不画任何文字、数字、图表刻度。
 - focus：[x, y]，画面焦点在图里的相对位置（0-1），镜头会朝它推进。
 - move：镜头运动，push(推近)/pull(拉远)/pan_left/pan_right/tilt_up/tilt_down 选一个，相邻两页不要一样。
-封面的 art 写在 cover 里，要一张海报感的主视觉。
+封面的 art 写在 cover 里，要一张海报感的主视觉，而且必须有人脸：一个虚构普通人撞见本期这件事时最夸张的表情
+（瞪大眼、张大嘴、捂脸、抓头、捏着账单或手机愣住），手里或身边要有本期话题的具体物件（金镯、房贷合同、油价牌等），
+半身到面部特写、略低机位、强烈速度线，focus 放在脸上。观众看封面第一眼就知道讲的是什么、而且这事很离谱。
 
 导演节奏（让整条视频有起伏，别一路平铺）：
 - mood：全片配乐情绪，hype(燃)/epic(史诗)/tense(悬疑紧张)/warm(温情) 选一个。
 - 每页 energy：1-5，配乐和动效强度。要有起伏：铺垫页 2-3，高潮页 5，高潮后可以回落一下再收尾。
 - 每页 enter：进入这页的转场，ink(漫画斜切擦屏)/whip(快速横甩)/zoom(冲镜头)/flash(白闪) 选一个，相邻不重复；energy 5 的页用 flash 或 zoom。
-- 每页可选 peak{{text≤8字, cue}}：这页的气氛点兼记忆点。到那一句时白闪、震屏、重低音，一条金句砸到屏幕上。金句要短、有冲击力、观众看一眼就记住（例如「一年少还7163亿」「利息倒挂2个点」），全片 1-3 个，放在真正的高潮句上，不要每页都有。
+- 每页可选 peak{{text≤10字, cue}}：这页的气氛点兼记忆点。到那一句时白闪、震屏、重低音，一条金句砸到屏幕上。金句要短、有冲击力、观众看一眼就记住（例如「一年少还7163亿」「我这口价不能松」），全片 3-5 个，大约每两页一个，放在观点句、反转句、梗的笑点上，不要每页都有。
 - recap：结尾「今天记住」卡，2-3 条，每条≤8字，是全片最该记住的数字或结论。
-- hook{{page, text≤8字, stamp≤4字, tone≤30字}}：高光前置。成片第 0 秒先放全片最炸的那一下，再倒回去从头讲。
-  page 是被前置那一页的页号（从 1 起，挑全片最狠的数字、反转或冲突所在页）；text 是第 0.4 秒砸到屏幕上的大字，
-  要让没听过任何背景的路人一眼看懂有多离谱（通常就是这页的 peak，或钩子句里的核心数字，如「多还16万」）；
-  stamp 是角落小印章（如「先看结果」「离谱」）；tone 是钩子句的配音语气，要又快又冲，像刚发现一件离谱的事。
-  hook 也要 art{{scene, focus, move}}：第 0 帧的反应特写，必须有人脸——一个虚构普通人撞见这件事时最夸张的表情
-  （瞪大眼、张大嘴、捂脸、抓头、捏着账单或手机愣住），面部大特写、略低机位、强烈速度线和冲击线，focus 放在脸上。
+- 封面上念的是开场白（抛出本期问题），念到「封面大字」那句原话时大字会砸到封面插图上，这个不用你写。
+  cover.tone 是开场白的配音语气：像主播开口就抛出一个大家都想问的问题，好奇里带点调侃，节奏要快。
 
 配音导演（让口播像真人讲故事，有起伏、有突然的情绪，而不是念稿）：
 - cover.tone 和每页 tone：≤30字的语气指令，告诉配音这一段整体怎么说，要跟内容走，相邻两段不要一样。
-  例：「像发现了一件离谱的事，惊讶里带点调侃」「放慢、压低声音，像在揭一个秘密」「笃定有力，一字一顿」「替观众打抱不平，有点气」。
+  例：「像发现了一件离谱的事，惊讶里带点调侃」「放慢、压低声音，像在揭一个秘密」「笃定有力，一字一顿」「替观众打抱不平，有点气」「憋着笑损一句」。
 - 每页 marks[0-3]{{cue, tag≤6字}}：只给真正的情绪转折句打标签，tag 只描述语气，例如 惊讶/难以置信/激动/扎心/调侃/压低声音/斩钉截铁/恍然大悟。
-  反常数字、反转、金句那一句最该打；平铺直叙的句子不打，同一页标签别重复。
+  反常数字、反转、金句、梗的笑点那一句最该打（梗用 调侃/憋笑/损一句）；平铺直叙的句子不打，同一页标签别重复。
 
-只输出 JSON：{{"mood": "...", "hook": {{...}}, "cover": {{..., "tone": "..."}}, "slides": [{{"layout": "...", "energy": 3, "enter": "...", "tone": "...", "marks": [...], ...}}, ...], "recap": [...]}}，slides 与下面页数一一对应。
+只输出 JSON：{{"mood": "...", "cover": {{..., "tone": "..."}}, "slides": [{{"layout": "...", "energy": 3, "enter": "...", "tone": "...", "marks": [...], ...}}, ...], "recap": [...]}}，slides 与下面页数一一对应。
 
 视频标题：{title}
-钩子句（第 0 秒口播）：{hook_line}
-冷开场（钩子之后、封面上的口播）：{cold_open}
+开场白（封面上念）：{cold_open}
+封面大字（开场白里的原话）：{hook_line}
 
 {pages}
 
@@ -275,7 +275,7 @@ def _clean_slide(raw: dict, slide: dict, n: int, chk: _Checker) -> dict:
         out["enter"] = raw["enter"]
     peak = raw.get("peak")
     if isinstance(peak, dict) and str(peak.get("text") or "").strip() and chk.ok(peak.get("text")):
-        out["peak"] = {"text": _clip(peak["text"], 8), "cue": _cue(peak.get("cue"), n, 0)}
+        out["peak"] = {"text": _clip(peak["text"], 10), "cue": _cue(peak.get("cue"), n, 0)}
     out.update(_clean_voice(raw, n))
     return out
 
@@ -314,7 +314,7 @@ def _direct(planned: list[dict]) -> None:
             p["enter"] = next(e for e in ENTERS[i % 4:] + ENTERS if e != prev)
         prev = p["enter"]
     peaks = sorted((p for p in planned if p.get("peak")), key=lambda p: -p["energy"])
-    for p in peaks[3:]:
+    for p in peaks[max(3, (len(planned) + 1) // 2):]:
         p.pop("peak")
 
 
@@ -360,32 +360,15 @@ def _clean_cover(raw: dict, script: dict, chk: _Checker) -> dict:
     return out
 
 
-def _clean_hook(raw, planned: list[dict], recap: list[str], chk: _Checker) -> dict | None:
-    """前置哪一页、砸什么字；模型没给或不合规时取能量最高的金句页。"""
-    raw = raw if isinstance(raw, dict) else {}
-    try:
-        page = int(raw.get("page"))
-    except (TypeError, ValueError):
-        page = 0
-    text = _clip(raw.get("text"), 8)
-    if not (1 <= page <= len(planned)) or not text or not chk.ok(text):
-        peaks = sorted((i for i, p in enumerate(planned) if p.get("peak")), key=lambda i: -planned[i].get("energy", 3))
-        if peaks:
-            page, text = peaks[0] + 1, planned[peaks[0]]["peak"]["text"]
-        elif recap and planned:
-            page = max(range(len(planned)), key=lambda i: planned[i].get("energy", 3)) + 1
-            text = recap[0]
-        else:
-            return None
-    stamp = _clip(raw.get("stamp"), 4)
-    out = {"page": page, "text": text, "stamp": stamp if stamp and chk.ok(stamp) else "先看结果"}
-    tone = _clip(raw.get("tone"), 30)
-    if tone:
-        out["tone"] = tone
-    art = _clean_art(raw.get("art"))
-    if art:
-        out["art"] = art
-    return out
+def _clean_hook(script: dict, planned: list[dict], recap: list[str], chk: _Checker) -> dict | None:
+    """砸到封面上的大字：用稿子里的 hook_line（开场白原话）；没有或不合规时取能量最高那页的金句。"""
+    text = str(script.get("hook_line") or "").strip()
+    if not text or len(text) > 14 or not chk.ok(text):
+        peaks = sorted((p for p in planned if p.get("peak")), key=lambda p: -p.get("energy", 3))
+        text = peaks[0]["peak"]["text"] if peaks else (recap[0] if recap else "")
+    if not text:
+        return None
+    return {"text": text}
 
 
 def _parse_json(text: str) -> dict:
@@ -447,14 +430,14 @@ def plan_visuals(data: dict, script: dict) -> dict:
     _direct(planned)
     recap = [_clip(x, 8) for x in raw.get("recap") or [] if str(x).strip() and chk.ok(x)][:3]
     mood = raw.get("mood") if raw.get("mood") in MOODS else "hype"
-    hook = _clean_hook(raw.get("hook"), planned, recap, chk)
+    hook = _clean_hook(script, planned, recap, chk)
     for note in chk.dropped:
         print(f"[explainer] 丢弃：{note}", file=sys.stderr)
     print(f"[explainer] 导演（{planner_model()}）：配乐 {mood}；"
           + " / ".join(f"{p['layout']}·能量{p['energy']}·{p['enter']}" + (f"·金句「{p['peak']['text']}」" if p.get("peak") else "")
                        for p in planned), file=sys.stderr)
     if hook:
-        print(f"[explainer] 高光前置：第{hook['page']}页「{hook['text']}」", file=sys.stderr)
+        print(f"[explainer] 封面大字：「{hook['text']}」", file=sys.stderr)
     print("[explainer] 配音语气：" + " / ".join(
         (p.get("tone") or "-") + "".join(f"［{m['cue']}:{m['tag']}］" for m in p.get("marks") or [])
         for p in [cover, *planned]), file=sys.stderr)
