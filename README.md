@@ -41,13 +41,26 @@
 
 ## 视觉风格
 
-默认 `AIVIDEO_VISUAL_MODE=explainer`：动态 PPT 动画，不生图。
+默认 `AIVIDEO_VISUAL_MODE=explainer`：漫画插图 + 动态 PPT 动画 + 自动配乐，和 NBA-AI-Video 同一套。
 
 - **白板手绘** 方格纸底，圆珠笔线条 + 黄/紫荧光笔，手写体（`assets/fonts` 霞鹜漫黑）
-- 每页由文本模型从 8 种版式（大数字/对比/柱状/表格/时间线/因果链/要点/引言）里挑，数字必须出自口播或原文
-- 先画骨架，口播说到哪个数据再填数、长柱子；字幕、品牌角标、数字人片头与旧版一致
+- **导演稿**（`explainer_plan.py`，默认 Claude Opus 5.5）：每页从 8 种版式（大数字/对比/柱状/表格/时间线/因果链/要点/引言）里挑，
+  同时定插图画面和运镜、每页能量、转场、1-3 个金句（气氛点）、结尾「今天记住」卡，以及每段配音语气和转折句的情绪标签。数字必须出自口播或原文
+- **动效**：每页一张漫画插图先整幅砸入、说到数据前收成分格；转场（斜切擦屏/横甩/冲镜/白闪）、震屏、速度线、漏光、颗粒，60fps；
+  金句到点白闪 + 震屏 + 重低音
+- **配乐**（`explainer_score.py`）：按每页能量程序合成，音效按画面事件卡点，人声出来自动压低音乐，响度 -14 LUFS
 - 用系统 Chrome（`LOCAL_CHROME_PATH`）逐帧渲染，失败自动退回 `comic`（gpt-image-2 漫画图 + 静态合成）
+- 开关：`AIVIDEO_EXPLAINER_ART`（插图）、`AIVIDEO_EXPLAINER_SCORE`（配乐）、`AIVIDEO_EXPLAINER_FPS`
 - 单独预览：`.venv\Scripts\python.exe src\explainer_compose.py logs\zh\last_script_xxx.json --preview`
+
+## 配音
+
+豆包 TTS 2.0。导演稿给每段一句语气指令（`context_texts`），给转折句加情绪标签（`<cot text=惊讶>…</cot>`），
+`VOLCENGINE_TTS_EMOTION=0` 可关。
+
+- **复刻音色**（`S_` 开头）：须 `VOLCENGINE_TTS_MODEL=seed-tts-2.0-expressive` 才吃语气和标签；expressive 偶尔吞字，
+  所以合成后用 whisper 核对口播里的数字，漏了重试一次，再漏就退回 standard 平读（`VOLCENGINE_TTS_VERIFY=0` 可关）
+- **官方 2.0 音色**（`*_uranus_bigtts`）：只填 `VOLCENGINE_TTS_SPEAKER`，资源 ID 自动切到 `seed-tts-2.0`，支持语气指令，不支持句内标签
 
 ## 流程
 
@@ -137,12 +150,12 @@ src/
 
 默认值都在 `config/defaults.env`，随 `git pull` 更新；`.env` 只放密钥、账号标识和本机路径（模板见 `.env.example`）。优先级：进程环境变量 > `.env` > `config/defaults.env`，要改某项就在 `.env` 写同名一行。旧的完整 `.env` 可用 `.\scripts\slim-env.ps1` 对比后加 `-Apply` 精简。
 
-TTS 默认豆包声音复刻：
+TTS 默认豆包官方 2.0「霸气青叔」，带语气指令；换音色只改一行（见上文「配音」）：
 
 ```ini
 TTS_PROVIDER=doubao
-VOLCENGINE_TTS_RESOURCE_ID=seed-icl-2.0
-VOLCENGINE_TTS_SPEAKER=S_6uN8A8f22
+VOLCENGINE_TTS_SPEAKER=zh_male_baqiqingshu_uranus_bigtts
+# 克隆主播：VOLCENGINE_TTS_SPEAKER=S_6uN8A8f22（配 VOLCENGINE_TTS_MODEL=seed-tts-2.0-expressive）
 ```
 
 ## 克隆个人音色（一次性）

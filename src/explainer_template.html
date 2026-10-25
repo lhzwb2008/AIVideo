@@ -3,34 +3,40 @@
 <head>
 <meta charset="utf-8">
 <style>
-  :root {
-    --paper: #FBF6E4;
-    --ink: #232323;
-    --mute: #5E5A52;
-    --yellow: rgba(255, 221, 87, .88);
-    --purple: rgba(196, 170, 236, .85);
-    --purple-ink: #7B5CC4;
-  }
+  :root { --paper: #FBF6E4; --ink: #232323; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { width: 1080px; height: 1920px; overflow: hidden; background: var(--paper); }
   body { font-family: "Marker", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; color: var(--ink); -webkit-font-smoothing: antialiased; }
+  .full { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; pointer-events: none; }
+  #cam { transform-origin: 540px 960px; }
   #grid {
-    position: absolute; inset: -80px;
+    position: absolute; inset: -120px;
     background-image:
       linear-gradient(rgba(150, 140, 110, .16) 2px, transparent 2px),
       linear-gradient(90deg, rgba(150, 140, 110, .16) 2px, transparent 2px);
     background-size: 54px 54px;
   }
-  .slide { position: absolute; inset: 0; opacity: 0; }
+  .slide { position: absolute; inset: 0; transform-origin: 540px 960px; }
   .layer { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; }
   svg.layer { overflow: visible; }
   svg.hl { mix-blend-mode: multiply; }
   .tx { position: absolute; line-height: 1.22; white-space: pre-wrap; word-break: break-all; }
   .tx span { opacity: 0; }
+  .tx.pop span { display: inline-block; transform-origin: 50% 80%; }
   .num { position: absolute; white-space: nowrap; line-height: 1; }
+  .panel { position: absolute; overflow: hidden; border: 6px solid var(--ink); background: #fff; transform-origin: 50% 50%; }
+  .panel img { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; }
+  .panel svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
   .badge { position: absolute; left: 0; top: 0; z-index: 900; }
   #pen { position: absolute; left: 0; top: 0; width: 150px; height: 150px; z-index: 950; opacity: 0;
          filter: drop-shadow(6px 10px 6px rgba(0,0,0,.18)); transform-origin: 0 0; }
+  #flash { background: #FFFBEA; opacity: 0; z-index: 800; }
+  #leak { z-index: 801; opacity: 0; mix-blend-mode: screen;
+          background: radial-gradient(ellipse 60% 40% at 92% 12%, rgba(255,214,90,.95), transparent 70%),
+                      radial-gradient(ellipse 55% 35% at 6% 62%, rgba(186,150,255,.8), transparent 70%); }
+  #vig { z-index: 802; background: radial-gradient(ellipse 75% 62% at 50% 46%, transparent 62%, rgba(70,50,20,.16) 100%); }
+  #grain { z-index: 803; opacity: .09; mix-blend-mode: overlay; background-size: 1080px 1920px; image-rendering: pixelated; }
+  #fx { z-index: 790; }
   #subs { position: absolute; z-index: 1000; left: 0; right: 0; top: 1480px; height: 0; display: flex; align-items: center; justify-content: center; }
   #subs span {
     flex: none; background: rgba(0,0,0,.55); color: #fff; display: none;
@@ -41,38 +47,73 @@
 </style>
 </head>
 <body>
-<div id="grid"></div>
-<div id="stage"></div>
-<img class="badge" id="badge">
-<svg id="pen" viewBox="0 0 150 150">
-  <g transform="rotate(-38 0 150)">
-    <path d="M0 150 L10 128 L22 128 Z" fill="#2a2a2a"/>
-    <rect x="9" y="38" width="14" height="92" rx="3" fill="#3a3f4a"/>
-    <rect x="9" y="38" width="14" height="22" fill="#d9d2c0"/>
-    <rect x="22" y="44" width="4" height="40" rx="2" fill="#c9c2b0"/>
-    <rect x="11" y="20" width="10" height="20" rx="3" fill="#7B5CC4"/>
-  </g>
+<svg width="0" height="0" style="position:absolute">
+  <filter id="hblur" x="-20%" y="0" width="140%" height="100%"><feGaussianBlur id="hblurk" stdDeviation="0 0"/></filter>
 </svg>
+<div id="cam" class="full">
+  <div id="grid"></div>
+  <div id="stage"></div>
+  <svg id="dust" class="full" viewBox="0 0 1080 1920"></svg>
+  <svg id="pen" viewBox="0 0 150 150">
+    <g transform="rotate(-38 0 150)">
+      <path d="M0 150 L10 128 L22 128 Z" fill="#2a2a2a"/>
+      <rect x="9" y="38" width="14" height="92" rx="3" fill="#3a3f4a"/>
+      <rect x="9" y="38" width="14" height="22" fill="#d9d2c0"/>
+      <rect x="22" y="44" width="4" height="40" rx="2" fill="#c9c2b0"/>
+      <rect x="11" y="20" width="10" height="20" rx="3" fill="#7B5CC4"/>
+    </g>
+  </svg>
+</div>
+<svg id="fx" class="full" viewBox="0 0 1080 1920"></svg>
+<div id="flash" class="full"></div>
+<div id="leak" class="full"></div>
+<div id="vig" class="full"></div>
+<div id="grain" class="full"></div>
+<img class="badge" id="badge">
 <div id="subs"><span></span></div>
 <script>
 const DATA = /*__DATA__*/;
 const NS = "http://www.w3.org/2000/svg";
-const INK = "#232323", YEL = "rgba(255,221,87,.88)", PUR = "rgba(196,170,236,.85)", PINK = "#7B5CC4";
+const INK = "#232323", YEL = "rgba(255,221,87,.88)", PUR = "rgba(196,170,236,.85)", PINK = "#7B5CC4", GOLD = "#FFE066";
 const L = 76, R = 1004, CW = R - L, TOP = 250, BOTTOM = 1400;
 const clamp = (x) => Math.max(0, Math.min(1, x));
+const smooth = (a, b, x) => { const u = clamp((x - a) / (b - a)); return u * u * (3 - 2 * u); };
 const ease = {
   out: (p) => 1 - Math.pow(1 - p, 3),
+  in: (p) => p * p * p,
   io: (p) => (p < .5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2),
   back: (p) => { const c = 1.7; return 1 + (c + 1) * Math.pow(p - 1, 3) + c * Math.pow(p - 1, 2); },
   lin: (p) => p,
 };
 const tracks = [];
 
+/* ---------- 时间轴事件：音效、震屏、白闪、漏光、速度线 ---------- */
+const SFX = [], IMPACTS = [], FLASHES = [], LEAKS = [], BOILS = [];
+function sfx(t, k, extra = {}) { if (t >= 0) SFX.push({ t: +t.toFixed(3), k, ...extra }); }
+function impact(pg, t, amp) { IMPACTS.push({ pg, t, amp, ph: IMPACTS.length * 1.7 }); }
+function flash(t, a = .8, dur = .3) { FLASHES.push({ t, a, dur }); }
+function leak(t) { LEAKS.push(t); }
+
 function rng(seed) {
   let s = (seed * 2654435761) >>> 0 || 1;
   return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return (s % 100000) / 100000; };
 }
+function measure(text, size) {
+  const probe = document.createElement("span");
+  probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font-family:Marker;font-size:${size}px`;
+  probe.textContent = text;
+  document.body.appendChild(probe);
+  const w = probe.offsetWidth;
+  probe.remove();
+  return w;
+}
 function esc(t) { return String(t).replace(/[&<>]/g, (x) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[x])); }
+function el(tag, attrs = {}, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (parent) parent.appendChild(e);
+  return e;
+}
 
 /* ---------- 手绘几何 ---------- */
 function rline(r, x1, y1, x2, y2, amp = 2.2) {
@@ -127,33 +168,36 @@ function sparks(r, cx, cy, rad) {
   }
   return d;
 }
+/* 一圈放射短线，数字落定时往外炸开 */
+function ringLines(r, cx, cy, rx, ry, n = 14) {
+  let d = "";
+  for (let i = 0; i < n; i++) {
+    const a = i / n * 6.2832 + r() * .2, k1 = 1.05 + r() * .1, k2 = 1.32 + r() * .2;
+    d += `M${(cx + Math.cos(a) * rx * k1).toFixed(1)} ${(cy + Math.sin(a) * ry * k1).toFixed(1)} L${(cx + Math.cos(a) * rx * k2).toFixed(1)} ${(cy + Math.sin(a) * ry * k2).toFixed(1)} `;
+  }
+  return d;
+}
 
 /* ---------- 页面构件 ---------- */
 class Page {
   constructor(s, i) {
-    this.s = s; this.i = i; this.r = rng(1000 + i * 97);
+    this.s = s; this.i = i; this.r = rng(1000 + i * 97); this.tight = 1;
     this.root = document.createElement("div"); this.root.className = "slide";
-    this.body = document.createElement("div"); this.body.className = "layer";
     this.hl = this.svg("layer hl"); this.ink = this.svg("layer");
     this.text = document.createElement("div"); this.text.className = "layer";
     this.root.append(this.hl, this.ink, this.text);
-    this.dy = 0;
     document.getElementById("stage").appendChild(this.root);
   }
   svg(cls) { const e = document.createElementNS(NS, "svg"); e.setAttribute("class", cls); e.setAttribute("viewBox", "0 0 1080 1920"); return e; }
-  cue(k) { const c = this.s.cues; return c[Math.max(0, Math.min(k ?? 0, c.length - 1))]; }
+  cue(k) { const c = this.s.cues; return Math.max(c[Math.max(0, Math.min(k ?? 0, c.length - 1))], this.minAt ?? -1e9); }
   /* 骨架（框、表头、标签）在页头写完后依次画出，数据等口播说到再填 */
   skel(k, dataAt) { return Math.min(dataAt ?? Infinity, this.base + k * .35); }
   track(at, dur, fn, opt = {}) {
-    const k = { page: this, at, dur: Math.max(.05, dur), fn, curve: opt.curve || "out", pen: opt.pen || null, shift: opt.shift ?? true };
+    const k = { page: this, at, dur: Math.max(.05, dur), fn, curve: opt.curve || "out", pen: opt.pen || null };
     tracks.push(k); fn(0); return k;
   }
   path(d, { at, dur = .6, stroke = INK, width = 4.5, fill = "none", layer = this.ink, pen = true, opacity = 1, cap = "round" }) {
-    const p = document.createElementNS(NS, "path");
-    p.setAttribute("d", d); p.setAttribute("fill", fill); p.setAttribute("stroke", stroke);
-    p.setAttribute("stroke-width", width); p.setAttribute("stroke-linecap", cap); p.setAttribute("stroke-linejoin", "round");
-    p.setAttribute("opacity", opacity);
-    layer.appendChild(p);
+    const p = el("path", { d, fill, stroke, "stroke-width": width, "stroke-linecap": cap, "stroke-linejoin": "round", opacity }, layer);
     const len = p.getTotalLength() + 2;
     p.style.strokeDasharray = `${len} ${len}`;
     this.track(at, dur, (q) => { p.style.strokeDashoffset = len * (1 - q); }, {
@@ -161,32 +205,54 @@ class Page {
     });
     return p;
   }
-  /* 圆珠笔描两遍，像手画的 */
-  sketch(d1, d2, opt) { this.path(d1, opt); if (d2) this.path(d2, { ...opt, width: (opt.width || 4.5) * .55, opacity: .7, pen: false }); }
+  sketch(d1, d2, opt) {
+    this.path(d1, opt);
+    if (d2) this.path(d2, { ...opt, width: (opt.width || 4.5) * .55, opacity: .7, pen: false });
+    sfx(opt.at, "scratch");
+  }
   marker(x1, y1, x2, y2, h, color, at, dur = .45) {
     const r = this.r, j = () => (r() - .5) * 6;
     return this.path(`M${x1} ${y1 + j()} L${x2} ${y2 + j()}`, { at, dur, stroke: color, width: h, layer: this.hl, cap: "butt", pen: true });
   }
-  write(text, { x, y, w = CW, size = 52, color = INK, align = "left", at, cps = 14, weight = 400, maxDur = 1.4 }) {
+  /* mode=pen：圆珠笔逐字写；mode=pop：逐字从上方砸下来，标题和金句用 */
+  write(text, { x, y, w = CW, size = 52, color = INK, align = "left", at, cps = 14, weight = 400, maxDur = 1.4, mode = "pen", layer = this.text }) {
     const e = document.createElement("div");
-    e.className = "tx";
+    e.className = "tx" + (mode === "pop" ? " pop" : "");
     Object.assign(e.style, { left: x + "px", top: y + "px", width: w + "px", fontSize: size + "px", color, textAlign: align, fontWeight: weight });
     const chars = [...String(text)];
     e.innerHTML = chars.map((c) => `<span>${esc(c)}</span>`).join("");
-    this.text.appendChild(e);
+    layer.appendChild(e);
     const spans = [...e.children];
-    const pts = spans.map((sp) => [sp.offsetLeft + x + sp.offsetWidth, sp.offsetTop + y + sp.offsetHeight * .82]);
-    const dur = Math.min(maxDur, Math.max(.3, chars.length / cps));
-    this.track(at, dur, (q) => {
-      const k = q * spans.length;
-      spans.forEach((sp, i) => { sp.style.opacity = clamp(k - i); });
-    }, { curve: "lin", pen: (q) => pts[Math.min(pts.length - 1, Math.floor(q * pts.length))] });
+    let dur;
+    if (mode === "pop") {
+      const step = Math.min(.05, .7 / Math.max(1, chars.length)), r = this.r;
+      const rot = spans.map(() => (r() - .5) * 30);
+      dur = step * spans.length + .32;
+      this.track(at, dur, (q) => {
+        const t = q * dur;
+        spans.forEach((sp, i) => {
+          const u = clamp((t - i * step) / .32);
+          sp.style.opacity = clamp(u * 3);
+          sp.style.transform = u >= 1 ? "none" : `translateY(${(-70 * (1 - ease.back(u))).toFixed(1)}px) scale(${(1.6 - .6 * ease.out(u)).toFixed(3)}) rotate(${(rot[i] * (1 - u)).toFixed(1)}deg)`;
+        });
+      }, { curve: "lin" });
+      sfx(at, "swish");
+      for (let i = 0; i < Math.min(6, spans.length); i += 2) sfx(at + i * step + .2, "pop");
+    } else {
+      const pts = spans.map((sp) => [sp.offsetLeft + x + sp.offsetWidth, sp.offsetTop + y + sp.offsetHeight * .82]);
+      dur = Math.min(maxDur, Math.max(.3, chars.length / cps));
+      this.track(at, dur, (q) => {
+        const k = q * spans.length;
+        spans.forEach((sp, i) => { sp.style.opacity = clamp(k - i); });
+      }, { curve: "lin", pen: (q) => pts[Math.min(pts.length - 1, Math.floor(q * pts.length))] });
+      if (chars.length > 3 && at > 0) sfx(at, "scratch");
+    }
     const lines = [...new Set(spans.map((sp) => sp.offsetTop))];
     let right = x;
     spans.forEach((sp) => { if (sp.offsetTop === lines[lines.length - 1] || lines.length === 1) right = Math.max(right, x + sp.offsetLeft + sp.offsetWidth); });
     return { el: e, h: e.offsetHeight, end: at + dur, right, width: Math.max(...spans.map((sp) => sp.offsetLeft + sp.offsetWidth), 0), lines: lines.length };
   }
-  counter(value, unit, { x, y, size, color = INK, at, dur = .9, align = "left", unitSize }) {
+  counter(value, unit, { x, y, size, color = INK, at, dur = .9, align = "left", unitSize, hit = 10 }) {
     const e = document.createElement("div");
     e.className = "num";
     e.style.fontSize = size + "px"; e.style.color = color; e.style.top = y + "px";
@@ -195,17 +261,24 @@ class Page {
     const u = unit ? `<span style="font-size:${unitSize || Math.round(size * .36)}px;margin-left:8px">${esc(unit)}</span>` : "";
     e.innerHTML = `<b style="font-weight:400">${esc(value)}</b>${u}`;
     this.text.appendChild(e);
-    const w = e.offsetWidth;
-    e.style.left = (align === "center" ? x - w / 2 : align === "right" ? x - w : x) + "px";
+    const w = e.offsetWidth, h = e.offsetHeight;
+    const left = align === "center" ? x - w / 2 : align === "right" ? x - w : x;
+    e.style.left = left + "px";
+    e.style.transformOrigin = align === "center" ? "center bottom" : "left bottom";
     const b = e.querySelector("b");
     this.track(at, dur, (q) => {
       e.style.opacity = clamp(q * 4);
       e.style.transform = `scale(${.6 + .4 * ease.back(clamp(q * 1.6))})`;
       if (target !== null) b.textContent = (target * ease.out(q)).toFixed(dec);
     }, { curve: "lin" });
-    e.style.transformOrigin = "left bottom";
-    if (align === "center") e.style.transformOrigin = "center bottom";
-    return { el: e, w, h: e.offsetHeight, left: parseFloat(e.style.left) };
+    const land = at + dur * .62;
+    if (target !== null) sfx(at, "counter", { dur: dur * .62 });
+    sfx(land, "ding", { f: size > 150 ? 1046.5 : 1318.5 });
+    if (hit) {
+      impact(this, land, hit);
+      this.path(ringLines(this.r, left + w / 2, y + h * .55, w * .62 + 30, h * .7 + 10), { at: land, dur: .22, width: 5, pen: false });
+    }
+    return { el: e, w, h, left };
   }
   pop(node, at, dur = .4, cx, cy, rot = 0) {
     node.style.transformOrigin = `${cx}px ${cy}px`;
@@ -214,35 +287,137 @@ class Page {
       node.style.transform = `rotate(${rot}deg) scale(${q <= 0 ? 0 : ease.back(q)})`;
     }, { curve: "lin" });
   }
-  burst(cx, cy, r1, text, at, size = 52, rot = -8) {
-    const g = document.createElementNS(NS, "g");
-    const p = document.createElementNS(NS, "path");
-    p.setAttribute("d", starburst(this.r, cx, cy, r1, r1 * .78));
-    p.setAttribute("fill", "#FFE066"); p.setAttribute("stroke", INK); p.setAttribute("stroke-width", 4); p.setAttribute("stroke-linejoin", "round");
-    g.appendChild(p);
-    const t = document.createElementNS(NS, "text");
-    t.setAttribute("x", cx); t.setAttribute("y", cy + size * .36); t.setAttribute("text-anchor", "middle");
-    t.setAttribute("font-size", size); t.setAttribute("font-family", "Marker"); t.setAttribute("fill", INK);
+  burst(cx, cy, r1, text, at, size = 52, rot = -8, { layer = this.ink, hit = 8 } = {}) {
+    const g = el("g", {}, layer);
+    el("path", { d: starburst(this.r, cx, cy, r1, r1 * .78), fill: GOLD, stroke: INK, "stroke-width": 4, "stroke-linejoin": "round" }, g);
+    const t = el("text", { x: cx, y: cy + size * .36, "text-anchor": "middle", "font-size": size, "font-family": "Marker", fill: INK }, g);
     t.textContent = text;
-    g.appendChild(t);
-    this.ink.appendChild(g);
     this.pop(g, at, .45, cx, cy, rot);
-    this.path(sparks(this.r, cx, cy, r1 * 1.25), { at: at + .3, dur: .3, width: 4, pen: false });
+    if (at > 0) {
+      this.path(sparks(this.r, cx, cy, r1 * 1.25), { at: at + .3, dur: .3, width: 4, pen: false, layer });
+      sfx(at + .12, "thump");
+      if (hit) impact(this, at + .15, hit);
+    }
+    return g;
   }
+}
+
+/* ---------- 插图分格 ---------- */
+function cueIndices(v) {
+  const out = [];
+  const walk = (o) => {
+    if (Array.isArray(o)) o.forEach(walk);
+    else if (o && typeof o === "object") for (const [k, x] of Object.entries(o)) {
+      if (k === "art" || k === "peak") continue;
+      if (k === "cue" && typeof x === "number") out.push(x); else walk(x);
+    }
+  };
+  walk(v);
+  return out;
+}
+
+function panelBox(pg, src, { x, y, w, h, rot, shadow, focus = [.5, .4] }) {
+  const box = document.createElement("div");
+  box.className = "panel";
+  Object.assign(box.style, { left: x + "px", top: y + "px", width: w + "px", height: h + "px", boxShadow: `16px 16px 0 ${shadow}`, transform: `rotate(${rot}deg)` });
+  const img = document.createElement("img");
+  img.src = src;
+  const fp = `${(focus[0] * 100).toFixed(1)}% ${(focus[1] * 100).toFixed(1)}%`;
+  img.style.objectPosition = fp; img.style.transformOrigin = fp;
+  box.appendChild(img);
+  const lines = el("svg", {});
+  box.appendChild(lines);
+  pg.root.insertBefore(box, pg.root.firstChild);
+  const boil = { box, svg: lines, focus, wins: [] };
+  BOILS.push(boil);
+  return { box, img, boil };
+}
+
+/* 镜头按导演给的焦点推拉摇移 */
+function kenBurns(move, q) {
+  const a = 3 - 6 * q;
+  switch (move) {
+    case "pull": return `scale(${(1.22 - .16 * q).toFixed(4)})`;
+    case "pan_left": return `translateX(${a.toFixed(3)}%) scale(1.16)`;
+    case "pan_right": return `translateX(${(-a).toFixed(3)}%) scale(1.16)`;
+    case "tilt_up": return `translateY(${a.toFixed(3)}%) scale(1.16)`;
+    case "tilt_down": return `translateY(${(-a).toFixed(3)}%) scale(1.16)`;
+    default: return `scale(${(1.05 + .17 * q).toFixed(4)})`;
+  }
+}
+
+function artPanel(pg, top) {
+  const s = pg.s, raw = s.cues, dir = s.visual.art || {};
+  const used = cueIndices(s.visual).map((k) => raw[Math.max(0, Math.min(k, raw.length - 1))]);
+  const first = used.length ? Math.min(...used) : s.end;
+  const shrink = Math.min(s.end - 3, Math.max(s.start + 2.8, first - 1.0));
+  pg.minAt = shrink + .75;
+  pg.base = shrink + .85;
+  const bigH = BOTTOM - top - 30, smallH = 420, x = L - 4, w = CW + 8;
+  const { box, img, boil } = panelBox(pg, s.art, { x, y: top, w, h: bigH, rot: -.8, shadow: YEL, focus: dir.focus });
+  const land = s.start + .42, total = s.end - s.start, rot0 = (pg.r() > .5 ? 1 : -1) * 5;
+  pg.track(s.start, total, (q) => {
+    const t = q * total, u = clamp((t - .12) / .3);
+    const sl = ease.in(u);
+    const float = Math.sin(t * 1.3) * 3, wob = Math.sin(t * .9) * .25;
+    box.style.opacity = clamp(u * 5);
+    box.style.transform = `translateY(${float.toFixed(2)}px) rotate(${(rot0 + (-.8 - rot0) * sl + wob).toFixed(3)}deg) scale(${(1.35 - .35 * sl).toFixed(4)})`;
+    img.style.transform = kenBurns(dir.move, q);
+  }, { curve: "lin" });
+  impact(pg, land, 16);
+  flash(land, .55, .28);
+  boil.wins.push([land, land + 1.4, 1]);
+  sfx(land, "thump");
+  sfx(land - .2, "whoosh", { d: -1 });
+  pg.track(shrink, .8, (q) => { box.style.height = bigH + (smallH - bigH) * q + "px"; }, { curve: "back" });
+  sfx(shrink, "swish");
+  if (s.visual.peak) peakBanner(pg, top + smallH * .58, s.visual.peak, boil);
+  pg.tight = .8;
+  return top + smallH + 40;
+}
+
+/* 金句：气氛点 + 记忆点。白闪、震屏、重低音，横幅砸到屏幕上 */
+function peakBanner(pg, cy, pk, boil, layer = pg.ink, tlayer = pg.text) {
+  const at = pg.cue(pk.cue) + .1, land = at + .3;
+  const size = [...pk.text].length > 6 ? 84 : 100;
+  const tw = Math.min(CW - 160, measure(pk.text, size));
+  const bw = tw + 120, bh = size + 64, x0 = 540 - bw / 2, y0 = cy - bh / 2, sk = 26;
+  const g = el("g", {}, layer);
+  el("path", { d: `M${x0 + sk + 12} ${y0 + 12} L${x0 + bw + 12} ${y0 + 12} L${x0 + bw - sk + 12} ${y0 + bh + 12} L${x0 + 12} ${y0 + bh + 12} Z`, fill: INK }, g);
+  el("path", { d: `M${x0 + sk} ${y0} L${x0 + bw} ${y0} L${x0 + bw - sk} ${y0 + bh} L${x0} ${y0 + bh} Z`, fill: GOLD, stroke: INK, "stroke-width": 6, "stroke-linejoin": "round" }, g);
+  const t = el("text", { x: 540, y: cy + size * .36, "text-anchor": "middle", "font-size": size, "font-family": "Marker", fill: INK }, g);
+  t.textContent = pk.text;
+  g.style.transformOrigin = `540px ${cy}px`;
+  pg.track(at, .3, (q) => {
+    g.style.opacity = clamp(q * 4);
+    g.style.transform = `rotate(${(-4 - 8 * (1 - q)).toFixed(2)}deg) scale(${(2.8 - 1.8 * ease.in(q)).toFixed(4)})`;
+  }, { curve: "lin" });
+  const ring = pg.path(ringLines(pg.r, 540, cy, bw * .56, bh * 1.1, 18), { at: land, dur: .2, width: 6, pen: false, layer });
+  pg.track(land + .5, .6, (q) => { ring.style.opacity = 1 - q; }, { curve: "lin" });
+  impact(pg, land, 28);
+  flash(land - .02, .9, .4);
+  leak(land);
+  if (boil) boil.wins.push([land, land + 1.8, 1.1]);
+  sfx(land, "boom");
+  sfx(land + .5, "shine");
+  return bh;
 }
 
 /* ---------- 页头 ---------- */
 function header(pg) {
-  const s = pg.s, at = s.start + .15;
+  const s = pg.s, at = s.start + .2;
   const pn = `${String(s.idx).padStart(2, "0")}/${String(s.count).padStart(2, "0")}`;
-  const n = pg.write(pn, { x: R - 140, y: 112, w: 140, size: 40, align: "right", at: s.start, cps: 30 });
+  pg.write(pn, { x: R - 140, y: 112, w: 140, size: 40, align: "right", at: s.start, cps: 30 });
   pg.path(wavy(pg.r, R - 120, R, 168, 4, 26), { at: s.start + .2, dur: .3, stroke: PINK, width: 4, pen: false });
-  const size = s.title.length > 10 ? 64 : 74;
-  const t = pg.write(s.title, { x: L, y: TOP, size, at, cps: 12 });
-  pg.marker(L - 10, TOP + t.h * .62, Math.min(R, t.width + L + 14), TOP + t.h * .62, t.h * .42 * (t.lines > 1 ? 1 : 1), YEL, t.end, .4);
+  const size = s.title.length > 10 ? 64 : 76;
+  const t = pg.write(s.title, { x: L, y: TOP, size, at, mode: "pop" });
+  pg.marker(L - 10, TOP + t.h * .62, Math.min(R, t.width + L + 14), TOP + t.h * .62, t.h * .42, YEL, t.end - .1, .3);
   let y = TOP + t.h + 26;
   pg.base = t.end + .5;
-  if (s.visual.lead) {
+  if (s.art) {
+    y = artPanel(pg, y + 10);
+    if (s.visual.lead) caption(pg, s.visual.lead, TOP + t.h + 36, Math.max(t.end + .1, s.start + .9));
+  } else if (s.visual.lead) {
     const k = pg.write(s.visual.lead, { x: L + 6, y, size: 42, color: "#3b3830", at: Math.max(t.end + .2, pg.cue(0)), cps: 16 });
     pg.path(wavy(pg.r, L + 6, L + Math.min(CW, k.width) + 6, y + k.h + 6, 4, 30), { at: k.end, dur: .35, stroke: PINK, width: 4, pen: false });
     y += k.h + 30;
@@ -252,35 +427,46 @@ function header(pg) {
   return y + 34;
 }
 
+/* 漫画旁白框，贴在分格左上角 */
+function caption(pg, text, top, at) {
+  const x = L - 4;
+  const cap = pg.write(text, { x: x + 34, y: top + 30, w: CW - 120, size: 40, at: at + .2, cps: 16 });
+  const bw = Math.min(CW - 80, cap.width + 40), bh = cap.h + 24;
+  const rect = el("path", { d: `M${x + 14} ${top + 18} h${bw} v${bh} h${-bw} Z`, fill: "#FFFDF4", stroke: INK, "stroke-width": 4 }, pg.ink);
+  pg.pop(rect, at, .3, x + 14, top + 18);
+  sfx(at, "pop");
+}
+
 /* ---------- 各版式 ---------- */
 const LAYOUT = {};
 
 LAYOUT.bignum = (pg, y0) => {
   const v = pg.s.visual, at = pg.cue(v.cue);
-  const size = String(v.value).length > 5 ? 200 : 260;
-  const c = pg.counter(v.value, v.unit, { x: 540, y: y0 + 40, size, at, dur: 1.0, align: "center", unitSize: 90 });
+  const size = Math.round((String(v.value).length > 5 ? 200 : 260) * (pg.tight < 1 ? .86 : 1));
+  const c = pg.counter(v.value, v.unit, { x: 540, y: y0 + 40, size, at, dur: 1.0, align: "center", unitSize: 90, hit: 14 });
   const cx = 540, cy = y0 + 40 + c.h * .55;
-  pg.path(rellipse(pg.r, cx, cy, c.w * .62 + 40, c.h * .62 + 20), { at: at + .7, dur: .7, width: 5 });
+  pg.path(rellipse(pg.r, cx, cy, c.w * .62 + 40, c.h * .62 + 20), { at: at + .75, dur: .6, width: 5 });
   pg.path(sparks(pg.r, cx + c.w * .5 + 40, cy - c.h * .3, 30), { at: at + 1.3, dur: .3, width: 4, pen: false });
-  let y = y0 + 40 + c.h + 70;
+  let y = y0 + 40 + c.h + 70 * pg.tight;
   if (v.label) {
     const lb = pg.write(v.label, { x: L, y, w: CW, size: 54, align: "center", at: pg.skel(0, at + .9), cps: 14 });
     const lw = Math.min(CW, lb.width);
     pg.marker(540 - lw / 2 - 14, y + lb.h * .6, 540 + lw / 2 + 14, y + lb.h * .6, lb.h * .45, PUR, lb.end, .35);
-    y += lb.h + 60;
+    y += lb.h + 60 * pg.tight;
   }
   for (const nt of v.notes || []) {
     const a = pg.cue(nt.cue);
     pg.path(arrowPath(pg.r, L + 10, y + 32, L + 70, y + 32), { at: a, dur: .3, width: 4.5 });
+    sfx(a, "swish");
     const w = pg.write(nt.text, { x: L + 96, y, w: CW - 96, size: 46, at: a + .25, cps: 15 });
-    y += w.h + 34;
+    y += w.h + 34 * pg.tight;
   }
   return y;
 };
 
 LAYOUT.compare = (pg, y0) => {
   const items = pg.s.visual.items, n = items.length, gap = n === 2 ? 70 : 34;
-  const cw = (CW - gap * (n - 1)) / n, ch = 520;
+  const cw = (CW - gap * (n - 1)) / n, ch = Math.round(500 * Math.max(.9, pg.tight));
   let maxY = y0;
   items.forEach((it, i) => {
     const x = L + i * (cw + gap), y = y0 + 30, at = pg.cue(it.cue), sk = pg.skel(i * 3, at);
@@ -290,21 +476,23 @@ LAYOUT.compare = (pg, y0) => {
     const vs = String(it.value).length, size = n === 2 ? (vs > 5 ? 120 : 160) : (vs > 4 ? 90 : 120);
     const vy = y + 60 + lb.h + 40;
     const va = Math.max(at, lb.end + .3);
-    if (it.hot) pg.burst(x + cw / 2, vy + size * .5, Math.min(cw * .36, size * .78), "", va + .2, 1, -6);
-    pg.counter(it.value, it.unit, { x: x + cw / 2, y: vy, size, at: va + .3, dur: .9, align: "center" });
-    if (it.note) pg.write(it.note, { x: x + 16, y: y + ch - 150, w: cw - 32, size: n === 2 ? 38 : 32, color: "#3b3830", align: "center", at: va + .9, cps: 16 });
+    if (it.hot) pg.burst(x + cw / 2, vy + size * .5, Math.min(cw * .36, size * .78), "", va + .2, 1, -6, { hit: 0 });
+    pg.counter(it.value, it.unit, { x: x + cw / 2, y: vy, size, at: va + .3, dur: .9, align: "center", hit: it.hot ? 14 : 8 });
+    if (it.note) pg.write(it.note, { x: x + 16, y: y + ch - 130, w: cw - 32, size: n === 2 ? 38 : 32, color: "#3b3830", align: "center", at: va + .9, cps: 16 });
     maxY = Math.max(maxY, y + ch);
   });
   if (n === 2) {
     const a = pg.skel(3, pg.cue(items[1].cue)) - .1;
-    pg.write("VS", { x: 540 - 35, y: y0 + 30 + ch / 2 - 36, w: 70, size: 52, align: "center", at: a, cps: 8, color: PINK });
+    const vs = pg.write("VS", { x: 540 - 45, y: y0 + 30 + ch / 2 - 40, w: 90, size: 60, align: "center", at: a, color: PINK, mode: "pop" });
+    impact(pg, vs.end - .1, 10);
+    sfx(vs.end - .1, "thump");
   }
   return maxY + 40;
 };
 
 LAYOUT.bars = (pg, y0) => {
   const v = pg.s.visual, bars = v.bars, max = Math.max(...bars.map((b) => b.value));
-  const rowH = bars.length > 4 ? 180 : 215, barH = bars.length > 4 ? 80 : 100, full = CW - 250;
+  const rowH = (bars.length > 4 ? 180 : 215) * pg.tight, barH = (bars.length > 4 ? 80 : 100) * pg.tight, full = CW - 250;
   let y = y0 + 20;
   pg.path(rline(pg.r, L + 4, y - 10, L + 4, y + rowH * bars.length, 1.5), { at: pg.skel(0, pg.cue(bars[0].cue) - .4), dur: .4, width: 5 });
   bars.forEach((b, i) => {
@@ -312,27 +500,28 @@ LAYOUT.bars = (pg, y0) => {
     const lb = pg.write(b.label, { x: L + 24, y, w: CW, size: 50, at: pg.skel(1 + i * 2, pg.cue(b.cue)), cps: 16 });
     const at = Math.max(pg.cue(b.cue), lb.end - .2);
     const by = y + 74;
-    const clip = document.createElementNS(NS, "clipPath"); const cid = "c" + Math.round(pg.r() * 1e9);
-    clip.setAttribute("id", cid);
-    const cr = document.createElementNS(NS, "rect"); cr.setAttribute("x", L + 4); cr.setAttribute("y", by - 6); cr.setAttribute("height", barH + 12);
-    clip.appendChild(cr); pg.ink.appendChild(clip);
-    const g = document.createElementNS(NS, "g"); g.setAttribute("clip-path", `url(#${cid})`);
-    const fill = document.createElementNS(NS, "path");
-    fill.setAttribute("d", `M${L + 4} ${by} h${w} v${barH} h${-w} Z`); fill.setAttribute("fill", b.hot ? "#FFE066" : "rgba(196,170,236,.55)");
-    g.appendChild(fill);
+    const cid = "c" + Math.round(pg.r() * 1e9);
+    const clip = el("clipPath", { id: cid }, pg.ink);
+    const cr = el("rect", { x: L + 4, y: by - 6, height: barH + 12, width: 0 }, clip);
+    const g = el("g", { "clip-path": `url(#${cid})` }, pg.ink);
+    el("path", { d: `M${L + 4} ${by} h${w} v${barH} h${-w} Z`, fill: b.hot ? GOLD : "rgba(196,170,236,.55)" }, g);
     let hatch = "";
     for (let hx = L + 4 - barH; hx < L + 4 + w; hx += 22) {
       const x1 = Math.max(L + 4, hx), x2 = Math.min(L + 4 + w, hx + barH);
       hatch += `M${x1} ${by + barH - (x1 - hx)} L${x2} ${by + barH - (x2 - hx)} `;
     }
-    const hp = document.createElementNS(NS, "path"); hp.setAttribute("d", hatch); hp.setAttribute("stroke", INK); hp.setAttribute("stroke-width", 2.5); hp.setAttribute("opacity", .55);
-    g.appendChild(hp);
-    const ol = document.createElementNS(NS, "path"); ol.setAttribute("d", rrect(pg.r, L + 4, by, w, barH)); ol.setAttribute("stroke", INK); ol.setAttribute("stroke-width", 4.5); ol.setAttribute("fill", "none"); ol.setAttribute("stroke-linecap", "round");
-    g.appendChild(ol);
-    pg.ink.appendChild(g);
-    const grow = .9;
-    pg.track(at + .35, grow, (q) => { cr.setAttribute("width", (w + 14) * q); }, { curve: "out", pen: (q) => [L + 4 + w * ease.out(q), by + barH] });
-    pg.counter(b.text, v.unit, { x: L + 4 + w + 26, y: by + barH / 2 - 42, size: 84, at: at + .35 + grow * .6, dur: .6, unitSize: 38 });
+    el("path", { d: hatch, stroke: INK, "stroke-width": 2.5, opacity: .55 }, g);
+    el("path", { d: rrect(pg.r, L + 4, by, w, barH), stroke: INK, "stroke-width": 4.5, fill: "none", "stroke-linecap": "round" }, g);
+    /* 冲刺拖尾 */
+    const trail = el("path", { d: `M0 ${by + barH * .25} h-70 M0 ${by + barH * .5} h-110 M0 ${by + barH * .75} h-60`, stroke: INK, "stroke-width": 4, "stroke-linecap": "round", opacity: 0 }, pg.ink);
+    const grow = .85;
+    pg.track(at + .35, grow, (q) => {
+      cr.setAttribute("width", (w + 14) * q);
+      trail.setAttribute("transform", `translate(${L + 4 + w * q - 14} 0)`);
+      trail.setAttribute("opacity", (q > 0 && q < 1 ? .6 * Math.sin(Math.PI * q) : 0).toFixed(3));
+    }, { curve: "out", pen: (q) => [L + 4 + w * ease.out(q), by + barH] });
+    sfx(at + .35, "swish");
+    pg.counter(b.text, v.unit, { x: L + 4 + w + 26, y: by + barH / 2 - 42, size: 84, at: at + .35 + grow * .6, dur: .6, unitSize: 38, hit: b.hot ? 12 : 0 });
     y += rowH;
   });
   return y + 10;
@@ -342,10 +531,10 @@ LAYOUT.table = (pg, y0) => {
   const v = pg.s.visual, cols = v.cols, nc = cols.length, rows = v.rows;
   const first = nc === 3 ? 300 : 380, cw = [first, ...Array(nc - 1).fill((CW - first) / (nc - 1))];
   const xs = [L]; cw.forEach((w) => xs.push(xs[xs.length - 1] + w));
-  const headH = 96, rowH = rows.length > 3 ? 118 : 136, at0 = pg.skel(0, pg.cue(rows[0].cue) - 1.2);
+  const headH = 96 * pg.tight, rowH = (rows.length > 3 ? 118 : 136) * pg.tight, at0 = pg.skel(0, pg.cue(rows[0].cue) - 1.2);
   let y = y0 + 10;
   pg.marker(L, y + headH / 2, R, y + headH / 2, headH * .8, PUR, at0, .5);
-  cols.forEach((c, k) => pg.write(c, { x: xs[k] + 18, y: y + 22, w: cw[k] - 30, size: 42, at: at0 + .3 + k * .25, cps: 14 }));
+  cols.forEach((c, k) => pg.write(c, { x: xs[k] + 18, y: y + headH / 2 - 26, w: cw[k] - 30, size: 42, at: at0 + .3 + k * .25, cps: 14 }));
   pg.path(rline(pg.r, L - 10, y + headH, R + 10, y + headH), { at: at0 + .4, dur: .35, width: 5, pen: false });
   y += headH;
   rows.forEach((row, i) => {
@@ -353,7 +542,7 @@ LAYOUT.table = (pg, y0) => {
     const k0 = pg.write(row.cells[0], { x: xs[0] + 18, y: y + (rowH - 56) / 2, w: cw[0] - 30, size: 44, at: sk, cps: 14 });
     pg.path(rline(pg.r, L - 6, y + rowH, R + 6, y + rowH, 1.5), { at: sk + .2, dur: .3, width: 2.5, pen: false, opacity: .7 });
     const at = Math.max(pg.cue(row.cue), k0.end);
-    if (row.hot) pg.marker(L, y + rowH / 2, R, y + rowH / 2, rowH * .62, YEL, at, .4);
+    if (row.hot) { pg.marker(L, y + rowH / 2, R, y + rowH / 2, rowH * .62, YEL, at, .4); sfx(at, "swish"); sfx(at + .4, "ding"); }
     row.cells.slice(1).forEach((cell, k) => pg.write(cell, { x: xs[k + 1] + 18, y: y + (rowH - 56) / 2, w: cw[k + 1] - 30, size: 48, at: at + (row.hot ? .35 : 0) + k * .3, cps: 14 }));
     y += rowH;
   });
@@ -362,12 +551,13 @@ LAYOUT.table = (pg, y0) => {
 };
 
 LAYOUT.timeline = (pg, y0) => {
-  const items = pg.s.visual.items, x0 = L + 30, gapY = items.length > 3 ? 190 : 230;
+  const items = pg.s.visual.items, x0 = L + 30, gapY = (items.length > 3 ? 190 : 230) * pg.tight;
   let y = y0 + 20;
   items.forEach((it, i) => {
     const sk = pg.skel(i * 2, pg.cue(it.cue));
     if (i > 0) pg.path(rline(pg.r, x0, y - gapY + 52, x0, y - 6, 1.2), { at: sk - .3, dur: .3, width: 5 });
     pg.path(rellipse(pg.r, x0, y + 26, 20, 20, 1.15), { at: sk, dur: .3, width: 5, stroke: PINK });
+    sfx(sk, "pop");
     const wn = pg.write(it.when, { x: x0 + 52, y: y - 6, w: CW - 90, size: 42, color: "#3b3830", at: sk + .25, cps: 16 });
     const at = Math.max(pg.cue(it.cue), wn.end + .1);
     pg.marker(x0 + 46, y - 6 + wn.h * .62, x0 + 58 + wn.width, y - 6 + wn.h * .62, wn.h * .5, PUR, at, .3);
@@ -378,14 +568,14 @@ LAYOUT.timeline = (pg, y0) => {
 };
 
 LAYOUT.flow = (pg, y0) => {
-  const steps = pg.s.visual.steps, bh = 132, gap = steps.length > 3 ? 92 : 120, bw = CW - 120, x = L + 60;
+  const steps = pg.s.visual.steps, bh = 132 * Math.max(.85, pg.tight), gap = (steps.length > 3 ? 92 : 120) * pg.tight, bw = CW - 120, x = L + 60;
   let y = y0 + 10;
   steps.forEach((st, i) => {
     const sk = pg.skel(i * 1.6, pg.cue(st.cue)), last = i === steps.length - 1;
-    if (i > 0) pg.path(arrowPath(pg.r, 540, y - gap + 16, 540, y - 16), { at: sk - .3, dur: .3, width: 5 });
+    if (i > 0) { pg.path(arrowPath(pg.r, 540, y - gap + 16, 540, y - 16), { at: sk - .3, dur: .3, width: 5 }); sfx(sk - .3, "swish"); }
     pg.sketch(rrect(pg.r, x, y, bw, bh), last ? rrect(pg.r, x, y, bw, bh) : null, { at: sk, dur: .5 });
     const at = Math.max(pg.cue(st.cue), sk + .5);
-    if (last) pg.marker(x + 6, y + bh / 2, x + bw - 6, y + bh / 2, bh * .8, YEL, at, .4);
+    if (last) { pg.marker(x + 6, y + bh / 2, x + bw - 6, y + bh / 2, bh * .8, YEL, at, .4); impact(pg, at + .4, 8); sfx(at + .4, "thump"); }
     pg.write(st.text, { x: x + 20, y: y + (bh - 62) / 2, w: bw - 40, size: 52, align: "center", at: at + (last ? .35 : 0), cps: 14 });
     y += bh + gap;
   });
@@ -401,7 +591,8 @@ LAYOUT.points = (pg, y0) => {
     const at = Math.max(pg.cue(it.cue), sk + .35);
     const w = pg.write(it.text, { x: L + 104, y, w: CW - 104, size: 52, at, cps: 14 });
     pg.path(checkPath(L + 18, y + 22, 50), { at: w.end + .05, dur: .25, width: 7, stroke: PINK });
-    y += Math.max(80, w.h) + 64;
+    sfx(w.end + .15, "tick");
+    y += Math.max(80, w.h) + 64 * pg.tight;
   });
   return y;
 };
@@ -413,7 +604,7 @@ LAYOUT.quote = (pg, y0) => {
   const h = tmp.h + 150;
   pg.sketch(rrect(pg.r, x, y0 + 30, w, h), null, { at: sk, dur: .7 });
   pg.path(`M${x + 120} ${y0 + 30 + h} L${x + 150} ${y0 + 30 + h + 70} L${x + 220} ${y0 + 30 + h}`, { at: sk + .7, dur: .3, width: 4.5 });
-  pg.write("“", { x: x - 10, y: y0 - 30, w: 120, size: 150, color: PINK, at: sk + .9, cps: 4 });
+  pg.write("“", { x: x - 10, y: y0 - 30, w: 120, size: 150, color: PINK, at: sk + .9, mode: "pop" });
   let y = y0 + 30 + h + 100;
   if (v.by) {
     const b = pg.write("—— " + v.by, { x: x + 240, y: y - 40, w: w - 240, size: 42, color: "#3b3830", at: tmp.end + .2, cps: 16 });
@@ -430,9 +621,11 @@ function footer(pg, y) {
     const t = pg.write(v.after.text, { x: L, y: y + 56, w: CW, size: 54, align: "center", at: at + .4, cps: 13 });
     const tw = Math.min(CW, t.width);
     pg.marker(540 - tw / 2 - 20, y + 56 + t.h * .55, 540 + tw / 2 + 20, y + 56 + t.h * .55, t.h * .78, YEL, at + .3, .4);
-    y += 56 + t.h + 30;
+    sfx(at + .3, "swish");
+    y += 56 + t.h + 30 * pg.tight;
   }
-  if (v.stamp) {
+  if (v.peak && !pg.s.art) y += peakBanner(pg, y + 110, v.peak, null) + 120;
+  if (v.stamp && !v.peak) {
     const at = pg.cue(v.stamp.cue);
     pg.burst(R - 130, y + 90, 92, v.stamp.text, at, v.stamp.text.length > 2 ? 40 : 52, 10);
     y += 200;
@@ -441,19 +634,21 @@ function footer(pg, y) {
 }
 
 /* ---------- 封面 / 尾页 ---------- */
+function fitSize(line, max) {
+  const size = Math.min(max, Math.floor(CW / Math.max(4, [...line].length)));
+  const w = measure(line, size);
+  return w > CW - 10 ? Math.floor(size * (CW - 10) / w) : size;
+}
+
+/* 封面第 0 帧就是完整的发布封面；口播开始后再动起来 */
 function buildCover(pg) {
-  const s = pg.s, r = pg.r, now = -1;
+  const s = pg.s, r = pg.r, now = -1, hold = DATA.hold;
   pg.write(DATA.kicker || DATA.brand, { x: L, y: 270, size: 40, color: "#3b3830", at: now, cps: 99 });
   let y = 400;
+  const titleEls = [];
   s.lines.forEach((line, i) => {
-    let size = Math.min(170, Math.floor(CW / Math.max(4, [...line].length)));
-    const probe = document.createElement("span");
-    probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font-family:Marker;font-size:${size}px`;
-    probe.textContent = line;
-    document.body.appendChild(probe);
-    if (probe.offsetWidth > CW - 10) size = Math.floor(size * (CW - 10) / probe.offsetWidth);
-    probe.remove();
-    const t = pg.write(line, { x: L, y, size, at: now, cps: 99 });
+    const t = pg.write(line, { x: L, y, size: fitSize(line, 170), at: now, cps: 99 });
+    titleEls.push(t.el);
     if (i === 1 || s.lines.length === 1) pg.marker(L - 10, y + t.h * .62, L + t.width + 14, y + t.h * .62, t.h * .44, YEL, now, .1);
     if (i === 2) pg.path(wavy(r, L, L + t.width, y + t.h + 4, 8, 40), { at: now, dur: .1, stroke: PINK, width: 6, pen: false });
     y += t.h + 26;
@@ -466,39 +661,89 @@ function buildCover(pg) {
     pg.marker(x - 8, y + t.h * .55, x + t.width + 8, y + t.h * .55, t.h * .7, PUR, now, .1);
     x += t.width + 50;
   });
-  /* 左下角手绘小涂鸦，封面不至于空 */
-  const gx = L + 20, gy = Math.min(1400, Math.max(1330, y + 90 + 300)), gw = 420, gh = 300;
-  if (DATA.doodle === "ball") {
-    const cx = gx + 170, cy = gy - 150, rad = 140;
-    const ball = document.createElementNS(NS, "circle");
-    ball.setAttribute("cx", cx); ball.setAttribute("cy", cy); ball.setAttribute("r", rad - 4); ball.setAttribute("fill", "#F5A85A");
-    pg.hl.appendChild(ball);
-    pg.path(rellipse(r, cx, cy, rad, rad, 1.08), { at: now, dur: .1, width: 6, pen: false });
-    pg.path(rline(r, cx - rad, cy, cx + rad, cy, 1) + " " + rline(r, cx, cy - rad, cx, cy + rad, 1), { at: now, dur: .1, width: 5, pen: false });
-    pg.path(`M${cx - rad * .72} ${cy - rad * .7} Q${cx - rad * .25} ${cy} ${cx - rad * .72} ${cy + rad * .7} M${cx + rad * .72} ${cy - rad * .7} Q${cx + rad * .25} ${cy} ${cx + rad * .72} ${cy + rad * .7}`,
-      { at: now, dur: .1, width: 5, pen: false });
-    pg.path(`M${cx + rad + 30} ${cy - 40} l50 -10 M${cx + rad + 26} ${cy + 10} l60 0 M${cx + rad + 30} ${cy + 60} l50 10`, { at: now, dur: .1, width: 5, stroke: PINK, pen: false });
-  } else {
-    pg.path(rline(r, gx, gy - gh, gx, gy, 1.5) + " " + rline(r, gx, gy, gx + gw, gy, 1.5), { at: now, dur: .1, width: 5, pen: false });
-    const pts = [[0, .25], [.18, .45], [.34, .38], [.52, .62], [.7, .55], [.9, .9]];
-    pg.path(pts.map(([px, py], k) => (k ? "L" : "M") + (gx + 20 + px * (gw - 40)).toFixed(1) + " " + (gy - 20 - py * (gh - 60)).toFixed(1)).join(" "),
-      { at: now, dur: .1, width: 6, stroke: PINK, pen: false });
-    pg.path(arrowPath(r, gx + gw * .78, gy - gh * .62, gx + gw * .95, gy - gh * .86), { at: now, dur: .1, width: 6, stroke: PINK, pen: false });
+  const end = s.end;
+  if (s.art) {
+    const top = y + 100, h = Math.max(520, BOTTOM + 20 - top), dir = s.art_dir || {};
+    const { box, img, boil } = panelBox(pg, s.art, { x: L - 4, y: top, w: CW + 8, h, rot: 1.2, shadow: PUR, focus: dir.focus });
+    pg.track(0, end, (q) => {
+      const t = q * end, k = smooth(hold, end, t);
+      img.style.transform = `scale(${(1 + .14 * k).toFixed(4)})`;
+      box.style.transform = `rotate(${(1.2 - .6 * k).toFixed(3)}deg) translateY(${(Math.sin(Math.max(0, t - hold) * 1.6) * 4).toFixed(2)}px)`;
+    }, { curve: "lin" });
+    boil.wins.push([hold, end + .4, .8]);
+    if (s.stamp) {
+      const g = pg.burst(R - 150, top + 10, 140, s.stamp, now, s.stamp.length > 2 ? 60 : 80, -10);
+      stampPulse(pg, g, R - 150, top + 10, hold + .05);
+    }
+  } else if (s.stamp) {
+    const g = pg.burst(790, Math.min(1400, Math.max(1330, y + 390)) - 180, 150, s.stamp, now, s.stamp.length > 2 ? 64 : 84, -10);
+    stampPulse(pg, g, 790, Math.min(1400, Math.max(1330, y + 390)) - 180, hold + .05);
   }
-  if (s.stamp) pg.burst(790, gy - 180, 150, s.stamp, DATA.hold + .1, s.stamp.length > 2 ? 64 : 84, -10);
+  /* 口播一开口，标题整体一震 */
+  pg.track(hold, .5, (q) => {
+    const k = Math.sin(q * Math.PI) * (1 - q);
+    titleEls.forEach((e, i) => { e.style.transform = `translateX(${(k * (i % 2 ? -18 : 18)).toFixed(2)}px)`; });
+  }, { curve: "lin" });
+  impact(pg, hold + .1, 14);
+  leak(hold + .1);
+  sfx(hold + .1, "boom");
+}
+
+function stampPulse(pg, g, cx, cy, at) {
+  pg.track(at, .5, (q) => {
+    const k = q < .3 ? q / .3 : 1 - (q - .3) / .7;
+    g.style.transformOrigin = `${cx}px ${cy}px`;
+    g.style.transform = `rotate(-10deg) scale(${(1 + .28 * Math.max(0, k)).toFixed(4)})`;
+  }, { curve: "lin" });
 }
 
 function buildEnd(pg) {
-  const at = pg.s.start + .1;
-  const b = pg.write(DATA.brand, { x: L, y: 520, w: CW, size: 76, align: "center", color: PINK, at: -1, cps: 99 });
-  pg.path(wavy(pg.r, 540 - b.width / 2, 540 + b.width / 2, 520 + b.h + 6, 6, 34), { at: -1, dur: .1, stroke: PINK, width: 5, pen: false });
-  pg.write(DATA.tagline, { x: L, y: 650, w: CW, size: 40, align: "center", color: "#3b3830", at: -1, cps: 99 });
-  const h = pg.write(DATA.outro_headline, { x: L, y: 860, w: CW, size: 96, align: "center", at, cps: 22 });
+  const s = pg.s, at = s.start + .15, recap = DATA.recap || [];
+  const top = recap.length ? 300 : 520;
+  const b = pg.write(DATA.brand, { x: L, y: top, w: CW, size: 76, align: "center", color: PINK, at: -1, cps: 99 });
+  pg.path(wavy(pg.r, 540 - b.width / 2, 540 + b.width / 2, top + b.h + 6, 6, 34), { at: -1, dur: .1, stroke: PINK, width: 5, pen: false });
+  pg.write(DATA.tagline, { x: L, y: top + 130, w: CW, size: 40, align: "center", color: "#3b3830", at: -1, cps: 99 });
+  let y = recap.length ? 600 : 860, t0 = at;
+  if (recap.length) {
+    const lb = pg.write("今天记住", { x: L, y, w: CW, size: 50, align: "center", color: "#3b3830", at: t0, mode: "pop" });
+    y += lb.h + 40;
+    recap.forEach((txt, i) => {
+      const a = t0 + .45 + i * .38, size = 66;
+      const tw = Math.min(CW - 120, measure(txt, size));
+      const w = tw + 90, h = size + 44, x = 540 - w / 2;
+      const g = el("g", {}, pg.ink);
+      el("path", { d: `M${x + 10} ${y + 10} h${w} v${h} h${-w} Z`, fill: INK }, g);
+      el("path", { d: `M${x} ${y} h${w} v${h} h${-w} Z`, fill: i % 2 ? "#E6DBFA" : GOLD, stroke: INK, "stroke-width": 5 }, g);
+      const t = el("text", { x: 540, y: y + h / 2 + size * .36, "text-anchor": "middle", "font-size": size, "font-family": "Marker", fill: INK }, g);
+      t.textContent = txt;
+      pg.pop(g, a, .38, 540, y + h / 2, i % 2 ? 2 : -2);
+      sfx(a + .05, "pop"); sfx(a + .12, "tick");
+      impact(pg, a + .2, 6);
+      y += h + 34;
+    });
+    t0 += .45 + recap.length * .38 + .2;
+    sfx(t0 - .1, "chime");
+    y += 40;
+  }
+  const h = pg.write(DATA.outro_headline, { x: L, y, w: CW, size: recap.length ? 84 : 96, align: "center", at: t0, mode: "pop" });
   const hw = Math.min(CW, h.width);
-  pg.marker(540 - hw / 2 - 20, 860 + h.h * .62, 540 + hw / 2 + 20, 860 + h.h * .62, h.h * .45, YEL, h.end, .3);
-  pg.write(DATA.outro_subline, { x: L, y: 1040, w: CW, size: 54, align: "center", color: "#3b3830", at: h.end + .1, cps: 24 });
-  if (DATA.disclaimer) pg.write(DATA.disclaimer, { x: L, y: 1290, w: CW, size: 34, align: "center", color: "#8a847a", at: pg.s.start, cps: 99 });
+  pg.marker(540 - hw / 2 - 20, y + h.h * .62, 540 + hw / 2 + 20, y + h.h * .62, h.h * .45, YEL, h.end, .3);
+  pg.write(DATA.outro_subline, { x: L, y: y + h.h + 40, w: CW, size: 50, align: "center", color: "#3b3830", at: h.end + .1, cps: 24 });
+  if (DATA.disclaimer) pg.write(DATA.disclaimer, { x: L, y: 1400, w: CW, size: 34, align: "center", color: "#8a847a", at: s.start, cps: 99 });
 }
+
+/* ---------- 转场 ---------- */
+const HALF = { ink: .4, whip: .22, zoom: .3, flash: .24 };
+const fx = document.getElementById("fx");
+const band = { g: el("g", { opacity: 0 }, fx) };
+band.black = el("path", { fill: INK }, band.g);
+band.yel = el("path", { fill: GOLD }, band.g);
+band.pur = el("path", { fill: "rgba(160,130,230,.95)" }, band.g);
+band.txt = el("text", { "text-anchor": "middle", "font-size": 150, "font-family": "Marker", fill: INK }, band.g);
+const BW = 1500, SK = 420;
+function para(a, w) { return `M${a} 0 L${a + w} 0 L${a + w - SK} 1920 L${a - SK} 1920 Z`; }
+
+function enterKind(pg) { return pg.s.type === "end" ? "ink" : (pg.s.visual && pg.s.visual.enter) || "ink"; }
 
 /* ---------- 组装 ---------- */
 let pages = [];
@@ -506,6 +751,7 @@ async function build() {
   const ff = new FontFace("Marker", `url(${DATA.font})`);
   try { document.fonts.add(await ff.load()); } catch (e) { console.warn("font", e); }
   await document.fonts.ready;
+  band.txt.textContent = DATA.brand;
   document.getElementById("badge").src = DATA.badge;
   await new Promise((ok) => { const b = document.getElementById("badge"); b.complete ? ok() : (b.onload = b.onerror = ok); });
   pages = DATA.slides.map((s, i) => {
@@ -523,6 +769,15 @@ async function build() {
     }
     return pg;
   });
+  pages.forEach((pg, i) => {
+    if (!i) return;
+    const kind = enterKind(pg), b = pg.s.start;
+    pg.enter = kind; pg.half = HALF[kind];
+    if (kind === "flash") { sfx(b - .05, "thump"); sfx(b, "shine"); }
+    else sfx(b, "whoosh", { d: kind === "whip" || kind === "ink" ? -1 : 1 });
+  });
+  await Promise.all([...document.querySelectorAll("#stage img")].map((im) =>
+    im.complete ? 0 : new Promise((ok) => { im.onload = im.onerror = ok; })));
   /* 内容偏少时正文下移、太多时等比缩小；标题和页码不动 */
   for (const pg of pages) {
     if (!pg.fit) continue;
@@ -531,6 +786,9 @@ async function build() {
     pg.bodyMap = (x, y) => [540 + (x - 540) * k, y0 + (y - y0) * k + dy];
     splitBody(pg);
   }
+  buildDust();
+  buildGrain();
+  window.__sfx = SFX.sort((a, b) => a.t - b.t);
 }
 
 function splitBody(pg) {
@@ -538,42 +796,143 @@ function splitBody(pg) {
     const layer = pg[name], keep = pg.headCount[name];
     const isSvg = name !== "text";
     const g = isSvg ? document.createElementNS(NS, "g") : document.createElement("div");
-    if (!isSvg) { g.className = "layer"; }
+    if (!isSvg) g.className = "layer";
     [...layer.childNodes].slice(keep).forEach((n) => g.appendChild(n));
-    if (isSvg) {
-      const k = pg.fit.k, dy = pg.fit.dy, y0 = pg.fit.y0;
-      g.setAttribute("transform", `translate(0 ${dy}) translate(540 ${y0}) scale(${k}) translate(-540 ${-y0})`);
-    } else {
-      g.style.transformOrigin = `540px ${pg.fit.y0}px`;
-      g.style.transform = `translateY(${pg.fit.dy}px) scale(${pg.fit.k})`;
-    }
+    const { k, dy, y0 } = pg.fit;
+    if (isSvg) g.setAttribute("transform", `translate(0 ${dy}) translate(540 ${y0}) scale(${k}) translate(-540 ${-y0})`);
+    else { g.style.transformOrigin = `540px ${y0}px`; g.style.transform = `translateY(${dy}px) scale(${k})`; }
     layer.appendChild(g);
   }
+}
+
+/* 浮尘：能量高的页多一些 */
+const dust = [];
+function buildDust() {
+  const r = rng(77), svg = document.getElementById("dust");
+  for (let i = 0; i < 26; i++) {
+    const c = el("circle", { r: (2 + r() * 6).toFixed(1), fill: r() > .5 ? "rgba(255,206,60,.9)" : "rgba(150,115,225,.8)" }, svg);
+    dust.push({ c, x: r() * 1080, y: r() * 1920, vx: (r() - .5) * 20, vy: -12 - r() * 30, ph: r() * 6.3, a: .3 + r() * .5 });
+  }
+}
+const grains = [];
+function buildGrain() {
+  for (let k = 0; k < 4; k++) {
+    const cv = document.createElement("canvas"); cv.width = 360; cv.height = 640;
+    const ctx = cv.getContext("2d"), im = ctx.createImageData(360, 640), r = rng(31 + k);
+    for (let i = 0; i < im.data.length; i += 4) { const v = 128 + (r() - .5) * 200; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 255; }
+    ctx.putImageData(im, 0, 0);
+    grains.push(`url(${cv.toDataURL()})`);
+  }
+}
+
+function drawBoil(b, t) {
+  let env = 0;
+  for (const [t0, t1, peak] of b.wins) {
+    if (t < t0 || t > t1) continue;
+    env = Math.max(env, peak * Math.min(1, (t - t0) / .08) * Math.pow(1 - (t - t0) / (t1 - t0), 1.4));
+  }
+  const w = b.box.clientWidth, h = b.box.clientHeight;
+  if (env < .02 || !w) { if (b.svg.firstChild) b.svg.innerHTML = ""; return; }
+  const r = rng(500 + Math.floor(t * 12) * 7 + BOILS.indexOf(b) * 131);
+  const cx = b.focus[0] * w, cy = b.focus[1] * h, big = Math.hypot(w, h);
+  let d = "";
+  for (let i = 0; i < 46; i++) {
+    const a = r() * 6.2832, da = .006 + r() * .018, r0 = big * (.3 + r() * .22), r1 = big * 1.1;
+    d += `M${(cx + Math.cos(a) * r0).toFixed(1)} ${(cy + Math.sin(a) * r0).toFixed(1)} L${(cx + Math.cos(a - da) * r1).toFixed(1)} ${(cy + Math.sin(a - da) * r1).toFixed(1)} L${(cx + Math.cos(a + da) * r1).toFixed(1)} ${(cy + Math.sin(a + da) * r1).toFixed(1)} Z `;
+  }
+  b.svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  b.svg.innerHTML = `<path d="${d}" fill="${INK}" opacity="${(.62 * Math.min(1, env)).toFixed(3)}"/><path d="${d}" fill="#fff" opacity="${(.25 * Math.min(1, env)).toFixed(3)}" transform="translate(3 2)"/>`;
 }
 
 const subs = document.querySelector("#subs span");
 const pen = document.getElementById("pen");
 const grid = document.getElementById("grid");
-const FADE = .4;
+const cam = document.getElementById("cam");
+const flashEl = document.getElementById("flash");
+const leakEl = document.getElementById("leak");
+const grainEl = document.getElementById("grain");
+const hblurk = document.getElementById("hblurk");
 window.__hideSubs = false;
 window.setHideSubs = (v) => { window.__hideSubs = v; };
 
+function pageZoom(pg, t) {
+  const s = pg.s, q = clamp((t - s.start) / Math.max(.1, s.end - s.start));
+  let z = 1 + .018 * q;
+  for (const im of IMPACTS) {
+    if (im.pg !== pg || t < im.t || t > im.t + .7) continue;
+    z += im.amp * .0022 * Math.exp(-(t - im.t) * 9);
+  }
+  return z;
+}
+
 window.seek = (t) => {
   for (const k of tracks) k.fn(ease[k.curve](clamp((t - k.at) / k.dur)));
+  /* 当前页 + 转场 */
   let cur = 0;
+  pages.forEach((pg, i) => { if (t >= pg.s.start) cur = i; });
+  let trans = null;
+  for (let i = 1; i < pages.length; i++) {
+    const b = pages[i].s.start, h = pages[i].half;
+    if (t >= b - h && t < b + h) trans = { i, p: (t - (b - h)) / (2 * h), kind: pages[i].enter };
+  }
+  let flashA = 0;
+  band.g.setAttribute("opacity", 0);
+  hblurk.setAttribute("stdDeviation", "0 0");
   pages.forEach((pg, i) => {
-    const s = pg.s;
-    if (t >= s.start) cur = i;
-    const pin = i === 0 ? 1 : clamp((t - s.start) / FADE);
-    const pout = i === pages.length - 1 ? 1 : clamp((pages[i + 1].s.start - t) / FADE + 1);
-    const vis = t < s.start ? 0 : Math.min(pin, pout);
-    pg.root.style.opacity = vis;
-    const slideIn = (1 - ease.out(pin)) * 90, slideOut = (1 - pout) * -60;
-    pg.root.style.transform = `translateX(${slideIn + slideOut}px)`;
-    pg.root.style.display = vis > 0 ? "block" : "none";
+    const vis = trans ? (i === trans.i || i === trans.i - 1) : i === cur;
+    pg.root.style.display = vis ? "block" : "none";
+    if (!vis) return;
+    let tf = "", op = 1, filter = "", clip = "";
+    if (trans) {
+      const { p, kind } = trans, isB = i === trans.i, e = ease.io(p);
+      if (kind === "ink") {
+        const a = 1500 + (-1500 - BW - 60) * e;
+        if (isB) clip = `polygon(${a + BW}px 0, 1600px 0, 1600px 1920px, ${a + BW - SK}px 1920px)`;
+        band.g.setAttribute("opacity", 1);
+        band.black.setAttribute("d", para(a - 30, BW + 60));
+        band.yel.setAttribute("d", para(a, BW));
+        band.pur.setAttribute("d", para(a + BW - 150, 70));
+        band.txt.setAttribute("x", a + BW / 2 - SK / 2);
+        band.txt.setAttribute("y", 1010);
+        band.txt.setAttribute("transform", `rotate(-12 ${a + BW / 2 - SK / 2} 960)`);
+      } else if (kind === "whip") {
+        tf = `translateX(${((isB ? 1 - e : -e) * 1080).toFixed(1)}px)`;
+        filter = "url(#hblur)";
+        hblurk.setAttribute("stdDeviation", `${(70 * Math.sin(Math.PI * p)).toFixed(1)} 0`);
+      } else if (kind === "zoom") {
+        tf = isB ? `scale(${(1.4 - .4 * e).toFixed(4)})` : `scale(${(1 + .6 * e).toFixed(4)})`;
+        op = isB ? smooth(.3, .62, p) : 1 - smooth(.38, .7, p);
+        filter = `blur(${(16 * Math.sin(Math.PI * p)).toFixed(1)}px)`;
+      } else if (kind === "flash") {
+        const on = isB ? p >= .5 : p < .5;
+        if (!on) { pg.root.style.display = "none"; return; }
+        if (isB) tf = `scale(${(1 + .08 * (1 - ease.out((p - .5) * 2))).toFixed(4)})`;
+        flashA = Math.max(flashA, p < .5 ? Math.pow(p / .5, 2) : Math.pow(1 - (p - .5) / .5, 1.6));
+      }
+    }
+    pg.root.style.transform = `${tf} scale(${pageZoom(pg, t).toFixed(4)})`;
+    pg.root.style.opacity = op;
+    pg.root.style.filter = filter;
+    pg.root.style.clipPath = clip;
   });
+  /* 震屏 */
+  let dx = 0, dy = 0, dr = 0;
+  for (const im of IMPACTS) {
+    const u = t - im.t;
+    if (u < 0 || u > .6) continue;
+    const k = im.amp * Math.exp(-u * 10);
+    dx += k * Math.sin(u * 62 + im.ph); dy += k * .7 * Math.cos(u * 55 + im.ph * 2); dr += k * .02 * Math.sin(u * 40 + im.ph);
+  }
+  cam.style.transform = `translate(${dx.toFixed(2)}px, ${dy.toFixed(2)}px) rotate(${dr.toFixed(3)}deg)`;
+  for (const f of FLASHES) if (t >= f.t && t < f.t + f.dur) flashA = Math.max(flashA, f.a * Math.pow(1 - (t - f.t) / f.dur, 2));
+  flashEl.style.opacity = (Math.min(.95, flashA)).toFixed(3);
+  let la = 0;
+  for (const l of LEAKS) if (t > l - .2 && t < l + 1.6) la = Math.max(la, smooth(l - .2, l + .1, t) * (1 - smooth(l + .3, l + 1.6, t)));
+  leakEl.style.opacity = (la * .85).toFixed(3);
+  for (const b of BOILS) drawBoil(b, t);
+  /* 笔 */
   let best = null;
-  for (const k of tracks) {
+  if (!trans) for (const k of tracks) {
     if (!k.pen || k.page !== pages[cur]) continue;
     if (t >= k.at && t < k.at + k.dur && (!best || k.at >= best.at)) best = k;
   }
@@ -581,10 +940,21 @@ window.seek = (t) => {
     let [x, y] = best.pen(ease[best.curve](clamp((t - best.at) / best.dur)));
     const pg = best.page;
     if (pg.bodyMap && tracks.indexOf(best) >= pg.fit.from) [x, y] = pg.bodyMap(x, y);
+    const z = pageZoom(pg, t);
+    x = 540 + (x - 540) * z; y = 960 + (y - 960) * z;
     pen.style.opacity = 1;
     pen.style.transform = `translate(${x}px, ${y - 150}px)`;
   } else pen.style.opacity = 0;
   grid.style.transform = `translate(${-(t * 5) % 54}px, ${-(t * 2.5) % 54}px)`;
+  /* 浮尘 */
+  const energy = pages[cur].s.type === "content" ? (pages[cur].s.visual.energy || 3) : pages[cur].s.type === "end" ? 3 : 2;
+  const amt = clamp((energy - 1.5) / 3.5) * (t < DATA.hold ? 0 : 1);
+  for (const d of dust) {
+    const x = ((d.x + d.vx * t) % 1080 + 1080) % 1080, y = ((d.y + d.vy * t) % 1920 + 1920) % 1920;
+    d.c.setAttribute("cx", x.toFixed(1)); d.c.setAttribute("cy", y.toFixed(1));
+    d.c.setAttribute("opacity", (d.a * amt * (.6 + .4 * Math.sin(t * 2.2 + d.ph))).toFixed(3));
+  }
+  grainEl.style.backgroundImage = grains[Math.floor(t * 24) % grains.length] || "none";
   let lines = null;
   if (!window.__hideSubs && t >= DATA.hold) for (const c of DATA.subs) if (t >= c.t0 && t < c.t1) lines = c.lines;
   subs.innerHTML = lines ? lines.map(esc).join("<br>") : "";

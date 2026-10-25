@@ -725,7 +725,7 @@ def generate_forum_pack(script_path: Path, video: Path) -> Path | None:
 
 
 def visual_mode() -> str:
-    """comic = 生图 + 漫画静态合成；explainer = 漫画配色的动态 PPT 动画，不再生图。"""
+    """comic = 生图 + 漫画静态合成；explainer = 漫画插图 + 动态 PPT 动画 + 自动配乐。"""
     return os.environ.get("AIVIDEO_VISUAL_MODE", "explainer").strip().lower() or "explainer"
 
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """动态 PPT 合成：替代「生图 + 漫画合成」。口播沿用脚本原文，画面由 HTML 模板逐帧渲染。
 
-画风沿用漫画版：米黄方格纸、圆珠笔线条、黄/紫荧光笔、手写字。版式、数字和图表按口播逐个画出来。
+画风沿用漫画版：米黄方格纸、圆珠笔线条、黄/紫荧光笔、手写字。版式、数字和图表按口播逐个画出来，
+每页配一张漫画插图；导演稿（explainer_plan）定节奏、金句和配音语气，配乐由 explainer_score 按画面事件合成。
 输入输出与 video_compose.py 一致：读 last_script_*.json，成片写 output/zh/<时间戳>.mp4，
 并更新 logs/zh/last_video.txt、video_manifest.jsonl、compose/<stem>/cover.png，
 每页定格截图写回 slides[i].image_path 供论坛图文使用。
@@ -26,18 +27,20 @@ from PIL import Image, ImageDraw
 
 import categories
 import video_compose as vc
-from explainer_plan import phrases_of, plan_visuals
+import explainer_score
+from explainer_plan import phrases_of, plan_visuals, planner_model
 from locale_env import locale_logs_dir, locale_output_dir
 from paths import ROOT, ffmpeg_executable
 from research import load_env
+import tts_client
 from tts_client import synthesize
 
-W, H, FPS = 1080, 1920, 30
+W, H = 1080, 1920
+FPS = max(24, int(os.environ.get("AIVIDEO_EXPLAINER_FPS", "60")))
 LEAD = 0.3
 TAIL = 0.35
 TEMPLATE = Path(__file__).with_name("explainer_template.html")
 FONT = ROOT / "assets" / "fonts" / "LXGWMarkerGothic-Regular.ttf"
-COVER_DOODLE = "chart"
 DISCLAIMER = "内容基于公开信息整理，不构成投资建议"
 
 
@@ -52,7 +55,8 @@ def _workers() -> int:
 def _plan(data: dict, script: dict, work: Path, *, replan: bool) -> dict:
     key = hashlib.sha1(
         json.dumps(
-            [script.get("title"), script.get("cold_open"), [s.get("narration") for s in script.get("slides") or []]],
+            ["v3", planner_model(), script.get("title"), script.get("cold_open"),
+             [s.get("narration") for s in script.get("slides") or []]],
             ensure_ascii=False,
         ).encode("utf-8")
     ).hexdigest()[:12]
@@ -99,14 +103,27 @@ def _has_audio(path: Path) -> bool:
     return "Audio:" in text
 
 
-def _narrate(texts: list[str], work: Path) -> list[Path]:
+def _voice_dirs(texts: list[str], plan: dict) -> list[dict]:
+    """导演给的配音语气：[冷开场, 第1页, …, 片尾]；marks 的分句编号换成原文分句。"""
+    out = [{"tone": plan["cover"].get("tone", "")}]
+    for text, vis in zip(texts[1:-1], plan["slides"]):
+        ph = _phrases(text)
+        marks = [(ph[m["cue"]], m["tag"]) for m in vis.get("marks") or [] if m["cue"] < len(ph)]
+        out.append({"tone": vis.get("tone", ""), "marks": marks})
+    out.append({"tone": "轻松收尾，真诚地提醒一句"})
+    return out
+
+
+def _narrate(texts: list[str], work: Path, dirs: list[dict]) -> list[Path]:
     work.mkdir(parents=True, exist_ok=True)
+    voice = [tts_client.provider(), tts_client.doubao_speaker(), tts_client.doubao_model(), tts_client.emotion_enabled()]
 
     def one(i: int) -> Path:
-        out = work / f"voice_{i:02d}_{hashlib.md5(texts[i].encode('utf-8')).hexdigest()[:8]}.mp3"
+        key = json.dumps([texts[i], dirs[i], voice], ensure_ascii=False)
+        out = work / f"voice_{i:02d}_{hashlib.md5(key.encode('utf-8')).hexdigest()[:8]}.mp3"
         if not (out.is_file() and out.stat().st_size > 1000):
-            _log(f"  配音 {i + 1}/{len(texts)}")
-            synthesize(texts[i], out_path=out)
+            _log(f"  配音 {i + 1}/{len(texts)}" + (f"（{dirs[i]['tone']}）" if dirs[i].get("tone") else ""))
+            synthesize(texts[i], out_path=out, **dirs[i])
         return out
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -127,6 +144,73 @@ def _badge_png(path: Path) -> Path:
     vc._draw_brand_badge(ImageDraw.Draw(im))
     im.save(path, "PNG")
     return path
+
+
+def _flag(name: str, default: str = "1") -> bool:
+    return os.environ.get(name, default).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def art_enabled() -> bool:
+    return _flag("AIVIDEO_EXPLAINER_ART")
+
+
+def score_enabled() -> bool:
+    """自动配乐；关掉时退回 assets 里的 BGM。"""
+    return _flag("AIVIDEO_EXPLAINER_SCORE")
+
+
+_ART_STYLE = (
+    "Dynamic manga-style editorial illustration about money and business, vertical portrait 2:3. Bold black ink lines, "
+    "halftone screentone shading, speed lines and impact lines, strong diagonal composition, exaggerated expressions, "
+    "limited palette: black ink with bright yellow and soft lavender purple accents on warm beige paper. "
+    "Dramatic, energetic, comic-book panel feel. Characters are fictional everyday people, never real public figures. "
+    "Absolutely no text, no letters, no numbers, no currency symbols, no chart labels, no logos, no brand marks, no watermark."
+)
+
+
+def _art(prompt: str, out: Path) -> Path | None:
+    """插图只要画面，不要字；数字和标题由动画写上去，所以同一提示词只生成一次。"""
+    import base64
+
+    import requests
+    from image_client import generate_image
+
+    quality = os.environ.get("AIVIDEO_EXPLAINER_ART_QUALITY", "high").strip() or "high"
+    full = " ".join([_ART_STYLE, f"Scene: {prompt.strip()}."])
+    tag = out.with_suffix(".prompt")
+    if out.is_file() and tag.is_file() and tag.read_text(encoding="utf-8") == f"{quality}|{full}":
+        return out
+    try:
+        _log(f"  插图 {out.name}（{quality}）…")
+        res = generate_image(full, quality=quality)
+        if res.get("b64_json"):
+            out.write_bytes(base64.b64decode(res["b64_json"]))
+        elif res.get("url"):
+            out.write_bytes(requests.get(res["url"], timeout=120).content)
+        else:
+            return None
+        tag.write_text(f"{quality}|{full}", encoding="utf-8")
+        return out
+    except Exception as exc:  # noqa: BLE001
+        _log(f"  [explainer] 插图失败，这页只用动画：{exc}")
+        return None
+
+
+def _arts(script: dict, script_file: Path, plan: dict) -> list[Path | None]:
+    """[封面, 第1页, 第2页, …]；画面描述优先用导演稿，没有就用脚本里的 image_prompt。关掉插图时全为 None。"""
+    slides = script.get("slides") or []
+    if not art_enabled():
+        return [None] * (len(slides) + 1)
+    d = locale_logs_dir() / "images" / script_file.stem
+    d.mkdir(parents=True, exist_ok=True)
+    first = slides[0].get("image_prompt") if slides else ""
+    cover = (plan["cover"].get("art") or {}).get("scene")
+    jobs = [str(cover or script.get("cover_prompt") or f"wide poster hero shot, epic scale, {first or 'an ordinary person staring up at a towering wave of rising and falling price lines over a city'}")]
+    jobs += [str((v.get("art") or {}).get("scene") or s.get("image_prompt") or s.get("headline") or "")
+             for s, v in zip(slides, plan["slides"])]
+    outs = [d / "art_cover.png"] + [d / f"art_{i:02d}.png" for i in range(1, len(slides) + 1)]
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        return list(pool.map(_art, jobs, outs))
 
 
 def _prepare(script_file: Path, *, replan: bool = False):
@@ -159,7 +243,8 @@ def _prepare(script_file: Path, *, replan: bool = False):
     outro_text = variants[seed[0] % len(variants)]
     texts = [cold] + [str(s.get("narration") or "") for s in slides] + [outro_text]
     _log("[explainer] 配音")
-    audios = _narrate(texts, ex)
+    audios = _narrate(texts, ex, _voice_dirs(texts, plan))
+    arts = _arts(script, script_file, plan)
 
     pages: list[dict] = []
     voices: list[tuple[Path, float]] = []
@@ -172,7 +257,10 @@ def _prepare(script_file: Path, *, replan: bool = False):
     ph = _phrases(cold)
     subs += _subs(ph, vc.allocate_phrase_times(ph, adur), 0.0, floor=hold)
     voices.append((audios[0], 0.0))
-    pages.append({"type": "cover", **plan["cover"], "start": 0.0, "end": round(cover_end, 3)})
+    pages.append({
+        "type": "cover", **plan["cover"], "art_dir": plan["cover"].get("art") or {},
+        "art": arts[0].as_uri() if arts[0] else "", "energy": 2, "start": 0.0, "end": round(cover_end, 3),
+    })
 
     t = cover_end
     for i, (slide, vis) in enumerate(zip(slides, plan["slides"]), start=1):
@@ -186,6 +274,8 @@ def _prepare(script_file: Path, *, replan: bool = False):
             "count": len(slides),
             "title": vis.get("title") or str(slide.get("headline") or slide.get("chapter_title") or "")[:14],
             "visual": vis,
+            "art": arts[i].as_uri() if arts[i] else "",
+            "energy": vis.get("energy", 3),
             "cues": [round(audio_at + a, 3) for a, _ in spans],
             "start": round(t, 3),
             "end": round(audio_at + dur + TAIL, 3),
@@ -195,7 +285,8 @@ def _prepare(script_file: Path, *, replan: bool = False):
         t = pages[-1]["end"]
 
     odur = _duration(audios[-1])
-    pages.append({"type": "end", "start": round(t, 3), "end": round(t + max(2.0, odur + 0.6), 3)})
+    recap_need = 1.6 + 0.4 * len(plan.get("recap") or [])
+    pages.append({"type": "end", "energy": 4, "start": round(t, 3), "end": round(t + max(2.0, odur + 0.6, recap_need + 1.4), 3)})
     voices.append((audios[-1], t + 0.15))
     total = pages[-1]["end"]
     _log(f"[explainer] 总时长 {total:.1f}s，{len(pages)} 页")
@@ -213,19 +304,20 @@ def _prepare(script_file: Path, *, replan: bool = False):
         "tagline": vc.BRAND_TAGLINE,
         "outro_headline": vc.OUTRO_HEADLINE,
         "outro_subline": vc.OUTRO_SUBLINE,
-        "doodle": COVER_DOODLE,
         "disclaimer": DISCLAIMER,
+        "recap": plan.get("recap") or [],
+        "mood": plan.get("mood") or "hype",
     }
     html = TEMPLATE.read_text(encoding="utf-8").replace("/*__DATA__*/", json.dumps(payload, ensure_ascii=False))
     page = ex / "explainer_page.html"
     page.write_text(html, encoding="utf-8")
-    return data, script, work, page, pages, voices, total, cover_end
+    return data, script, work, page, pages, voices, total, cover_end, payload["mood"]
 
 
 def _stills(pages: list[dict], script_file: Path, work: Path) -> list[tuple[float, Path]]:
     """封面 + 每页定格（不带字幕），给发布封面和论坛图文用。"""
     img_dir = locale_logs_dir() / "images" / script_file.stem
-    out = [(pages[0]["end"] - 0.05, work / "cover.png")]
+    out = [(0.0, work / "cover.png")]
     for p in pages[1:-1]:
         out.append((p["end"] - 0.45, img_dir / f"slide_{p['idx']:02d}.png"))
     return out
@@ -248,7 +340,8 @@ async def _open_page(browser, page_path: Path):
     return page
 
 
-async def _render(page_path: Path, frames: int, frame_dir: Path, stills: list[tuple[float, Path]]) -> int:
+async def _render(page_path: Path, frames: int, frame_dir: Path, stills: list[tuple[float, Path]]) -> tuple[int, list[dict]]:
+    """返回 (帧数, 模板记下的音效时间轴)。"""
     from playwright.async_api import async_playwright
 
     workers = _workers()
@@ -260,13 +353,14 @@ async def _render(page_path: Path, frames: int, frame_dir: Path, stills: list[tu
             n = 0
             for f in range(k, frames, workers):
                 await page.evaluate(f"window.seek({f / FPS})")
-                await page.screenshot(path=str(frame_dir / f"f_{f:05d}.jpg"), type="jpeg", quality=92)
+                await page.screenshot(path=str(frame_dir / f"f_{f:05d}.jpg"), type="jpeg", quality=96)
                 n += 1
             await page.close()
             return n
 
         counts = await asyncio.gather(*(lane(k) for k in range(workers)))
         page = await _open_page(browser, page_path)
+        events = await page.evaluate("window.__sfx || []")
         await page.evaluate("window.setHideSubs(true)")
         for t, path in stills:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -274,7 +368,7 @@ async def _render(page_path: Path, frames: int, frame_dir: Path, stills: list[tu
             await page.screenshot(path=str(path), type="png")
         await page.close()
         await browser.close()
-    return sum(counts)
+    return sum(counts), events
 
 
 def _encode(frame_dir: Path, out: Path) -> Path:
@@ -283,7 +377,7 @@ def _encode(frame_dir: Path, out: Path) -> Path:
             ffmpeg_executable(), "-y", "-loglevel", "error",
             "-framerate", str(FPS), "-i", str(frame_dir / "f_%05d.jpg"),
             "-vf", "scale=in_range=pc:out_range=tv,format=yuv420p",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-color_range", "tv", str(out),
+            "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-profile:v", "high", "-color_range", "tv", str(out),
         ],
         check=True,
     )
@@ -306,6 +400,18 @@ def _mix_voice(voices: list[tuple[Path, float]], silent: Path, total: float, out
         "-t", f"{total:.3f}", "-movflags", "+faststart", str(out),
     ]
     subprocess.run(cmd, check=True)
+    return out
+
+
+def _mux(silent: Path, audio: Path, total: float, out: Path) -> Path:
+    subprocess.run(
+        [
+            ffmpeg_executable(), "-y", "-loglevel", "error", "-i", str(silent), "-i", str(audio),
+            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ac", "2",
+            "-t", f"{total:.3f}", "-movflags", "+faststart", str(out),
+        ],
+        check=True,
+    )
     return out
 
 
@@ -332,7 +438,7 @@ def _splice_intro(main: Path, intro: Path, at: float, out: Path) -> Path:
         [
             ffmpeg_executable(), "-y", "-loglevel", "error", "-i", str(main), "-i", str(intro),
             "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k", "-ar", str(sr), "-ac", "2", str(out),
         ],
         check=True,
@@ -341,7 +447,7 @@ def _splice_intro(main: Path, intro: Path, at: float, out: Path) -> Path:
 
 
 def compose(script_file: Path, *, output: Path | None = None, replan: bool = False) -> Path:
-    data, script, work, page, pages, voices, total, cover_end = _prepare(script_file, replan=replan)
+    data, script, work, page, pages, voices, total, cover_end, mood = _prepare(script_file, replan=replan)
     ex = work / "explainer"
     frames = int(round(total * FPS))
     frame_dir = ex / "frames"
@@ -349,12 +455,18 @@ def compose(script_file: Path, *, output: Path | None = None, replan: bool = Fal
     frame_dir.mkdir()
     stills = _stills(pages, script_file, work)
     _log(f"[explainer] 渲染 {frames} 帧（{total:.1f}s，{_workers()} 路并行）")
-    done = asyncio.run(_render(page, frames, frame_dir, stills))
+    done, events = asyncio.run(_render(page, frames, frame_dir, stills))
     if done != frames:
         raise RuntimeError(f"帧数不对：{done}/{frames}")
     silent = _encode(frame_dir, ex / "explainer_silent.mp4")
     shutil.rmtree(frame_dir, ignore_errors=True)
-    voiced = _mix_voice(voices, silent, total, ex / "explainer_voice.mp4")
+    scored = score_enabled()
+    if scored:
+        _log(f"[explainer] 自动配乐（{mood}，{len(events)} 个音效点）")
+        mix = explainer_score.build(total=total, pages=pages, mood=mood, events=events, voices=voices, out=ex / "explainer_mix.wav")
+        voiced = _mux(silent, mix, total, ex / "explainer_voice.mp4")
+    else:
+        voiced = _mix_voice(voices, silent, total, ex / "explainer_voice.mp4")
 
     title = str(script.get("title") or "").strip()
     if getattr(vc, "host_intro_enabled", lambda: False)() and title:
@@ -364,7 +476,7 @@ def compose(script_file: Path, *, output: Path | None = None, replan: bool = Fal
 
     output = output or (locale_output_dir() / f"{datetime.now():%Y%m%d_%H%M%S}.mp4")
     output.parent.mkdir(parents=True, exist_ok=True)
-    bgm = vc.select_bgm(script_file.stem)
+    bgm = None if scored else vc.select_bgm(script_file.stem)
     if bgm:
         _log(f"[bgm] 混入背景音乐：{bgm.name}")
         vc.mix_bgm(video_path=voiced, bgm_path=bgm, out_path=output)
@@ -389,7 +501,7 @@ def compose(script_file: Path, *, output: Path | None = None, replan: bool = Fal
             "script": str(script_file),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "compose": "explainer",
-            "bgm": str(bgm) if bgm else "",
+            "bgm": f"score:{mood}" if scored else (str(bgm) if bgm else ""),
         }, ensure_ascii=False) + "\n")
     return output
 
@@ -419,7 +531,7 @@ def main() -> int:
         _log(f"脚本不存在: {path}")
         return 1
     if args.preview is not None:
-        _, _, work, page, pages, _, total, _ = _prepare(path, replan=args.replan)
+        _, _, work, page, pages, _, total, _, _ = _prepare(path, replan=args.replan)
         out = work / "explainer"
         times = args.preview or [p["end"] - 0.45 for p in pages]
         asyncio.run(_preview(page, [(t, out / f"preview_{t:07.2f}.jpg") for t in times]))

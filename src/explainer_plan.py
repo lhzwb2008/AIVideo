@@ -1,4 +1,4 @@
-"""动态 PPT 版式规划：口播不动，只给每页挑版式、填板书数据，并校验数字和合规。"""
+"""导演稿：口播不动，给每页挑版式、填板书数据、定节奏金句和配音语气，并校验数字和合规。"""
 
 from __future__ import annotations
 
@@ -38,7 +38,28 @@ _PROMPT = """把下面这条{domain}的每一页口播，配成「动态 PPT」�
 
 封面：cover{{lines[2-3 行，每行≤8字，连起来表达标题意思], tags[2-3 个≤6字的话题词], stamp(≤4字)}}
 
-只输出 JSON：{{"cover": {{...}}, "slides": [{{"layout": "...", ...}}, ...]}}，slides 与下面页数一一对应。
+美术指导（每页和封面都要）：art{{scene, focus, move}}
+- scene：英文，≤45 词，把这页的事讲成一个有戏剧张力的漫画瞬间：谁（普通人、交易员、工程师、老板、银行柜员等虚构角色）在做什么动作、什么表情，
+  或者一个夸张的视觉隐喻（巨浪般的K线砸向城市、天平两端的钱袋、被绳子拴住的气球……）；写清镜头角度（低机位/俯拍/特写）和环境光。
+  不写真实人名、公司名、商标，不画任何文字、数字、图表刻度。
+- focus：[x, y]，画面焦点在图里的相对位置（0-1），镜头会朝它推进。
+- move：镜头运动，push(推近)/pull(拉远)/pan_left/pan_right/tilt_up/tilt_down 选一个，相邻两页不要一样。
+封面的 art 写在 cover 里，要一张海报感的主视觉。
+
+导演节奏（让整条视频有起伏，别一路平铺）：
+- mood：全片配乐情绪，hype(燃)/epic(史诗)/tense(悬疑紧张)/warm(温情) 选一个。
+- 每页 energy：1-5，配乐和动效强度。要有起伏：铺垫页 2-3，高潮页 5，高潮后可以回落一下再收尾。
+- 每页 enter：进入这页的转场，ink(漫画斜切擦屏)/whip(快速横甩)/zoom(冲镜头)/flash(白闪) 选一个，相邻不重复；energy 5 的页用 flash 或 zoom。
+- 每页可选 peak{{text≤8字, cue}}：这页的气氛点兼记忆点。到那一句时白闪、震屏、重低音，一条金句砸到屏幕上。金句要短、有冲击力、观众看一眼就记住（例如「一年少还7163亿」「利息倒挂2个点」），全片 1-3 个，放在真正的高潮句上，不要每页都有。
+- recap：结尾「今天记住」卡，2-3 条，每条≤8字，是全片最该记住的数字或结论。
+
+配音导演（让口播像真人讲故事，有起伏、有突然的情绪，而不是念稿）：
+- cover.tone 和每页 tone：≤30字的语气指令，告诉配音这一段整体怎么说，要跟内容走，相邻两段不要一样。
+  例：「像发现了一件离谱的事，惊讶里带点调侃」「放慢、压低声音，像在揭一个秘密」「笃定有力，一字一顿」「替观众打抱不平，有点气」。
+- 每页 marks[0-3]{{cue, tag≤6字}}：只给真正的情绪转折句打标签，tag 只描述语气，例如 惊讶/难以置信/激动/扎心/调侃/压低声音/斩钉截铁/恍然大悟。
+  反常数字、反转、金句那一句最该打；平铺直叙的句子不打，同一页标签别重复。
+
+只输出 JSON：{{"mood": "...", "cover": {{..., "tone": "..."}}, "slides": [{{"layout": "...", "energy": 3, "enter": "...", "tone": "...", "marks": [...], ...}}, ...], "recap": [...]}}，slides 与下面页数一一对应。
 
 视频标题：{title}
 冷开场：{cold_open}
@@ -235,7 +256,76 @@ def _clean_slide(raw: dict, slide: dict, n: int, chk: _Checker) -> dict:
         box = raw.get(key)
         if isinstance(box, dict) and box.get("text") and chk.ok(box.get("text")):
             out[key] = {"text": _clip(box["text"], limit), "cue": _cue(box.get("cue"), n, 0)}
+    art = _clean_art(raw.get("art"))
+    if art:
+        out["art"] = art
+    try:
+        out["energy"] = max(1, min(5, int(raw.get("energy"))))
+    except (TypeError, ValueError):
+        pass
+    if raw.get("enter") in ENTERS:
+        out["enter"] = raw["enter"]
+    peak = raw.get("peak")
+    if isinstance(peak, dict) and str(peak.get("text") or "").strip() and chk.ok(peak.get("text")):
+        out["peak"] = {"text": _clip(peak["text"], 8), "cue": _cue(peak.get("cue"), n, 0)}
+    out.update(_clean_voice(raw, n))
     return out
+
+
+def _clean_voice(raw: dict, n: int) -> dict:
+    """配音语气：tone 是整段的语气指令，marks 是给某几句单独加的情绪标签（同一句只留第一个）。"""
+    out: dict = {}
+    tone = _clip(raw.get("tone"), 30)
+    if tone:
+        out["tone"] = tone
+    marks, seen = [], set()
+    for it in raw.get("marks") or []:
+        if not isinstance(it, dict):
+            continue
+        tag = re.sub(r"[<>=\s]", "", _clip(it.get("tag"), 6))
+        k = _cue(it.get("cue"), n, 0)
+        if tag and k not in seen:
+            seen.add(k)
+            marks.append({"cue": k, "tag": tag})
+    if marks:
+        out["marks"] = sorted(marks, key=lambda m: m["cue"])[:3]
+    return out
+
+
+ENTERS = ("ink", "whip", "zoom", "flash")
+MOODS = ("hype", "epic", "tense", "warm")
+
+
+def _direct(planned: list[dict]) -> None:
+    """模型没给或给得不合规时补齐节奏：能量有起伏、转场不重复、金句最多 3 个。"""
+    curve = [3, 4, 5, 4, 5, 3]
+    prev = "ink"
+    for i, p in enumerate(planned):
+        p.setdefault("energy", curve[i % len(curve)] if i else 3)
+        if p.get("enter") not in ENTERS or (i and p["enter"] == prev):
+            p["enter"] = next(e for e in ENTERS[i % 4:] + ENTERS if e != prev)
+        prev = p["enter"]
+    peaks = sorted((p for p in planned if p.get("peak")), key=lambda p: -p["energy"])
+    for p in peaks[3:]:
+        p.pop("peak")
+
+
+MOVES = ("push", "pull", "pan_left", "pan_right", "tilt_up", "tilt_down")
+
+
+def _clean_art(raw) -> dict | None:
+    if not isinstance(raw, dict) or not str(raw.get("scene") or "").strip():
+        return None
+    try:
+        fx, fy = (min(1.0, max(0.0, float(v))) for v in (raw.get("focus") or [0.5, 0.4])[:2])
+    except (TypeError, ValueError):
+        fx, fy = 0.5, 0.4
+    move = raw.get("move") if raw.get("move") in MOVES else "push"
+    return {"scene": _clip(raw.get("scene"), 400), "focus": [round(fx, 3), round(fy, 3)], "move": move}
+
+
+def planner_model() -> str:
+    return os.environ.get("AIVIDEO_EXPLAINER_MODEL", "").strip() or "claude-opus-5-5"
 
 
 def _pull_first_cue(out: dict) -> None:
@@ -255,7 +345,11 @@ def _clean_cover(raw: dict, script: dict, chk: _Checker) -> dict:
         lines = [_clip(p, 9) for p in parts[:3]] or [_clip(script.get("title"), 9)]
     tags = [_clip(x, 6) for x in raw.get("tags") or script.get("hashtags") or [] if str(x).strip()][:3]
     stamp = _clip(raw.get("stamp"), 4) if chk.ok(raw.get("stamp")) else ""
-    return {"lines": lines, "tags": [t for t in tags if chk.ok(t)], "stamp": stamp}
+    out = {"lines": lines, "tags": [t for t in tags if chk.ok(t)], "stamp": stamp}
+    tone = _clip(raw.get("tone"), 30)
+    if tone:
+        out["tone"] = tone
+    return out
 
 
 def _parse_json(text: str) -> dict:
@@ -299,8 +393,7 @@ def plan_visuals(data: dict, script: dict) -> dict:
     try:
         from text_client import chat_complete
 
-        model = os.environ.get("AIVIDEO_EXPLAINER_MODEL", "").strip() or None
-        raw = _parse_json(chat_complete(system=_SYSTEM, user=prompt, model=model, max_tokens=6000))
+        raw = _parse_json(chat_complete(system=_SYSTEM, user=prompt, model=planner_model(), max_tokens=8000))
     except Exception as exc:
         print(f"[explainer] 版式规划失败，全部退回要点卡：{exc}", file=sys.stderr)
     raw_slides = raw.get("slides") if isinstance(raw.get("slides"), list) else []
@@ -309,8 +402,20 @@ def plan_visuals(data: dict, script: dict) -> dict:
         n = len(phrases_of(str(s.get("narration") or "")))
         r = raw_slides[i] if i < len(raw_slides) and isinstance(raw_slides[i], dict) else {}
         planned.append(_clean_slide(r, s, n, chk))
-    cover = _clean_cover(raw.get("cover") if isinstance(raw.get("cover"), dict) else {}, script, chk)
+    raw_cover = raw.get("cover") if isinstance(raw.get("cover"), dict) else {}
+    cover = _clean_cover(raw_cover, script, chk)
+    art = _clean_art(raw_cover.get("art"))
+    if art:
+        cover["art"] = art
+    _direct(planned)
+    recap = [_clip(x, 8) for x in raw.get("recap") or [] if str(x).strip() and chk.ok(x)][:3]
+    mood = raw.get("mood") if raw.get("mood") in MOODS else "hype"
     for note in chk.dropped:
         print(f"[explainer] 丢弃：{note}", file=sys.stderr)
-    print("[explainer] 版式：" + " / ".join(p["layout"] for p in planned), file=sys.stderr)
-    return {"cover": cover, "slides": planned}
+    print(f"[explainer] 导演（{planner_model()}）：配乐 {mood}；"
+          + " / ".join(f"{p['layout']}·能量{p['energy']}·{p['enter']}" + (f"·金句「{p['peak']['text']}」" if p.get("peak") else "")
+                       for p in planned), file=sys.stderr)
+    print("[explainer] 配音语气：" + " / ".join(
+        (p.get("tone") or "-") + "".join(f"［{m['cue']}:{m['tag']}］" for m in p.get("marks") or [])
+        for p in [cover, *planned]), file=sys.stderr)
+    return {"mood": mood, "cover": cover, "slides": planned, "recap": recap if len(recap) >= 2 else []}

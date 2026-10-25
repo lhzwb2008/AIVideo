@@ -112,7 +112,14 @@ def doubao_endpoint() -> str:
     return _env("VOLCENGINE_TTS_ENDPOINT", "https://openspeech.bytedance.com/api/v3/tts/unidirectional")
 
 
-def doubao_resource_id() -> str:
+def is_official_voice(speaker: str) -> bool:
+    """官方 2.0 音色（*_uranus_bigtts 等）走 seed-tts-2.0；S_ 开头的是声音复刻。"""
+    return speaker.endswith("_bigtts")
+
+
+def doubao_resource_id(speaker: str | None = None) -> str:
+    if is_official_voice(speaker or doubao_speaker()):
+        return "seed-tts-2.0"
     return _env("VOLCENGINE_TTS_RESOURCE_ID", "seed-icl-2.0")
 
 
@@ -121,7 +128,71 @@ def doubao_speaker() -> str:
 
 
 def doubao_model() -> str:
-    return _env("VOLCENGINE_TTS_MODEL", "seed-tts-2.0-standard")
+    """只对复刻音色生效。expressive 才支持语气指令和情绪标签，standard 更稳但更平。"""
+    return _env("VOLCENGINE_TTS_MODEL", "seed-tts-2.0-expressive")
+
+
+def emotion_enabled() -> bool:
+    return _env_bool("VOLCENGINE_TTS_EMOTION", True)
+
+
+def _cot_supported(speaker: str) -> bool:
+    return not is_official_voice(speaker) and doubao_model().endswith("expressive")
+
+
+def apply_marks(text: str, marks: list[tuple[str, str]]) -> str:
+    """把 (分句, 情绪) 依次在原文里找到，连同句末标点包进 <cot text=情绪>…</cot>。找不到的跳过。"""
+    out, pos = [], 0
+    for phrase, tag in marks:
+        i = text.find(phrase, pos)
+        if i < 0 or not phrase:
+            continue
+        j = i + len(phrase)
+        while j < len(text) and text[j] in "，。！？；,!?;…—":
+            j += 1
+        out.append(text[pos:i] + f"<cot text={tag}>" + text[i:j] + "</cot>")
+        pos = j
+    return "".join(out) + text[pos:]
+
+
+def _transcribe(path: Path) -> str:
+    import requests
+
+    base = _env("AIHUBMIX_BASE_URL", "https://api.inferera.com/v1").rstrip("/")
+    with path.open("rb") as f:
+        resp = requests.post(
+            f"{base}/audio/transcriptions",
+            headers={"Authorization": f"Bearer {_env('AIHUBMIX_API_KEY')}"},
+            data={"model": _env("VOLCENGINE_TTS_VERIFY_MODEL", "whisper-1"), "language": "zh"},
+            files={"file": (path.name, f, "audio/mpeg")},
+            timeout=120,
+        )
+    resp.raise_for_status()
+    return str(resp.json().get("text") or "")
+
+
+def missing_numbers(path: Path, text: str) -> list[str]:
+    """expressive 偶尔吞字：转写一遍，口播里两位以上的数字没读出来就算漏。转写本身失败时不拦。"""
+    want = [n for n in re.findall(r"\d+(?:\.\d+)?", text) if len(n) >= 2]
+    if not want or not _env("AIHUBMIX_API_KEY"):
+        return []
+    try:
+        heard = re.sub(r"[^\d.]+", " ", _transcribe(path))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[tts] 转写核对跳过：{exc}", file=sys.stderr)
+        return []
+    return [n for n in want if n not in heard]
+
+
+def doubao_additions(speaker: str, *, tone: str = "", tagged: bool = False) -> dict[str, Any]:
+    add: dict[str, Any] = {}
+    if not emotion_enabled():
+        return add
+    if tone and (is_official_voice(speaker) or _cot_supported(speaker)):
+        add["context_texts"] = [tone]
+    if tagged:
+        add["use_tag_parser"] = True
+    return add
 
 
 def doubao_uid() -> str:
@@ -371,28 +442,36 @@ def _doubao_synth_once(
     sr: int | None = None,
     rate: float | None = None,
     timeout: float = 120,
+    tone: str = "",
+    marks: list[tuple[str, str]] | None = None,
+    model_id: str | None = None,
 ) -> Path:
+    speaker = voice_id or doubao_speaker()
+    tagged = bool(marks) and emotion_enabled() and _cot_supported(speaker)
+    if tagged:
+        text = apply_marks(text, marks or [])
     payload_text = preprocess_tts_text(text) if preprocess_enabled() else text
     speech_rate = doubao_speech_rate()
     if rate is not None:
         speech_rate = max(-50, min(100, round((float(rate) - 1.0) * 100)))
-    body: dict[str, Any] = {
-        "user": {"uid": doubao_uid()},
-        "namespace": "BidirectionalTTS",
-        "req_params": {
-            "text": payload_text,
-            "speaker": voice_id or doubao_speaker(),
-            "model": doubao_model(),
-            "audio_params": {
-                "format": audio_format or fmt(),
-                "sample_rate": sr or sample_rate(),
-                "speech_rate": speech_rate,
-                "loudness_rate": doubao_loudness_rate(),
-            },
+    req: dict[str, Any] = {
+        "text": payload_text,
+        "speaker": speaker,
+        "audio_params": {
+            "format": audio_format or fmt(),
+            "sample_rate": sr or sample_rate(),
+            "speech_rate": speech_rate,
+            "loudness_rate": doubao_loudness_rate(),
         },
     }
+    if not is_official_voice(speaker):
+        req["model"] = model_id or doubao_model()
+    additions = doubao_additions(speaker, tone=tone, tagged=tagged)
+    if additions:
+        req["additions"] = json.dumps(additions, ensure_ascii=False)
+    body: dict[str, Any] = {"user": {"uid": doubao_uid()}, "namespace": "BidirectionalTTS", "req_params": req}
 
-    chunks = _doubao_post(body, timeout=timeout)
+    chunks = _doubao_post(body, timeout=timeout, resource_id=doubao_resource_id(speaker))
     audio = bytearray()
     for chunk in chunks:
         code = chunk.get("code")
@@ -516,6 +595,8 @@ def _synthesize_doubao(
     rate: float | None = None,
     segment: bool | None = None,
     timeout: float = 120,
+    tone: str = "",
+    marks: list[tuple[str, str]] | None = None,
 ) -> Path:
     tempo = atempo()
     synth_out = out_path
@@ -542,19 +623,31 @@ def _synthesize_doubao(
                         sr=sr,
                         rate=rate,
                         timeout=timeout,
+                        tone=tone,
                     )
                     parts.append(part)
                 _ffmpeg_concat(parts, synth_out, sr=sr)
         else:
-            _doubao_synth_once(
-                text,
-                out_path=synth_out,
-                voice_id=voice_id,
-                audio_format=audio_format,
-                sr=sr,
-                rate=rate,
-                timeout=timeout,
-            )
+            plain = dict(text=text, out_path=synth_out, voice_id=voice_id, audio_format=audio_format,
+                         sr=sr, rate=rate, timeout=timeout)
+            styled = (tone or marks) and emotion_enabled()
+            risky = styled and _cot_supported(voice_id or doubao_speaker()) and _env_bool("VOLCENGINE_TTS_VERIFY", True)
+            ok = False
+            for attempt in range(2 if styled else 0):
+                try:
+                    _doubao_synth_once(**plain, tone=tone, marks=marks)
+                except RuntimeError as exc:
+                    print(f"[tts] 带语气合成失败：{exc}", file=sys.stderr)
+                    break
+                lost = missing_numbers(synth_out, text) if risky else []
+                if not lost:
+                    ok = True
+                    break
+                print(f"[tts] 带语气版漏读 {lost}（第 {attempt + 1} 次）", file=sys.stderr)
+            if not ok:
+                if styled:
+                    print("[tts] 改用 standard 平读", file=sys.stderr)
+                _doubao_synth_once(**plain, model_id="seed-tts-2.0-standard" if styled else None)
         return _postprocess_audio(synth_out, out_path, tempo=tempo)
     finally:
         if tmp_ctx is not None:
@@ -634,8 +727,13 @@ def synthesize(
     use_ssml: bool | None = None,
     segment: bool | None = None,
     timeout: float = 120,
+    tone: str = "",
+    marks: list[tuple[str, str]] | None = None,
 ) -> Path:
-    """合成一段音频并下载到 out_path。默认整段合成，保留模型自然气口。"""
+    """合成一段音频并下载到 out_path。默认整段合成，保留模型自然气口。
+
+    tone / marks 只对豆包生效：tone 是整段语气指令，marks 是 [(原文分句, 情绪)]，给那几句单独加情绪。
+    """
     t = (text or "").strip()
     if not t:
         raise ValueError("TTS 文本为空")
@@ -663,6 +761,8 @@ def synthesize(
             rate=rate,
             segment=segment,
             timeout=timeout,
+            tone=tone,
+            marks=marks,
         )
     raise RuntimeError(f"未知 TTS_PROVIDER={provider()}，可选 doubao 或 dashscope")
 
