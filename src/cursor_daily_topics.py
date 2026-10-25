@@ -739,7 +739,7 @@ def _save_draft(slot: str, markdown: str, meta: dict) -> Path:
     return path
 
 
-def run_cursor_draft(
+def _run_cursor_draft_once(
     slot: str,
     *,
     agent_id: str | None = None,
@@ -791,6 +791,36 @@ def run_cursor_draft(
     if not body:
         raise RuntimeError(f"Cursor Agent 未返回正文（slot={slot} status={status}）")
     return body, agent_id, status
+
+
+def run_cursor_draft(
+    slot: str,
+    *,
+    agent_id: str | None = None,
+    on_assistant=None,
+    extra_prompt: str = "",
+) -> tuple[str, str, str]:
+    """Agent 出错或草稿过短（通常是中途断掉）时换新 agent 重写，避免拿残稿去改编。"""
+    attempts = max(1, int(os.environ.get("CURSOR_DRAFT_ATTEMPTS", "3")))
+    min_chars = int(os.environ.get("CURSOR_DRAFT_MIN_CHARS", "600"))
+    last_err = ""
+    for i in range(attempts):
+        try:
+            body, agent_id, status = _run_cursor_draft_once(
+                slot, agent_id=agent_id, on_assistant=on_assistant, extra_prompt=extra_prompt,
+            )
+        except RuntimeError as exc:
+            last_err = str(exc)
+        else:
+            if len(body) >= min_chars:
+                if status != "FINISHED":
+                    print(f"  ⚠️  Agent 状态={status}，正文完整（{len(body)} 字），继续", file=sys.stderr)
+                return body, agent_id, status
+            last_err = f"草稿过短（{len(body)} 字，Agent 状态={status}）"
+        if i + 1 < attempts:
+            print(f"\n  ↻ {last_err}，换新 agent 重写（{i + 2}/{attempts}）", file=sys.stderr, flush=True)
+            agent_id = None
+    raise RuntimeError(f"Cursor 写稿失败（已试 {attempts} 次）：{last_err}")
 
 
 def build_cursor_topic_research(
