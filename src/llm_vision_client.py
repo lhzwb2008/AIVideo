@@ -157,7 +157,7 @@ def vision_chat(
                 try:
                     import cost_tracker
 
-                    cost_tracker.record_text(data.get("usage"))
+                    cost_tracker.record_text(data.get("usage"), model=model_name)
                 except Exception:
                     pass
                 return content_out

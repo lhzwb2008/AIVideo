@@ -219,7 +219,7 @@ def generate_image(
         raise RuntimeError(f"生图响应异常: {json.dumps(data, ensure_ascii=False)[:400]}")
     try:
         import cost_tracker
-        cost_tracker.record_image(data.get("usage"))
+        cost_tracker.record_image(data.get("usage"), model=m)
     except Exception:
         pass
 

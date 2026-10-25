@@ -120,7 +120,7 @@ def chat_complete(
                     raise RuntimeError(f"chat 返回 content 为空: {raw[:300]}")
                 try:
                     import cost_tracker
-                    cost_tracker.record_text(data.get("usage"))
+                    cost_tracker.record_text(data.get("usage"), model=str(body["model"]))
                 except Exception:
                     pass
                 return content
