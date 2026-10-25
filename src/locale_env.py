@@ -52,9 +52,38 @@ def _apply_env_sections(path: Path, *, force_overlay: bool) -> None:
 DEFAULTS_FILE = ROOT / "config" / "defaults.env"
 
 
+def _read_env_sections(path: Path, want_locale: str) -> dict[str, str]:
+    vals: dict[str, str] = {}
+    if not path.is_file():
+        return vals
+    section = "shared"
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        m = _SECTION_RE.match(raw.strip())
+        if m:
+            section = m.group(1).lower()
+            continue
+        parsed = _parse_env_line(raw)
+        if not parsed:
+            continue
+        key, val = parsed
+        if section == want_locale or (section == "shared" and key not in vals):
+            vals[key] = val
+    return vals
+
+
 def apply_defaults() -> None:
-    """config/defaults.env 兜底：.env 和进程环境里没有的项才补上。"""
-    _apply_env_sections(DEFAULTS_FILE, force_overlay=False)
+    """config/defaults.env 随代码走，里面有的项以它为准，.env 只补密钥/账号/本机路径。
+
+    进程环境里显式设成与 .env 不同的值（如启动脚本 export）仍保留。
+    """
+    loc = "zh"
+    from_env_file: dict[str, str] = {}
+    for f in (ROOT / ".env",):
+        from_env_file.update(_read_env_sections(f, loc))
+    for key, val in _read_env_sections(DEFAULTS_FILE, loc).items():
+        cur = os.environ.get(key)
+        if cur is None or from_env_file.get(key) == cur:
+            os.environ[key] = val
 
 
 def load_locale_env(locale: str | None = None, *, force_overlay: bool = True) -> str:
