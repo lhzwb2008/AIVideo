@@ -71,10 +71,12 @@ async def _probe_editor_writable(page) -> bool:
     url = page.url.lower()
     if "usercenter" in url or "login" in url:
         return False
-    inp = page.locator('input[placeholder*="标题"]').first
-    if not await inp.count():
+    inp = page.locator('input[placeholder*="标题"]:visible').first
+    try:
+        await inp.wait_for(state="visible", timeout=15_000)
+        await inp.fill("__login_probe__", timeout=8_000)
+    except Exception:  # noqa: BLE001
         return False
-    await inp.fill("__login_probe__")
     await asyncio.sleep(0.8)
     if "usercenter" in page.url.lower() or "login" in page.url.lower():
         return False
