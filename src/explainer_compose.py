@@ -116,7 +116,8 @@ def _voice_dirs(texts: list[str], plan: dict) -> list[dict]:
 
 def _narrate(texts: list[str], work: Path, dirs: list[dict]) -> list[Path]:
     work.mkdir(parents=True, exist_ok=True)
-    voice = [tts_client.provider(), tts_client.doubao_speaker(), tts_client.doubao_model(), tts_client.emotion_enabled()]
+    voice = [tts_client.provider(), tts_client.doubao_speaker(), tts_client.doubao_model(), tts_client.emotion_enabled(),
+             tts_client.doubao_speech_rate(), tts_client.atempo()]
 
     def one(i: int) -> Path:
         key = json.dumps([texts[i], dirs[i], voice], ensure_ascii=False)
