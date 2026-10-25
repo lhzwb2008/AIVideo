@@ -378,7 +378,7 @@ def _encode(frame_dir: Path, out: Path) -> Path:
             ffmpeg_executable(), "-y", "-loglevel", "error",
             "-framerate", str(FPS), "-i", str(frame_dir / "f_%05d.jpg"),
             "-vf", "scale=in_range=pc:out_range=tv,format=yuv420p",
-            "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-profile:v", "high", "-color_range", "tv", str(out),
+            "-c:v", "libx264", "-preset", "slow", "-crf", "20", "-maxrate", "8M", "-bufsize", "16M", "-profile:v", "high", "-color_range", "tv", str(out),
         ],
         check=True,
     )
@@ -439,7 +439,7 @@ def _splice_intro(main: Path, intro: Path, at: float, out: Path) -> Path:
         [
             ffmpeg_executable(), "-y", "-loglevel", "error", "-i", str(main), "-i", str(intro),
             "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-preset", "slow", "-crf", "20", "-maxrate", "8M", "-bufsize", "16M", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k", "-ar", str(sr), "-ac", "2", str(out),
         ],
         check=True,

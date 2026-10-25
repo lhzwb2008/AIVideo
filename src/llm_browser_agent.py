@@ -16,6 +16,39 @@ from llm_vision_client import browser_max_steps, parse_json_response, vision_cha
 from paths import ROOT
 
 
+
+async def _set_video_files(page, target, video_path: Path) -> None:
+    """选视频文件。CDP 连接的浏览器经 Playwright 传文件上限 50MB，超了就让浏览器直接读本机路径。"""
+    try:
+        if hasattr(target, "set_input_files"):
+            await target.set_input_files(str(video_path))
+        else:
+            await target.set_files(str(video_path))
+        return
+    except Exception as exc:
+        if "50Mb" not in str(exc) and "co-located" not in str(exc):
+            raise
+    handle = getattr(target, "element", None)
+    if handle is None and hasattr(target, "_ch"):
+        handle = target._ch.element
+    if handle is None:
+        handle = await target.element_handle()
+    token = f"aiv{random.randint(10**8, 10**9)}"
+    await handle.evaluate("(el, t) => el.setAttribute('data-aiv-upload', t)", token)
+    cdp = await page.context.new_cdp_session(page)
+    try:
+        doc = await cdp.send("DOM.getDocument", {"depth": 0})
+        found = await cdp.send(
+            "DOM.querySelector", {"nodeId": doc["root"]["nodeId"], "selector": f'[data-aiv-upload="{token}"]'}
+        )
+        if not found.get("nodeId"):
+            raise RuntimeError("上传控件不在主页面里，无法按本机路径选文件")
+        await cdp.send("DOM.setFileInputFiles", {"nodeId": found["nodeId"], "files": [str(video_path.resolve())]})
+    finally:
+        await cdp.detach()
+    size_mb = video_path.stat().st_size / 1e6
+    print(f"  [upload] 视频 {size_mb:.0f}MB 超过 50MB，已改为浏览器直接读本机文件", flush=True)
+
 class LLMBrowserError(RuntimeError):
     pass
 
@@ -319,7 +352,7 @@ async def try_upload_video(
                         raise
             await _dismiss_overlays(page)
             upload_input = await _wait_file_input(page, timeout_s=120, root=root or ROOT)
-            await upload_input.set_input_files(str(video_path))
+            await _set_video_files(page, upload_input, video_path)
             print(f"  [upload] 已选择视频: {video_path.name}", flush=True)
             try:
                 from douyin_publisher import _dismiss_stray_open_dialogs
@@ -359,7 +392,7 @@ async def try_upload_video(
                 'input[type="file"][accept*="video"], input[type="file"]'
             ).first
             await loc.wait_for(state="attached", timeout=60_000)
-            await loc.set_input_files(str(video_path))
+            await _set_video_files(page, loc, video_path)
             print(f"  [upload] B站已选择视频: {video_path.name}", flush=True)
             await asyncio.sleep(3)
             return True
@@ -446,7 +479,7 @@ async def try_upload_video(
                         async with page.expect_file_chooser(timeout=5000) as fc_info:
                             await trigger.click(timeout=4000, force=True)
                         chooser = await fc_info.value
-                        await chooser.set_files(str(video_path))
+                        await _set_video_files(page, chooser, video_path)
                         print(
                             f"  [upload] 视频号已选择视频（filechooser）: {video_path.name}",
                             flush=True,
@@ -471,7 +504,7 @@ async def try_upload_video(
                     "视频号上传页未渲染出 file input（可能登录态半失效/页面改版/弹层遮挡）"
                 )
 
-            await inp.set_input_files(str(video_path))
+            await _set_video_files(page, inp, video_path)
             print(f"  [upload] 视频号已选择视频: {video_path.name}", flush=True)
             await asyncio.sleep(2)
             return True
@@ -484,7 +517,7 @@ async def try_upload_video(
                 "div[class^='upload-content'] input.upload-input, input.upload-input"
             ).first
             await loc.wait_for(state="attached", timeout=60_000)
-            await loc.set_input_files(str(video_path))
+            await _set_video_files(page, loc, video_path)
             print(f"  [upload] 小红书已选择视频: {video_path.name}", flush=True)
             await asyncio.sleep(3)
             await dismiss_overlays(page, platform_key="xiaohongshu")
@@ -513,7 +546,7 @@ async def try_upload_video(
         if not await loc.count():
             continue
         try:
-            await loc.set_input_files(str(video_path))
+            await _set_video_files(page, loc, video_path)
             print(f"  [upload] 已通过 file input 选择视频: {video_path.name}", flush=True)
             if platform == "douyin":
                 url_now = (page.url or "").lower()
@@ -545,7 +578,7 @@ async def try_upload_video(
             async with page.expect_file_chooser(timeout=8000) as fc_info:
                 await trigger.click(timeout=5000)
             chooser = await fc_info.value
-            await chooser.set_files(str(video_path))
+            await _set_video_files(page, chooser, video_path)
             print(f"  [upload] 已通过 file chooser 选择视频 ({text})", flush=True)
             if platform == "douyin":
                 try:
@@ -3116,7 +3149,7 @@ async def execute_action(
             el = await resolve_element(page, int(ref))
             if video_path:
                 try:
-                    await el.set_input_files(str(video_path))
+                    await _set_video_files(page, el, video_path)
                     await human_pause(cfg)
                     return f"upload via ref {ref}"
                 except Exception as exc:
