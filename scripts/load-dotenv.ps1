@@ -12,10 +12,14 @@ if (-not $env:ROOT) {
     $script:Root = $env:ROOT
 }
 
+# .env holds only secrets and machine-specific values; everything else comes from config\defaults.env
+$script:EnvFileAllowed = '(_API_KEY|_KEY_ID|_KEY_SECRET|_SECRET|_TOKEN|_PASSWORD)$|^(CURSOR_SANDBOX_REPO_URL|CURSOR_SANDBOX_REPO_REF|SAU_BIN|SAU_HOME|FFMPEG_PATH|LOCAL_CHROME_PATH|OSS_BUCKET|OSS_PREFIX|OSS_REGION|OSS_ENDPOINT|WECHAT_APP_ID)$'
+
 function Apply-EnvLine {
     param(
         [string]$Line,
-        [bool]$Force
+        [bool]$Force,
+        [bool]$SecretsOnly = $false
     )
     $Line = $Line.TrimEnd("`r")
     if (-not $Line -or $Line -match '^\s*#') { return }
@@ -24,6 +28,7 @@ function Apply-EnvLine {
     $val = ($Line -split '=', 2)[1].Trim()
     if ($val -match '^"(.*)"$') { $val = $Matches[1] }
     elseif ($val -match "^'(.*)'$") { $val = $Matches[1] }
+    if ($SecretsOnly -and $key -notmatch $script:EnvFileAllowed) { return }
     if ($Force -or -not (Test-Path "Env:$key")) {
         Set-Item -Path "Env:$key" -Value $val
     }
@@ -33,7 +38,8 @@ function Load-EnvSections {
     param(
         [string]$FilePath,
         [string]$WantLocale,
-        [bool]$LocaleForce = $true
+        [bool]$LocaleForce = $true,
+        [bool]$SecretsOnly = $false
     )
     if (-not (Test-Path $FilePath)) { return }
     $section = 'shared'
@@ -47,40 +53,9 @@ function Load-EnvSections {
             continue
         }
         switch ($section) {
-            'shared' { Apply-EnvLine -Line $line -Force $false }
-            { $_ -eq $WantLocale } { Apply-EnvLine -Line $line -Force $LocaleForce }
+            'shared' { Apply-EnvLine -Line $line -Force $false -SecretsOnly $SecretsOnly }
+            { $_ -eq $WantLocale } { Apply-EnvLine -Line $line -Force $LocaleForce -SecretsOnly $SecretsOnly }
             default { }
-        }
-    }
-}
-
-function Read-EnvMap {
-    param([string]$FilePath, [string]$WantLocale)
-    $map = @{}
-    if (-not (Test-Path $FilePath)) { return $map }
-    $section = 'shared'
-    $utf8 = New-Object System.Text.UTF8Encoding $false
-    foreach ($line in [System.IO.File]::ReadAllLines((Resolve-Path -LiteralPath $FilePath).Path, $utf8)) {
-        if ($line -match '^#==\s*section:\s*(\w+)\s*==') { $section = $Matches[1].ToLower(); continue }
-        $line = $line.TrimEnd("`r")
-        if (-not $line -or $line -match '^\s*#' -or $line -notmatch '=') { continue }
-        $key = ($line -split '=', 2)[0].Trim()
-        $val = ($line -split '=', 2)[1].Trim()
-        if ($val -match '^"(.*)"$') { $val = $Matches[1] } elseif ($val -match "^'(.*)'$") { $val = $Matches[1] }
-        if ($section -eq $WantLocale -or ($section -eq 'shared' -and -not $map.ContainsKey($key))) { $map[$key] = $val }
-    }
-    return $map
-}
-
-# config\defaults.env follows git: its keys win over stale .env values; .env only adds secrets/accounts/paths
-function Apply-CodeDefaults {
-    param([string]$WantLocale)
-    $fromEnv = Read-EnvMap -FilePath (Join-Path $Root '.env') -WantLocale $WantLocale
-    $defs = Read-EnvMap -FilePath (Join-Path $Root 'config\defaults.env') -WantLocale $WantLocale
-    foreach ($key in $defs.Keys) {
-        $cur = [Environment]::GetEnvironmentVariable($key, 'Process')
-        if ($null -eq $cur -or ($fromEnv.ContainsKey($key) -and $fromEnv[$key] -eq $cur)) {
-            Set-Item -Path "Env:$key" -Value $defs[$key]
         }
     }
 }
@@ -95,9 +70,8 @@ foreach ($key in @(
     Remove-Item -Path "Env:$key" -ErrorAction SilentlyContinue
 }
 
-Load-EnvSections -FilePath (Join-Path $Root '.env') -WantLocale $Locale
-# 先补齐，再让代码配置覆盖 .env 里的旧值
+Load-EnvSections -FilePath (Join-Path $Root '.env') -WantLocale $Locale -SecretsOnly $true
+# 其余配置都来自这里（.env 只提供密钥）
 Load-EnvSections -FilePath (Join-Path $Root 'config\defaults.env') -WantLocale $Locale -LocaleForce $false
-Apply-CodeDefaults -WantLocale $Locale
 $env:AIVIDEO_LOCALE = $Locale
 $env:ROOT = $Root

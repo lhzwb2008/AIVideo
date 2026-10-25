@@ -19,17 +19,9 @@ from sau_client import SauError, check_douyin_session, douyin_account
 
 
 def load_env() -> None:
-    from locale_env import apply_defaults
+    from locale_env import load_locale_env
 
-    env_path = ROOT / ".env"
-    if env_path.exists():
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
-    apply_defaults()
+    load_locale_env(force_overlay=False)
 
 
 def load_script(path: Path | None) -> dict | None:

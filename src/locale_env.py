@@ -28,10 +28,11 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
     return key, val
 
 
-def _apply_env_sections(path: Path, *, force_overlay: bool) -> None:
+def _apply_env_sections(path: Path, *, force_overlay: bool, secrets_only: bool = False) -> None:
     if not path.is_file():
         return
     section = "shared"
+    ignored: list[str] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
         m = _SECTION_RE.match(raw.strip())
         if m:
@@ -41,56 +42,48 @@ def _apply_env_sections(path: Path, *, force_overlay: bool) -> None:
         if not parsed:
             continue
         key, val = parsed
+        if secrets_only and not _ENV_FILE_ALLOWED.search(key):
+            if key not in ignored:
+                ignored.append(key)
+            continue
         if section == "shared":
             if key not in os.environ:
                 os.environ[key] = val
         elif section == "zh":
             if force_overlay or key not in os.environ:
                 os.environ[key] = val
+    _report_ignored(path, ignored)
+
+
+# .env 只放密钥和本机专属项；其余配置一律以 config/defaults.env 为准，写在 .env 里也不读
+_ENV_FILE_ALLOWED = re.compile(
+    r"(_API_KEY|_KEY_ID|_KEY_SECRET|_SECRET|_TOKEN|_PASSWORD)$"
+    r"|^(CURSOR_SANDBOX_REPO_URL|CURSOR_SANDBOX_REPO_REF|SAU_BIN|SAU_HOME|FFMPEG_PATH|LOCAL_CHROME_PATH"
+    r"|OSS_BUCKET|OSS_PREFIX|OSS_REGION|OSS_ENDPOINT|WECHAT_APP_ID)$"
+)
+_ignored_reported = False
+
+
+def _report_ignored(path: Path, keys: list[str]) -> None:
+    global _ignored_reported
+    if keys and not _ignored_reported:
+        _ignored_reported = True
+        print(f"[env] {path.name} 里这些非密钥项已忽略（以 config/defaults.env 为准）：{', '.join(keys)}", flush=True)
 
 
 DEFAULTS_FILE = ROOT / "config" / "defaults.env"
 
 
-def _read_env_sections(path: Path, want_locale: str) -> dict[str, str]:
-    vals: dict[str, str] = {}
-    if not path.is_file():
-        return vals
-    section = "shared"
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        m = _SECTION_RE.match(raw.strip())
-        if m:
-            section = m.group(1).lower()
-            continue
-        parsed = _parse_env_line(raw)
-        if not parsed:
-            continue
-        key, val = parsed
-        if section == want_locale or (section == "shared" and key not in vals):
-            vals[key] = val
-    return vals
-
-
 def apply_defaults() -> None:
-    """config/defaults.env 随代码走，里面有的项以它为准，.env 只补密钥/账号/本机路径。
-
-    进程环境里显式设成与 .env 不同的值（如启动脚本 export）仍保留。
-    """
-    loc = "zh"
-    from_env_file: dict[str, str] = {}
-    for f in (ROOT / ".env",):
-        from_env_file.update(_read_env_sections(f, loc))
-    for key, val in _read_env_sections(DEFAULTS_FILE, loc).items():
-        cur = os.environ.get(key)
-        if cur is None or from_env_file.get(key) == cur:
-            os.environ[key] = val
+    """config/defaults.env 兜底：.env 和进程环境里没有的项才补上。"""
+    _apply_env_sections(DEFAULTS_FILE, force_overlay=False)
 
 
 def load_locale_env(locale: str | None = None, *, force_overlay: bool = True) -> str:
     """加载 .env：shared + zh，再用 config/defaults.env 补齐。忽略 locale 参数。"""
     del locale
     os.environ["AIVIDEO_LOCALE"] = "zh"
-    _apply_env_sections(ROOT / ".env", force_overlay=force_overlay)
+    _apply_env_sections(ROOT / ".env", force_overlay=force_overlay, secrets_only=True)
     apply_defaults()
     return "zh"
 

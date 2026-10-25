@@ -28,7 +28,8 @@ def base_url() -> str:
 
 
 def model_id() -> str:
-    return _env("CURSOR_MODEL_ID", "claude-sonnet-5-5")
+    # Cloud Agents 以 GET /v1/models 为准；当前 Grok 为 grok-4.6
+    return _env("CURSOR_MODEL_ID", "claude-opus-5-5")
 
 
 def sandbox_repo_url() -> str:
