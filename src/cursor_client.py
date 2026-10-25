@@ -31,7 +31,7 @@ _active_model: str | None = None
 
 
 def model_id() -> str:
-    return _active_model or _env("CURSOR_MODEL_ID", "claude-opus-5-5")
+    return _active_model or _env("CURSOR_MODEL_ID", "grok-4.7")
 
 
 def _fallback_on_region_block(status: int, raw: str) -> bool:
