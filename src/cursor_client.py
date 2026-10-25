@@ -27,9 +27,28 @@ def base_url() -> str:
     return _env("CURSOR_BASE_URL", "https://api.cursor.com").rstrip("/")
 
 
+_active_model: str | None = None
+
+
 def model_id() -> str:
-    # Cloud Agents 以 GET /v1/models 为准；当前 Grok 为 grok-4.6
-    return _env("CURSOR_MODEL_ID", "claude-opus-5-5")
+    return _active_model or _env("CURSOR_MODEL_ID", "claude-opus-5-5")
+
+
+def _fallback_on_region_block(status: int, raw: str) -> bool:
+    """服务器所在地区不支持当前模型时，按 CURSOR_MODEL_FALLBACKS 换下一个，本进程后续都用它。"""
+    global _active_model
+    if status != 400 or "invalid_model" not in raw:
+        return False
+    import sys
+
+    cur = model_id()
+    chain = [m.strip() for m in _env("CURSOR_MODEL_FALLBACKS", "").split(",") if m.strip()]
+    rest = chain[chain.index(cur) + 1:] if cur in chain else chain
+    if not rest:
+        return False
+    _active_model = rest[0]
+    print(f"  ⚠️  {cur} 在本机所在地区不可用，写稿改用 {_active_model}", file=sys.stderr, flush=True)
+    return True
 
 
 def sandbox_repo_url() -> str:
@@ -140,16 +159,19 @@ def _http(method: str, path: str, body: dict | None = None) -> tuple[int, Any, s
 
 
 def create_agent(prompt: str) -> tuple[str, str]:
-    status, data, raw = _http(
-        "POST",
-        "/v1/agents",
-        {
-            "prompt": {"text": prompt},
-            "model": {"id": model_id()},
-            "repos": [{"url": sandbox_repo_url()}],
-            "autoCreatePR": False,
-        },
-    )
+    while True:
+        status, data, raw = _http(
+            "POST",
+            "/v1/agents",
+            {
+                "prompt": {"text": prompt},
+                "model": {"id": model_id()},
+                "repos": [{"url": sandbox_repo_url()}],
+                "autoCreatePR": False,
+            },
+        )
+        if not _fallback_on_region_block(status, raw):
+            break
     if status not in (200, 201) or not isinstance(data, dict):
         raise RuntimeError(f"createAgent 失败 {status}: {raw}")
     agent_id = data["agent"]["id"]
