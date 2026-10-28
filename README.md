@@ -147,19 +147,19 @@ src/
 | 变量 | 说明 |
 |------|------|
 | `AIVIDEO_MAX_VIDEOS_PER_RUN` | 工作日默认条数 |
-| `AIVIDEO_WEEKEND_MAX_VIDEOS` | 周末科普条数（默认 3） |
+| `AIVIDEO_WEEKEND_MAX_VIDEOS` | 周末科普条数（默认 1） |
 | `AIVIDEO_EDU_DEDUP_DAYS` | 科普概念去重窗口（默认近似永不重复） |
 | `AIVIDEO_CURSOR_REUSE_AGENT` | 同次日更复用 Cloud Agent |
 | `AIVIDEO_PUBLISH_*` | 各平台发布开关 |
 
 默认值都在 `config/defaults.env`，随 `git pull` 更新；`.env` 只放密钥、账号标识和本机路径（模板见 `.env.example`）。优先级：进程环境变量 > `.env` > `config/defaults.env`，要改某项就在 `.env` 写同名一行。旧的完整 `.env` 可用 `.\scripts\slim-env.ps1` 对比后加 `-Apply` 精简。
 
-TTS 默认豆包官方 2.0「霸气青叔」，带语气指令；换音色只改一行（见上文「配音」）：
+TTS 默认克隆主播 `S_6uN8A8f22`，带语气指令；换音色只改一行（见上文「配音」）：
 
 ```ini
 TTS_PROVIDER=doubao
-VOLCENGINE_TTS_SPEAKER=zh_male_baqiqingshu_uranus_bigtts
-# 克隆主播：VOLCENGINE_TTS_SPEAKER=S_6uN8A8f22（配 VOLCENGINE_TTS_MODEL=seed-tts-2.0-expressive）
+VOLCENGINE_TTS_SPEAKER=S_6uN8A8f22
+# 官方 2.0：VOLCENGINE_TTS_SPEAKER=zh_male_baqiqingshu_uranus_bigtts（资源 ID 自动切到 seed-tts-2.0）
 ```
 
 ## 克隆个人音色（一次性）

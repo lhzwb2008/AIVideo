@@ -4,8 +4,8 @@
   AI Cai Zhi Dao - Windows zh pipeline main entry (preferred for daily auto publish).
 
 .DESCRIPTION
-  Weekday: 5 news slots (default 5).
-  Weekend: Opus dynamic edu topics (default 3, dedup from history).
+  Weekday: news slots (default 1, AIVIDEO_MAX_VIDEOS_PER_RUN).
+  Weekend: Opus dynamic edu topics (default 1, AIVIDEO_WEEKEND_MAX_VIDEOS).
 
   NOTE: keep this file ASCII-only. Windows PowerShell 5.1 reads .ps1 as the
   system ANSI codepage (e.g. GBK); non-ASCII chars here can break parsing.
